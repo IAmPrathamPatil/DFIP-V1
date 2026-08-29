@@ -1,0 +1,85 @@
+{
+  "name": "DFIP Published Reporting",
+  "storage_mode": "DirectQuery recommended; Import only with full replace after every publication",
+  "connector": "PostgreSQL",
+  "schema": "public",
+  "allowed_tables": [
+    "rpt_published_fact",
+    "rpt_dim_date",
+    "rpt_dim_client",
+    "rpt_dim_campaign",
+    "rpt_dim_variation"
+  ],
+  "forbidden_tables": [
+    "fact_campaign_day",
+    "fact_campaign_day_history",
+    "stg_source_row",
+    "stg_rejected_row",
+    "processing_run",
+    "qa_finding",
+    "batch",
+    "source_file",
+    "publication",
+    "publication_current"
+  ],
+  "date_table": {
+    "table": "rpt_dim_date",
+    "column": "day",
+    "mark_as_date_table": true
+  },
+  "surrogate_keys": {
+    "campaign_key": "Text.From([client_id]) & \"|\" & [campaign_id]",
+    "variation_key": "Text.From([client_id]) & \"|\" & [campaign_id] & \"|\" & [variation_id_key]",
+    "empty_variation_note": "variation_id_key may be the empty string (OPEN-A6). Keep it."
+  },
+  "relationships": [
+    {
+      "from": "rpt_dim_date.day",
+      "to": "rpt_published_fact.day",
+      "cardinality": "1:*",
+      "cross_filter": "single",
+      "active": true
+    },
+    {
+      "from": "rpt_dim_client.client_id",
+      "to": "rpt_published_fact.client_id",
+      "cardinality": "1:*",
+      "cross_filter": "single",
+      "active": true
+    },
+    {
+      "from": "rpt_dim_campaign.campaign_key",
+      "to": "rpt_published_fact.campaign_key",
+      "cardinality": "1:*",
+      "cross_filter": "single",
+      "active": true
+    },
+    {
+      "from": "rpt_dim_variation.variation_key",
+      "to": "rpt_published_fact.variation_key",
+      "cardinality": "1:*",
+      "cross_filter": "single",
+      "active": true
+    }
+  ],
+  "hidden_fact_columns": [
+    "processing_run_id",
+    "batch_id",
+    "first_seen_at",
+    "last_seen_at"
+  ],
+  "slicer_fields": [
+    "rpt_dim_client[name]",
+    "rpt_dim_date[day]",
+    "rpt_dim_date[month_label]",
+    "rpt_dim_date[year]",
+    "rpt_dim_campaign[campaign_name]",
+    "rpt_dim_campaign[channel]",
+    "rpt_dim_campaign[type_of_campaign]",
+    "rpt_dim_campaign[amc_product_cat_filter_logic_5]",
+    "rpt_dim_variation[variation_name]",
+    "rpt_dim_variation[variation_id_key]"
+  ],
+  "drill_path": ["Client", "Date", "Campaign", "Variation", "Day"],
+  "unavailable": ["Orders", "Amazon CPC", "ACOS", "ASIN", "Product grain"]
+}

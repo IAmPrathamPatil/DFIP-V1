@@ -1,0 +1,79 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dfip"
+version = "1.0.0"
+description = "DFIP V1 — DataFlow Intelligence Platform (complete)"
+readme = "README.md"
+requires-python = ">=3.11"
+authors = [{ name = "DFIP" }]
+dependencies = [
+    "pydantic>=2.0",
+    "pydantic-settings>=2.0",
+    "openpyxl>=3.0",
+    "fastapi>=0.115",
+    "python-multipart>=0.0.9",
+    "uvicorn>=0.30",
+    "httpx>=0.27",
+    "PyJWT>=2.8",
+    "psycopg[binary,pool]>=3.1",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "ruff>=0.6",
+    "PyYAML>=6.0",
+]
+
+[tool.setuptools]
+packages = [
+    "dfip_core",
+    "dfip_core.ingest",
+    "dfip_core.transform",
+    "dfip_db",
+    "dfip_shared",
+    "dfip_config",
+    "dfip_api",
+    "dfip_web",
+    "dfip_analytics",
+]
+
+[tool.setuptools.package-dir]
+dfip_core = "packages/core/dfip_core"
+dfip_db = "packages/db/dfip_db"
+dfip_shared = "packages/shared/dfip_shared"
+dfip_config = "packages/config/dfip_config"
+dfip_api = "packages/api/dfip_api"
+dfip_web = "packages/web/dfip_web"
+dfip_analytics = "packages/analytics/dfip_analytics"
+
+[tool.setuptools.package-data]
+dfip_config = ["data/*.json"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [
+    "packages/core",
+    "packages/db",
+    "packages/shared",
+    "packages/config",
+    "packages/api",
+    "packages/web",
+    "packages/analytics",
+]
+addopts = "-q"
+markers = [
+    "postgres: requires PostgreSQL 16 (set DFIP_TEST_DATABASE_URL)",
+]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 100
+src = ["packages", "tests"]
+exclude = [".venv", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "W"]

@@ -1,0 +1,113 @@
+# =============================================================================
+# DFIP V1 — Git ignore rules
+# Client source data, secrets, caches, and local environments must never
+# enter version control.
+# =============================================================================
+
+# --- Client / source / generated data ---
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.csv
+!/excel/Client_Report.xlsx
+*.tsv
+*.parquet
+*.pkl
+*.pickle
+*.feather
+*.sas7bdat
+
+/source/*
+!/source/README.md
+/raw/
+/data/raw/
+/data/generated/
+/data/tmp/
+/uploads/
+/generated/
+/tmp/
+/temp/
+*.tmp
+
+# --- Secrets and local environment ---
+.env
+.env.*
+!.env.example
+!.env.*.example
+*.jwt
+*.dump
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+secrets/
+credentials/
+
+# --- Python ---
+.venv/
+venv/
+env/
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.eggs/
+dist/
+build/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+.tox/
+.nox/
+
+# --- Node (reserved for later web app) ---
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+pnpm-debug.log*
+.next/
+out/
+dist-web/
+
+# --- Databases / local state ---
+*.db
+*.sqlite
+*.sqlite3
+.supabase/
+
+# --- Logs ---
+logs/
+*.log
+
+# --- OS / editor ---
+.DS_Store
+Thumbs.db
+Desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# --- Docker ---
+docker-data/
+
+# --- Power BI binaries (build locally from powerbi/; do not commit) ---
+*.pbix
+*.pbit
+
+# --- Cache ---
+.cache/
+.tox
+.hypothesis/
+
+# Local temporary/debug scripts
+
+
+# --- Local temporary investigation scripts ---
+tmp_*.py

@@ -1,0 +1,36 @@
+# DFIP V1 — local development foundation
+#
+# Default `docker compose` does not start a database. Optional PostgreSQL 16
+# is available behind the `v2-db` profile as service `dfip_db`.
+#
+# Usage (when Docker Desktop is installed):
+#   docker compose build
+#   docker compose run --rm app
+#   docker compose --profile v2-db up -d dfip_db
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app
+    environment:
+      DFIP_ENV: development
+      DFIP_LOG_LEVEL: INFO
+    volumes:
+      - .:/app
+    command: python -m pytest tests
+
+  dfip_db:
+    image: postgres:16
+    profiles: ["v2-db"]
+    environment:
+      POSTGRES_DB: dfip
+      POSTGRES_HOST_AUTH_METHOD: trust
+    ports:
+      - "5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d dfip"]
+      interval: 5s
+      timeout: 5s
+      retries: 10

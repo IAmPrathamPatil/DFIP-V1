@@ -1,0 +1,90 @@
+"""FastAPI dependencies: settings, service, and authentication."""
+
+from __future__ import annotations
+
+from collections.abc import Iterator
+from typing import Annotated
+
+from dfip_config.settings import Settings
+from dfip_db.rls import bind_rls, reset_rls
+from fastapi import Depends, Query, Request
+from fastapi.security import HTTPAuthorizationCredentials
+
+from dfip_api.auth import Principal, bearer_scheme, principal_from_credentials
+from dfip_api.catalog_service import CatalogService
+from dfip_api.errors import AuthorizationError
+from dfip_api.membership import enrich_principal, rls_context_for
+from dfip_api.publication_service import PublicationService
+from dfip_api.qa_store import QaFindingStore
+from dfip_api.roles import can_inspect
+from dfip_api.schemas import DEFAULT_PAGE_LIMIT, MAX_PAGE_LIMIT, PaginationParams
+from dfip_api.service import ReadService
+from dfip_api.upload_service import UploadService
+
+
+def get_settings(request: Request) -> Settings:
+    return request.app.state.settings
+
+
+def get_service(request: Request) -> ReadService:
+    return request.app.state.service
+
+
+def get_publication_service(request: Request) -> PublicationService:
+    return request.app.state.publication_service
+
+
+def get_upload_service(request: Request) -> UploadService:
+    return request.app.state.upload_service
+
+
+def get_qa_store(request: Request) -> QaFindingStore:
+    return request.app.state.qa_store
+
+
+def get_catalog_service(request: Request) -> CatalogService:
+    return request.app.state.catalog_service
+
+
+def get_principal(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> Iterator[Principal]:
+    settings = request.app.state.settings
+    principal = principal_from_credentials(settings, credentials)
+    store = getattr(request.app.state, "identity_store", None)
+    if store is not None and principal.auth_mode == "jwt":
+        principal = enrich_principal(store, principal, settings)
+    pool = getattr(request.app.state, "db_pool", None)
+    bind_rls(rls_context_for(principal, db_mode=pool is not None))
+    try:
+        yield principal
+    finally:
+        reset_rls()
+
+
+def pagination_params(
+    limit: Annotated[int, Query(ge=1, le=MAX_PAGE_LIMIT)] = DEFAULT_PAGE_LIMIT,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> PaginationParams:
+    return PaginationParams(limit=limit, offset=offset)
+
+
+ServiceDep = Annotated[ReadService, Depends(get_service)]
+PublicationServiceDep = Annotated[PublicationService, Depends(get_publication_service)]
+UploadServiceDep = Annotated[UploadService, Depends(get_upload_service)]
+QaStoreDep = Annotated[QaFindingStore, Depends(get_qa_store)]
+CatalogServiceDep = Annotated[CatalogService, Depends(get_catalog_service)]
+PrincipalDep = Annotated[Principal, Depends(get_principal)]
+PaginationDep = Annotated[PaginationParams, Depends(pagination_params)]
+SettingsDep = Annotated[Settings, Depends(get_settings)]
+
+
+def require_inspector(principal: PrincipalDep) -> Principal:
+    """Admin/publisher only. Client/reader receive the existing 403 envelope."""
+    if not can_inspect(principal.role):
+        raise AuthorizationError()
+    return principal
+
+
+InspectorDep = Annotated[Principal, Depends(require_inspector)]

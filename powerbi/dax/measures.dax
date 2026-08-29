@@ -1,0 +1,244 @@
+// DFIP Phase 2B — canonical measures.
+// Paste into Power BI Desktop on rpt_published_fact (model measures table).
+// Ratios are DIVIDE(SUM(num), SUM(den)). Do not average daily ratios.
+// Source tables allowed: rpt_published_fact, rpt_dim_date, rpt_dim_client, rpt_dim_campaign, rpt_dim_variation.
+// Forbidden: fact_campaign_day, fact_campaign_day_history, stg_source_row, stg_rejected_row, processing_run, qa_finding, batch, source_file, publication, publication_current.
+
+// --- Additive facts -------------------------------------------------
+
+Sent =
+    SUM(rpt_published_fact[sent])
+
+Failed =
+    SUM(rpt_published_fact[failed])
+
+Delivered =
+    SUM(rpt_published_fact[delivered])
+
+Impressions =
+    SUM(rpt_published_fact[unique_impressions])
+
+Clicks =
+    SUM(rpt_published_fact[unique_clicks])
+
+Conversions =
+    SUM(rpt_published_fact[unique_conversions])
+
+Impression-Through Conversions =
+    SUM(rpt_published_fact[unique_impression_through_conversions])
+
+Click-Through Conversions =
+    SUM(rpt_published_fact[unique_click_through_conversions])
+
+Revenue =
+    SUM(rpt_published_fact[revenue_inr])
+
+Impression-Through Revenue =
+    SUM(rpt_published_fact[impression_through_revenue_inr])
+
+Click-Through Revenue =
+    SUM(rpt_published_fact[click_through_revenue_inr])
+
+Total Cost =
+    SUM(rpt_published_fact[total_cost])
+
+// --- Recovered KPIs (aggregate first) -----------------------------
+
+// qa.ctr :: 'Unique Clicks'/Delivered
+CTR =
+    DIVIDE ( SUM(rpt_published_fact[unique_clicks]), SUM(rpt_published_fact[delivered]) )
+
+// qa.conversion_rate :: 'Unique Conversions'/Delivered
+Conversion Rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_conversions]), SUM(rpt_published_fact[delivered]) )
+
+// qa.roas :: 'Revenue (INR)'/'Total Cost'
+ROAS =
+    DIVIDE ( SUM(rpt_published_fact[revenue_inr]), SUM(rpt_published_fact[total_cost]) )
+
+// qa.delivered_rate_star :: Delivered/Sent
+Delivered Rate* =
+    DIVIDE ( SUM(rpt_published_fact[delivered]), SUM(rpt_published_fact[sent]) )
+
+// qa.cost_conv :: 'Total Cost'/'Unique Click-Through Conversions'
+Cost/Conv =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), SUM(rpt_published_fact[unique_click_through_conversions]) )
+
+// qa.click_thou_conv_rate :: 'Unique Click-Through Conversions'/Delivered
+Click thou Conv Rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_click_through_conversions]), SUM(rpt_published_fact[delivered]) )
+
+// qa.click_through_cost_conv :: 'Total Cost'/'Unique Click-Through Conversions'
+QA Click Through Cost/Conv =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), SUM(rpt_published_fact[unique_click_through_conversions]) )
+
+// qa.cost_view_through_conv :: 'Total Cost'/'Unique Impression-Through Conversions'
+Cost/ View through Conv =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), SUM(rpt_published_fact[unique_impression_through_conversions]) )
+
+// qa.view_through_conv_rate :: 'Unique Impression-Through Conversions'/Delivered
+View through Conv Rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_impression_through_conversions]), SUM(rpt_published_fact[delivered]) )
+
+// qa.click_plus_view_conv :: 'Unique Impression-Through Conversions'+'Unique Click-Through Conversions'
+Click + View Conv =
+    VAR _left = SUM(rpt_published_fact[unique_impression_through_conversions])
+    VAR _right = SUM(rpt_published_fact[unique_click_through_conversions])
+    RETURN IF ( OR ( ISBLANK ( _left ), ISBLANK ( _right ) ), BLANK (), _left + _right )
+
+// qa.click_plus_view_revenue :: 'Impression-Through Revenue (INR)'+'Click-Through Revenue (INR)'
+Click + View Revenue =
+    VAR _left = SUM(rpt_published_fact[impression_through_revenue_inr])
+    VAR _right = SUM(rpt_published_fact[click_through_revenue_inr])
+    RETURN IF ( OR ( ISBLANK ( _left ), ISBLANK ( _right ) ), BLANK (), _left + _right )
+
+// qa.cost_click_plus_view_conv :: 'Total Cost'/'Click + View Conv '
+Cost/ Click + View Conv =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), [Click + View Conv] )
+
+// qa.all_click_plus_view_conv_rate :: 'Click + View Conv '/Delivered
+All Click + View Conv Rate =
+    DIVIDE ( [Click + View Conv], SUM(rpt_published_fact[delivered]) )
+
+// qa.delivered_to_imp_rate :: 'Unique Impressions'/Delivered
+Delivered to Imp. Rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_impressions]), SUM(rpt_published_fact[delivered]) )
+
+// qa.ctr_del_to_click :: 'Unique Clicks'/Delivered
+CTR ( Del to Click ) =
+    DIVIDE ( SUM(rpt_published_fact[unique_clicks]), SUM(rpt_published_fact[delivered]) )
+
+// qa.ctr_impr_to_click :: 'Unique Clicks'/'Unique Impressions'
+QA CTR ( Impr. to Click ) =
+    DIVIDE ( SUM(rpt_published_fact[unique_clicks]), SUM(rpt_published_fact[unique_impressions]) )
+
+// client.delivery_rate :: Delivered/Sent
+Delivery Rate =
+    DIVIDE ( SUM(rpt_published_fact[delivered]), SUM(rpt_published_fact[sent]) )
+
+// client.delivered_to_imp_rate :: 'Unique Impressions'/Delivered
+Delivered to Imp. rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_impressions]), SUM(rpt_published_fact[delivered]) )
+
+// client.ctr_del_to_clicks :: 'Unique Clicks'/Delivered
+CTR (Del to Clicks) =
+    DIVIDE ( SUM(rpt_published_fact[unique_clicks]), SUM(rpt_published_fact[delivered]) )
+
+// client.ctr_impr_to_click :: 'Unique Clicks'/'Unique Impressions'
+Client CTR ( Impr. to Click ) =
+    DIVIDE ( SUM(rpt_published_fact[unique_clicks]), SUM(rpt_published_fact[unique_impressions]) )
+
+// client.click_through_cost_conv :: 'Total Cost'/'Unique Click-Through Conversions'
+Client Click Through Cost/Conv =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), SUM(rpt_published_fact[unique_click_through_conversions]) )
+
+// client.cost_unique_conversion :: 'Total Cost'/'Unique Conversions'
+Cost/Unique Conversion =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), SUM(rpt_published_fact[unique_conversions]) )
+
+// client.delivered_thru_conv_rate :: 'Unique Conversions'/Delivered
+Delivered Thru Conv. rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_conversions]), SUM(rpt_published_fact[delivered]) )
+
+// client.cost_uct_conversion :: 'Total Cost'/'Unique Click-Through Conversions'
+Cost/ UCT conversion =
+    DIVIDE ( SUM(rpt_published_fact[total_cost]), SUM(rpt_published_fact[unique_click_through_conversions]) )
+
+// client.uct_conversion_rate :: 'Unique Click-Through Conversions'/'Unique Clicks'
+UCT conversion rate =
+    DIVIDE ( SUM(rpt_published_fact[unique_click_through_conversions]), SUM(rpt_published_fact[unique_clicks]) )
+
+// client.uc_to_uctc_conversions :: 'Unique Conversions'-'Unique Click-Through Conversions'
+UC to UCTC Conversions =
+    VAR _left = SUM(rpt_published_fact[unique_conversions])
+    VAR _right = SUM(rpt_published_fact[unique_click_through_conversions])
+    RETURN IF ( OR ( ISBLANK ( _left ), ISBLANK ( _right ) ), BLANK (), _left - _right )
+
+// client.uc_to_uctc_revenue :: 'Revenue (INR)'-'Click-Through Revenue (INR)'
+UC to UCTC Revenue =
+    VAR _left = SUM(rpt_published_fact[revenue_inr])
+    VAR _right = SUM(rpt_published_fact[click_through_revenue_inr])
+    RETURN IF ( OR ( ISBLANK ( _left ), ISBLANK ( _right ) ), BLANK (), _left - _right )
+
+// client.actual_sent :: Sent-Failed
+Actual Sent =
+    VAR _left = SUM(rpt_published_fact[sent])
+    VAR _right = SUM(rpt_published_fact[failed])
+    RETURN IF ( OR ( ISBLANK ( _left ), ISBLANK ( _right ) ), BLANK (), _left - _right )
+
+// client.failed_rate_sm :: Failed/Sent
+Failed Rate SM =
+    DIVIDE ( SUM(rpt_published_fact[failed]), SUM(rpt_published_fact[sent]) )
+
+// client.unique_click_through_conv_roas :: 'Click-Through Revenue (INR)'/'Total Cost'
+Unique Click Through Conv ROAS =
+    DIVIDE ( SUM(rpt_published_fact[click_through_revenue_inr]), SUM(rpt_published_fact[total_cost]) )
+
+// client.overall_roas :: 'Revenue (INR)'/'Total Cost'
+Overall ROAS =
+    DIVIDE ( SUM(rpt_published_fact[revenue_inr]), SUM(rpt_published_fact[total_cost]) )
+
+// --- Report context ----------------------------------------------
+
+Report Period =
+    VAR _min = MIN ( rpt_dim_date[day] )
+    VAR _max = MAX ( rpt_dim_date[day] )
+    RETURN FORMAT ( _min, "DD MMM YYYY" ) & " – " & FORMAT ( _max, "DD MMM YYYY" )
+
+Selected Client =
+    IF (
+        HASONEVALUE ( rpt_dim_client[name] ),
+        SELECTEDVALUE ( rpt_dim_client[name] ),
+        "All clients"
+    )
+
+// --- Published-slice data health ---------------------------------
+// Not qa_finding. Inspector findings stay out of this model.
+
+// Row count of the published slice currently in context.
+Published Fact Rows =
+    COUNTROWS ( rpt_published_fact )
+
+// Distinct published campaigns in context.
+Published Campaigns =
+    DISTINCTCOUNT ( rpt_published_fact[campaign_id] )
+
+// Distinct published calendar days in context.
+Published Days =
+    DISTINCTCOUNT ( rpt_published_fact[day] )
+
+// Published rows where delivered exceeds sent.
+Impossible Delivered Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), FILTER ( rpt_published_fact, NOT ISBLANK ( rpt_published_fact[delivered] ) && NOT ISBLANK ( rpt_published_fact[sent] ) && rpt_published_fact[delivered] > rpt_published_fact[sent] ) )
+
+// Published rows where failed exceeds sent.
+Impossible Failed Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), FILTER ( rpt_published_fact, NOT ISBLANK ( rpt_published_fact[failed] ) && NOT ISBLANK ( rpt_published_fact[sent] ) && rpt_published_fact[failed] > rpt_published_fact[sent] ) )
+
+// Published rows where unique clicks exceed unique impressions.
+Clicks Exceed Impressions Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), FILTER ( rpt_published_fact, NOT ISBLANK ( rpt_published_fact[unique_clicks] ) && NOT ISBLANK ( rpt_published_fact[unique_impressions] ) && rpt_published_fact[unique_clicks] > rpt_published_fact[unique_impressions] ) )
+
+// Published rows with delivered = 0 (zero-denominator risk for CTR).
+Zero Delivery Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), FILTER ( rpt_published_fact, NOT ISBLANK ( rpt_published_fact[delivered] ) && rpt_published_fact[delivered] = 0 ) )
+
+// Published rows whose campaign label did not match.
+Unmatched Label Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), rpt_published_fact[label_match_status] <> "matched" )
+
+// Published rows whose template status did not match.
+Unmatched Template Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), rpt_published_fact[template_match_status] <> "matched" )
+
+// Published rows that use the OPEN-A6 empty variation key.
+Blank Variation Rows =
+    CALCULATE ( COUNTROWS ( rpt_published_fact ), rpt_published_fact[variation_id_key] = "" )
+
+// 1 when the filtered delivered total is zero so CTR is BLANK.
+CTR Denominator Is Zero =
+    IF ( SUM ( rpt_published_fact[delivered] ) = 0, 1, 0 )
+
+// 1 when the filtered total cost is zero so ROAS is BLANK.
+ROAS Denominator Is Zero =
+    IF ( SUM ( rpt_published_fact[total_cost] ) = 0, 1, 0 )

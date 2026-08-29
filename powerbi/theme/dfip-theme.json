@@ -1,0 +1,19 @@
+{
+  "name": "DFIP Executive",
+  "dataColors": ["#1B3A4B", "#2E7D4F", "#C45C26", "#4C6B8A", "#7A9E7E", "#B42318"],
+  "background": "#F4F6F8",
+  "foreground": "#1A1A1A",
+  "tableAccent": "#1B3A4B",
+  "good": "#2E7D4F",
+  "neutral": "#4C6B8A",
+  "bad": "#B42318",
+  "maximum": "#1B3A4B",
+  "center": "#C45C26",
+  "minimum": "#B42318",
+  "textClasses": {
+    "calloutTitle": { "fontSize": 11, "fontFace": "Segoe UI Semibold", "color": "#1B3A4B" },
+    "title": { "fontSize": 14, "fontFace": "Segoe UI Semibold", "color": "#1A1A1A" },
+    "header": { "fontSize": 11, "fontFace": "Segoe UI Semibold", "color": "#1B3A4B" },
+    "label": { "fontSize": 10, "fontFace": "Segoe UI", "color": "#1A1A1A" }
+  }
+}

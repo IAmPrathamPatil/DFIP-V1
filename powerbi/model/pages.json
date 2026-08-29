@@ -1,0 +1,263 @@
+{
+  "canvas": { "width": 1280, "height": 720 },
+  "theme": "theme/dfip-theme.json",
+  "navigation": [
+    "Executive Overview",
+    "Campaign Performance",
+    "Client Performance",
+    "Campaign Label / Product-Category Analysis",
+    "Published Data Health"
+  ],
+  "pages": [
+    {
+      "id": "executive_overview",
+      "title": "Executive Overview",
+      "subtitle_measure": "Report Period",
+      "layout": {
+        "slicer_panel": { "x": 16, "y": 64, "width": 220, "height": 640 },
+        "cards_row": { "x": 252, "y": 64, "width": 1012, "height": 120 },
+        "trend": { "x": 252, "y": 200, "width": 640, "height": 280 },
+        "channel": { "x": 908, "y": 200, "width": 356, "height": 280 },
+        "campaign_table": { "x": 252, "y": 496, "width": 1012, "height": 208 }
+      },
+      "slicers": ["Client name", "Date between", "Channel", "Type of campaign"],
+      "cards": [
+        "Sent",
+        "Failed",
+        "Delivered",
+        "Impressions",
+        "Clicks",
+        "Conversions",
+        "Revenue",
+        "Total Cost",
+        "CTR",
+        "Conversion Rate",
+        "ROAS",
+        "Delivery Rate",
+        "Cost/Conv"
+      ],
+      "visuals": [
+        {
+          "type": "line",
+          "title": "Delivery, clicks, and revenue by day",
+          "axis": "rpt_dim_date[day]",
+          "values": ["Delivered", "Clicks", "Revenue"]
+        },
+        {
+          "type": "clustered_bar",
+          "title": "Channel mix",
+          "axis": "rpt_dim_campaign[channel]",
+          "values": ["Revenue", "Total Cost"]
+        },
+        {
+          "type": "table",
+          "title": "Campaign snapshot",
+          "columns": ["rpt_dim_campaign[campaign_name]", "Sent", "Delivered", "CTR", "ROAS"]
+        }
+      ],
+      "tooltips": ["Report Period", "Selected Client", "CTR", "ROAS"],
+      "notes": "CTR on this page is unique_clicks / delivered, not clicks / impressions."
+    },
+    {
+      "id": "campaign_performance",
+      "title": "Campaign Performance",
+      "layout": {
+        "slicer_panel": { "x": 16, "y": 64, "width": 220, "height": 640 },
+        "rank": { "x": 252, "y": 64, "width": 500, "height": 220 },
+        "trend": { "x": 768, "y": 64, "width": 496, "height": 220 },
+        "channel": { "x": 252, "y": 292, "width": 500, "height": 176 },
+        "comparison": { "x": 768, "y": 292, "width": 496, "height": 176 },
+        "table": { "x": 252, "y": 476, "width": 1012, "height": 228 }
+      },
+      "slicers": ["Client name", "Month", "Channel", "Type of campaign", "Campaign name"],
+      "visuals": [
+        {
+          "type": "ranked_bar",
+          "title": "Campaigns by revenue",
+          "axis": "rpt_dim_campaign[campaign_name]",
+          "values": ["Revenue"],
+          "sort": "Revenue desc"
+        },
+        {
+          "type": "line",
+          "title": "Campaign trend",
+          "legend": "rpt_dim_campaign[campaign_name]",
+          "axis": "rpt_dim_date[day]",
+          "values": ["Delivered", "CTR"]
+        },
+        {
+          "type": "clustered_bar",
+          "title": "Channel and campaign type",
+          "axis": "rpt_dim_campaign[channel]",
+          "legend": "rpt_dim_campaign[type_of_campaign]",
+          "values": ["Delivered"]
+        },
+        {
+          "type": "clustered_bar",
+          "title": "Campaign comparison",
+          "axis": "rpt_dim_campaign[campaign_name]",
+          "values": ["Delivered", "Total Cost"]
+        },
+        {
+          "type": "table",
+          "title": "Campaign KPI table",
+          "columns": [
+            "rpt_dim_campaign[campaign_name]",
+            "rpt_dim_campaign[channel]",
+            "Sent",
+            "Delivered",
+            "Clicks",
+            "CTR",
+            "Conversion Rate",
+            "ROAS",
+            "Cost/Conv"
+          ]
+        }
+      ],
+      "drill_through": ["variation_id_key", "variation_name", "Delivered", "CTR", "ROAS"],
+      "notes": "Keep empty variation_id_key. Do not map it to a product or ASIN."
+    },
+    {
+      "id": "client_performance",
+      "title": "Client Performance",
+      "layout": {
+        "slicer_panel": { "x": 16, "y": 64, "width": 220, "height": 640 },
+        "cards": { "x": 252, "y": 64, "width": 1012, "height": 100 },
+        "matrix": { "x": 252, "y": 180, "width": 640, "height": 300 },
+        "contribution": { "x": 908, "y": 180, "width": 356, "height": 220 },
+        "comparison": { "x": 908, "y": 408, "width": 356, "height": 88 },
+        "trend": { "x": 252, "y": 496, "width": 1012, "height": 208 }
+      },
+      "slicers": ["Client name", "Date between", "Channel"],
+      "cards": ["Sent", "Delivered", "Revenue", "Total Cost", "CTR", "ROAS", "Actual Sent"],
+      "visuals": [
+        {
+          "type": "matrix",
+          "title": "Client by month",
+          "rows": "rpt_dim_client[name]",
+          "columns": "rpt_dim_date[month_label]",
+          "values": ["Revenue", "CTR", "ROAS"]
+        },
+        {
+          "type": "stacked_bar",
+          "title": "Campaign contribution",
+          "axis": "rpt_dim_campaign[campaign_name]",
+          "values": ["Revenue"]
+        },
+        {
+          "type": "line",
+          "title": "Client trend",
+          "axis": "rpt_dim_date[day]",
+          "values": ["Revenue", "Total Cost"]
+        },
+        {
+          "type": "table",
+          "title": "Client / campaign comparison",
+          "columns": [
+            "rpt_dim_client[name]",
+            "rpt_dim_campaign[campaign_name]",
+            "Delivered",
+            "Revenue",
+            "CTR",
+            "ROAS"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "campaign_label_analysis",
+      "title": "Campaign Label / Product-Category Analysis",
+      "banner": "This is campaign-label analysis. It is not Product/ASIN reporting. The source has no ASIN grain.",
+      "layout": {
+        "slicer_panel": { "x": 16, "y": 64, "width": 240, "height": 640 },
+        "category_bar": { "x": 272, "y": 96, "width": 640, "height": 280 },
+        "group_treemap": { "x": 928, "y": 96, "width": 336, "height": 280 },
+        "table": { "x": 272, "y": 392, "width": 992, "height": 312 }
+      },
+      "slicers": [
+        "Client name",
+        "Month",
+        "amc_product_cat_filter_logic_5",
+        "amc_device_category_filter_logic_4",
+        "amc_status_filter_logic_3",
+        "filter_logic_1_group",
+        "manual_or_automated"
+      ],
+      "visuals": [
+        {
+          "type": "bar",
+          "title": "AMC product category (campaign label)",
+          "axis": "rpt_dim_campaign[amc_product_cat_filter_logic_5]",
+          "values": ["Revenue", "Delivered", "CTR"]
+        },
+        {
+          "type": "treemap",
+          "title": "Filter Logic 1 group (campaign label, not ASIN)",
+          "group": "rpt_dim_campaign[filter_logic_1_group]",
+          "values": ["Delivered"]
+        },
+        {
+          "type": "table",
+          "title": "Label attributes",
+          "columns": [
+            "rpt_dim_campaign[amc_product_cat_filter_logic_5]",
+            "rpt_dim_campaign[campaign_name]",
+            "rpt_dim_campaign[channel]",
+            "Delivered",
+            "Revenue",
+            "CTR",
+            "ROAS"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "published_data_health",
+      "title": "Published Data Health",
+      "banner": "Published slice only. Inspector QA (qa_finding, failed runs, rejected rows, reconcile) is not in this model.",
+      "layout": {
+        "slicer_panel": { "x": 16, "y": 64, "width": 220, "height": 640 },
+        "cards": { "x": 252, "y": 96, "width": 1012, "height": 120 },
+        "trend": { "x": 252, "y": 232, "width": 1012, "height": 220 },
+        "table": { "x": 252, "y": 468, "width": 1012, "height": 236 }
+      },
+      "slicers": ["Client name", "Date between"],
+      "cards": [
+        "Published Fact Rows",
+        "Impossible Delivered Rows",
+        "Impossible Failed Rows",
+        "Clicks Exceed Impressions Rows",
+        "Zero Delivery Rows",
+        "Unmatched Label Rows",
+        "CTR Denominator Is Zero",
+        "ROAS Denominator Is Zero"
+      ],
+      "visuals": [
+        {
+          "type": "line",
+          "title": "Published volume and impossible delivered rows",
+          "axis": "rpt_dim_date[day]",
+          "values": ["Published Fact Rows", "Impossible Delivered Rows"]
+        },
+        {
+          "type": "table",
+          "title": "Published row diagnostics",
+          "columns": [
+            "rpt_dim_campaign[campaign_name]",
+            "rpt_published_fact[day]",
+            "Delivered",
+            "Sent",
+            "rpt_published_fact[label_match_status]",
+            "rpt_published_fact[template_match_status]"
+          ]
+        }
+      ],
+      "inspector_not_in_model": [
+        "QA findings by severity (qa_finding)",
+        "Failed processing runs (processing_run)",
+        "Rejected source rows (stg_rejected_row)",
+        "Reconciliation failures (qa_finding QA-RECONCILE-FAIL)"
+      ]
+    }
+  ]
+}
