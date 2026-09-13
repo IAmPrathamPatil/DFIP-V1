@@ -58,7 +58,7 @@ from dfip_api.lifecycle import require_company_active
 from dfip_api.ports import PublicationStore
 from dfip_api.publication_service import _resolve_client_id
 from dfip_api.qa_store import QaFindingStore
-from dfip_api.qa_workflow import evaluate_and_persist_run, processing_rls
+from dfip_api.qa_workflow import evaluate_and_persist_run, processing_rls, startup_recovery_rls
 from dfip_api.recovery import (
     ARCHIVE_MISSING_MESSAGE,
     AUTO_RESUME_REASONS,
@@ -223,25 +223,26 @@ class UploadService:
 
         Does not retry genuine validation/transform failures. Idempotent.
         """
-        started = 0
-        try:
-            batches = self._ingest.list_auto_resume_batches(
-                limit=50, resume_reasons=tuple(AUTO_RESUME_REASONS)
-            )
-        except Exception:
-            log.exception("auto-resume inventory failed")
-            return 0
-        for batch in batches:
-            if self._batch_is_locally_running(batch.id):
-                continue
+        with startup_recovery_rls():
+            started = 0
             try:
-                if self._resume_one_batch(batch):
-                    started += 1
+                batches = self._ingest.list_auto_resume_batches(
+                    limit=50, resume_reasons=tuple(AUTO_RESUME_REASONS)
+                )
             except Exception:
-                log.exception("auto-resume skipped batch_id=%s", batch.id)
-        if started:
-            log.info("auto-resume queued=%s", started)
-        return started
+                log.exception("auto-resume inventory failed")
+                return 0
+            for batch in batches:
+                if self._batch_is_locally_running(batch.id):
+                    continue
+                try:
+                    if self._resume_one_batch(batch):
+                        started += 1
+                except Exception:
+                    log.exception("auto-resume skipped batch_id=%s", batch.id)
+            if started:
+                log.info("auto-resume queued=%s", started)
+            return started
 
     def _resume_one_batch(self, batch: BatchRecord) -> bool:
         if batch.cancel_requested or batch.status == "cancelled":

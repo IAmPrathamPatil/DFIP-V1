@@ -53,6 +53,30 @@ def processing_rls(client_id: str):
         reset_rls()
 
 
+@contextmanager
+def startup_recovery_rls():
+    """Bind platform-admin RLS for global startup recovery.
+
+    Lifespan has no HTTP principal, so current_rls() is None. FORCE RLS plus
+    NOBYPASSRLS then denies inventory on batch/processing_run. This is the same
+    identity as fail_abandoned_processing_runs. Worker jobs still use
+    processing_rls(client_id).
+    """
+    bind_rls(
+        RlsContext(
+            user_id="dfip-recovery-worker",
+            role="admin",
+            client_ids=(),
+            platform_admin=True,
+            subject="dfip-recovery-worker",
+        )
+    )
+    try:
+        yield
+    finally:
+        reset_rls()
+
+
 def evaluate_and_persist_run(
     *,
     ingest_store: IngestStore,

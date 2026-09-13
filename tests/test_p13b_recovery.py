@@ -12,12 +12,16 @@ import pytest
 from dfip_api.app import create_app
 from dfip_api.errors import PersistenceConfigurationError
 from dfip_api.publication_store import InMemoryPublicationStore
+from dfip_api.qa_workflow import startup_recovery_rls
 from dfip_api.recovery import ABANDONED_RUN_REASON, ARCHIVE_MISSING_MESSAGE
 from dfip_api.source_storage import InMemorySourceObjectStore
+from dfip_api.upload_service import UploadService
 from dfip_core.ingest.store import InMemoryIngestStore
 from dfip_core.transform.store import InMemoryFactStore
+from dfip_db.rls import current_rls, reset_rls
 from fastapi.testclient import TestClient
 from psycopg import connect
+from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import dict_row
 
 from http_ingest_support import (
@@ -466,3 +470,128 @@ def test_postgres_tenant_isolation_on_retry(tmp_path: Path, pg_conn, postgres_ur
     denied = http.post(f"/api/v1/batches/{batch_id}/process", headers=headers_b)
     assert denied.status_code == 404
     http.close()
+
+
+def test_startup_recovery_rls_binds_platform_admin_and_resets() -> None:
+    reset_rls()
+    assert current_rls() is None
+    with startup_recovery_rls():
+        bound = current_rls()
+        assert bound is not None
+        assert bound.role == "admin"
+        assert bound.platform_admin is True
+        assert bound.client_ids == ()
+        assert bound.user_id == "dfip-recovery-worker"
+        assert bound.subject == "dfip-recovery-worker"
+    assert current_rls() is None
+
+
+def test_startup_recovery_rls_clears_on_exception() -> None:
+    reset_rls()
+    with pytest.raises(RuntimeError, match="boom"):
+        with startup_recovery_rls():
+            assert current_rls() is not None
+            raise RuntimeError("boom")
+    assert current_rls() is None
+
+
+def _received_batch(pg_conn) -> str:
+    from datetime import UTC, datetime
+    from uuid import uuid4
+
+    source_id = str(uuid4())
+    batch_id = str(uuid4())
+    now = datetime(2025, 8, 1, 1, 0, 0, tzinfo=UTC)
+    pg_conn.execute(
+        """
+        INSERT INTO client (id, code, name)
+        VALUES (%s, 'resume-client-a', 'Resume Client A')
+        ON CONFLICT (id) DO NOTHING
+        """,
+        (CLIENT_A,),
+    )
+    pg_conn.execute(
+        """
+        INSERT INTO source_file (
+            id, client_id, sha256, original_filename, byte_size, source_kind, uploaded_at
+        )
+        VALUES (%s, %s, %s, 'resume.xlsx', 10, 'native_export', %s)
+        """,
+        (source_id, CLIENT_A, "c" * 64, now),
+    )
+    pg_conn.execute(
+        """
+        INSERT INTO batch (
+            id, source_file_id, client_id, status, created_at, cancel_requested
+        )
+        VALUES (%s, %s, %s, 'received', %s, FALSE)
+        """,
+        (batch_id, source_id, CLIENT_A, now),
+    )
+    pg_conn.commit()
+    return batch_id
+
+
+@pytest.mark.postgres
+@requires_postgres
+def test_postgres_resume_orphaned_work_uses_recovery_rls(pg_conn, pg_stores) -> None:
+    reset_rls()
+    assert current_rls() is None
+    batch_id = _received_batch(pg_conn)
+    ingest, facts, _pubs, _repo = pg_stores
+    service = UploadService(ingest, facts, make_settings())
+    seen: list[object] = []
+    original = ingest.list_auto_resume_batches
+
+    def wrapped(*, limit: int = 50, resume_reasons: tuple[str, ...] = ()):
+        bound = current_rls()
+        seen.append(bound)
+        rows = original(limit=limit, resume_reasons=resume_reasons)
+        assert any(item.id == batch_id for item in rows)
+        return rows
+
+    ingest.list_auto_resume_batches = wrapped  # type: ignore[method-assign]
+    service._resume_one_batch = lambda _batch: False  # type: ignore[method-assign]
+    try:
+        started = service.resume_orphaned_work()
+    except InsufficientPrivilege:
+        pytest.fail("resume_orphaned_work raised InsufficientPrivilege")
+    finally:
+        ingest.list_auto_resume_batches = original  # type: ignore[method-assign]
+    assert started == 0
+    assert current_rls() is None
+    assert seen
+    bound = seen[0]
+    assert bound is not None
+    assert bound.role == "admin"
+    assert bound.platform_admin is True
+    assert bound.client_ids == ()
+    assert bound.subject == "dfip-recovery-worker"
+
+
+@pytest.mark.postgres
+@requires_postgres
+def test_postgres_resume_orphaned_work_clears_rls_after_exception(pg_conn, pg_stores) -> None:
+    reset_rls()
+    assert current_rls() is None
+    ingest, facts, _pubs, _repo = pg_stores
+    service = UploadService(ingest, facts, make_settings())
+
+    def boom(*, limit: int = 50, resume_reasons: tuple[str, ...] = ()):
+        del limit, resume_reasons
+        assert current_rls() is not None
+        raise RuntimeError("inventory failed")
+
+    ingest.list_auto_resume_batches = boom  # type: ignore[method-assign]
+    assert service.resume_orphaned_work() == 0
+    assert current_rls() is None
+
+    _received_batch(pg_conn)
+
+    def raise_locally(_batch_id: str) -> bool:
+        raise RuntimeError("uncaught")
+
+    service._batch_is_locally_running = raise_locally  # type: ignore[method-assign]
+    with pytest.raises(RuntimeError, match="uncaught"):
+        service.resume_orphaned_work()
+    assert current_rls() is None
