@@ -30,7 +30,7 @@ from dfip_db.mapping import (
     source_file_from_row,
     staged_from_row,
 )
-from dfip_db.rls import current_rls
+from dfip_db.rls import RlsContext, current_rls
 
 # Keyset pages over stg_source_row. UNIQUE (batch_id, source_row_number) makes
 # source_row_number a complete seek key; ORDER BY also includes id so the
@@ -785,7 +785,16 @@ class PostgresIngestStore:
 
     def fail_abandoned_processing_runs(self, *, reason: str) -> int:
         now = datetime.now(tz=UTC)
-        with transaction(self._pool, rls=None) as conn:
+        with transaction(
+            self._pool,
+            rls=RlsContext(
+                user_id="dfip-recovery-worker",
+                role="admin",
+                client_ids=(),
+                platform_admin=True,
+                subject="dfip-recovery-worker",
+            ),
+        ) as conn:
             rows = conn.execute(
                 """
                 UPDATE processing_run
