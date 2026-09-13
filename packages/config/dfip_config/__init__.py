@@ -11,9 +11,18 @@ from dfip_config.resolve import (
     resolve_template_status,
     select_version_for_day,
 )
-from dfip_config.settings import Settings, load_settings
+from dfip_config.settings import (
+    ALLOWED_ENVIRONMENTS,
+    BOOTSTRAP_TOKEN_HEADER,
+    PRODUCTION_GRADE_ENVIRONMENTS,
+    Settings,
+    load_settings,
+)
 
 __all__ = [
+    "ALLOWED_ENVIRONMENTS",
+    "BOOTSTRAP_TOKEN_HEADER",
+    "PRODUCTION_GRADE_ENVIRONMENTS",
     "Settings",
     "load_settings",
     "resolve_campaign_label",

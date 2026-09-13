@@ -1,6 +1,7 @@
 param(
     [Parameter(Mandatory = $true)]
-    [string]$RepoRoot
+    [string]$RepoRoot,
+    [switch]$RequireDemoLogin
 )
 
 $ErrorActionPreference = "Stop"
@@ -91,6 +92,25 @@ else {
     Write-Host "Unsupported DFIP_AUTH_MODE (allowed: dev_token, jwt)."
     Write-Host "Missing or invalid variable: DFIP_AUTH_MODE"
     exit 1
+}
+
+if ($RequireDemoLogin) {
+    if ($mode -ne "jwt") {
+        Write-Host "One-click demo login requires DFIP_AUTH_MODE=jwt."
+        Write-Host "Missing or invalid variable: DFIP_AUTH_MODE"
+        exit 1
+    }
+    foreach ($name in @(
+            "DATABASE_URL",
+            "DFIP_LOCAL_DEMO_PUBLISHER_PASSWORD",
+            "DFIP_LOCAL_DEMO_CLIENT_PASSWORD"
+        )) {
+        $value = Get-Effective -FileMap $fileMap -Name $name
+        if ([string]::IsNullOrWhiteSpace($value)) {
+            Write-Host "Missing required variable: $name"
+            exit 1
+        }
+    }
 }
 
 exit 0

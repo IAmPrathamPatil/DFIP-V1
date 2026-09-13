@@ -1,0 +1,46 @@
+# DFIP V1 Caddy template.
+# REPOSITORY-DEFINED: loopback upstreams, /api/v1, /health, /config.json via web.
+# HOST-DEFINED: public hostname, ACME email, Caddy package installation.
+#
+# Set DFIP_DOMAIN to the public hostname (example: dfip.example.com).
+# Do not commit the real production domain. Do not put secrets in this file.
+#
+# Routing:
+#   /api/v1*  -> dfip_api 127.0.0.1:8000
+#   /health   -> dfip_api 127.0.0.1:8000   (public liveness; not DB readiness)
+#   /*        -> dfip_web 127.0.0.1:3000   (includes /config.json)
+#
+# Caddy issues HTTPS and redirects HTTP->HTTPS for the site address.
+# Do not trust arbitrary upstream proxies. The application trusts
+# X-Forwarded-For only when the TCP peer is loopback.
+
+{
+	# HOST-DEFINED: Let's Encrypt contact. Replace before first public TLS issuance.
+	email {$DFIP_ACME_EMAIL:ops@example.com}
+}
+
+{$DFIP_DOMAIN:dfip.example.com} {
+	encode gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "geolocation=(), microphone=(), camera=()"
+		-Server
+	}
+
+	@api path /api/v1 /api/v1/*
+	handle @api {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle /health {
+		reverse_proxy 127.0.0.1:8000
+	}
+
+	handle {
+		reverse_proxy 127.0.0.1:3000
+	}
+}

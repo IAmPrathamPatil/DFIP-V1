@@ -21,6 +21,8 @@ export function toHtml(value) {
   return interpolate(value);
 }
 
+export const MIN_PASSWORD_LENGTH = 12;
+
 export function html(strings, ...values) {
   const markup = strings.reduce((acc, part, index) => {
     if (index >= values.length) return acc + part;
@@ -64,11 +66,11 @@ export function badge(status) {
   const text = status == null ? "NULL" : String(status);
   let kind = "";
   const lowered = text.toLowerCase();
-  if (["ok", "succeeded", "processed", "staged", "matched", "active", "valid", "current", "pass"].includes(lowered)) {
+  if (["ok", "succeeded", "processed", "staged", "matched", "active", "valid", "current", "pass", "published"].includes(lowered)) {
     kind = "ok";
-  } else if (["failed", "error", "invalid", "critical", "fail", "unavailable"].includes(lowered)) {
+  } else if (["failed", "error", "invalid", "critical", "fail", "unavailable", "cancelled"].includes(lowered)) {
     kind = "failed";
-  } else if (["pending", "running", "received", "draft", "superseded", "warning", "warn"].includes(lowered)) {
+  } else if (["pending", "running", "received", "draft", "superseded", "warning", "warn", "cancelling"].includes(lowered)) {
     kind = "warn";
   } else if (["info", "information"].includes(lowered)) {
     kind = "info";
@@ -99,8 +101,10 @@ export function errorBanner(error) {
     hint = "This action is not available for the current role.";
   } else if (error.status === 404 || code === "NOT_FOUND") {
     hint = "The requested record was not found.";
+  } else if (error.status === 409 || code === "CONFLICT") {
+    hint = "A publisher account already exists. Sign in with that operator account.";
   } else if (error.status === 422 || code === "VALIDATION_ERROR" || code === "INVALID_PAGINATION") {
-    hint = "Check the file, required fields, or filters, then try again.";
+    hint = passwordRuleHint(error) || "Check the file, required fields, or filters, then try again.";
   } else if (error.status === 503 || code === "PERSISTENCE_UNAVAILABLE") {
     hint = "Persistence is unavailable. The API did not open a live database.";
   } else if (code === "NETWORK_FAILURE") {
@@ -109,14 +113,47 @@ export function errorBanner(error) {
     hint = "Retry the action. If it continues, contact an administrator.";
   }
   const meta = error.status ? `${code} · ${error.status}` : code;
+  const details = validationDetailItems(error);
   return html`
     <div class="banner error" role="alert">
       <strong>${errorTitle(code, error.status)}</strong>
       <div>${message}</div>
       ${hint ? html`<div class="muted">${hint}</div>` : ""}
+      ${
+        details.length
+          ? html`<ul class="error-details">${details.map((item) => html`<li>${item}</li>`)}</ul>`
+          : ""
+      }
       <div class="banner-meta muted">${meta}</div>
     </div>
   `;
+}
+
+function validationDetailItems(error) {
+  const rows = Array.isArray(error && error.details) ? error.details : [];
+  const items = [];
+  for (const row of rows) {
+    const loc = Array.isArray(row.loc) ? row.loc.filter((part) => part !== "body") : [];
+    const field = loc.length ? String(loc[loc.length - 1]) : "";
+    const msg = String((row && row.msg) || "").trim();
+    if (!msg) continue;
+    items.push(field ? `${field}: ${msg}` : msg);
+  }
+  return items;
+}
+
+function passwordRuleHint(error) {
+  const rows = Array.isArray(error && error.details) ? error.details : [];
+  const passwordLength = rows.some((row) => {
+    const loc = Array.isArray(row.loc) ? row.loc.join(".") : "";
+    const type = String((row && row.type) || "");
+    const msg = String((row && row.msg) || "").toLowerCase();
+    return loc.includes("password") && (type.includes("too_short") || msg.includes("at least 12"));
+  });
+  if (passwordLength) {
+    return `Passwords must be at least ${MIN_PASSWORD_LENGTH} characters.`;
+  }
+  return "";
 }
 
 export function emptyState(message) {

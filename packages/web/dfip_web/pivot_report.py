@@ -22,21 +22,30 @@ from zipfile import ZipFile
 from openpyxl.utils import get_column_letter
 
 from dfip_web.client_workbook import FACT_HEADERS, FAKE_MASHUP_ZIP_PARTS
+from dfip_web.published_facts_mashup import DATAMASHUP_PART, extract_published_facts_section_m
 from dfip_web.daily_report import (
+    AMC_DAYWISE,
     AMC_GROUP,
+    AMC_SPLIT,
+    AMC_VERTICAL,
     CAPTION_KEY_COL,
     CAPTION_NAME_COL,
+    CHANNEL,
+    D2C,
     D2C_GROUP,
     EMPTY_STATE,
-    MEASURE_FORMATS,
     MEASURE_HEADERS,
     MEASURE_OPS,
     NS_MAIN,
     NS_REL,
+    OVERALL,
     PUBLISHED_HEADER,
     REPORT_CONTRACTS,
     REPORT_SHEET_NAMES,
     SERVICE,
+    SERVICE_FILTER_LOGIC_1,
+    SUB_SPLIT,
+    VERTICAL,
     SERVICE_FILTER_LOGIC_1,
     XF_GROUP_BANNER,
     XF_HINT,
@@ -53,17 +62,26 @@ from dfip_web.daily_report import (
     _new_sheet_zipinfo,
     _next_relationship_id,
     _rels_with_metadata,
+    mutate_xlsx,
     _sheet_part_map,
     _types_with_metadata,
     _xml_attr,
     _xml_text,
 )
+from dfip_web.report_format import apply_reference_formatting, datafield_numfmt
 
 PIVOT_CACHE_ID = 1
 # x14 slicer tabular id. Distinct from workbook cacheId; Excel stores both.
 SLICER_PIVOT_CACHE_ID = 110000011
 PIVOT_CACHE_PART = "xl/pivotCache/pivotCacheDefinition1.xml"
 PIVOT_RECORDS_PART = "xl/pivotCache/pivotCacheRecords1.xml"
+# Excel worksheet max row. Refreshable cache must grow past the download stamp.
+PIVOT_CACHE_REFRESHABLE_ROWS = 1_048_575
+# Query-table defined name Power Query resizes on Refresh All. A frozen
+# worksheet ``ref`` (even A1:AS1048576) is rewritten by Excel after the first
+# cache refresh to the then-current row count, so later months never enter
+# the native PivotCache.
+PIVOT_CACHE_QUERY_NAME = "ExternalData_1"
 
 NS_PKG_REL = "http://schemas.openxmlformats.org/package/2006/relationships"
 NS_MC = "http://schemas.openxmlformats.org/markup-compatibility/2006"
@@ -115,8 +133,6 @@ PAGE_GROUP_ITEMS: tuple[str, ...] = (
     "Group6",
     "Group7",
 )
-
-_DATA_NUMFMT = {"count": 164, "money": 165, "rate": 166, "roas": 165}
 
 _SKIP_ZIP_PREFIXES = (
     "xl/pivotCache/",
@@ -230,6 +246,15 @@ def _cache_source_xml(*, row_count: int = 1) -> str:
     )
 
 
+def _cache_source_query_xml() -> str:
+    return (
+        '<cacheSource type="worksheet">'
+        f'<worksheetSource name="{_xml_attr(PIVOT_CACHE_QUERY_NAME)}" '
+        'sheet="PublishedFacts"/>'
+        "</cacheSource>"
+    )
+
+
 def pivot_cache_definition_xml() -> str:
     fields: list[str] = []
     for name in FACT_HEADERS:
@@ -242,7 +267,7 @@ def pivot_cache_definition_xml() -> str:
     for name, formula in calculated_cache_fields():
         fields.append(
             f'<cacheField name="{_xml_attr(name)}" numFmtId="0" '
-            f'formula="{_xml_attr(formula)}" databaseField="0"/>'
+            f'formula="{_xml_attr(formula)}" databaseField="0" sqlType="0"/>'
         )
     uid = _uid("pivot-cache-1")
     return (
@@ -286,10 +311,54 @@ def bind_pivot_cache_for_snapshot(cache_xml: str, row_count: int) -> str:
     return xml
 
 
+def bind_refreshable_query_defined_name(workbook_xml: str, row_count: int) -> str:
+    """Point ExternalData_1 at the stamped PublishedFacts rows.
+
+    The tracked template name is ``PublishedFacts!$A$1`` (one cell). A cache
+    bound to that name cannot refresh until Power Query resizes it. Seed the
+    name to the snapshot so PivotCache.Refresh and Refresh All both see a
+    real table; Power Query still rewrites the name when history grows.
+    """
+    last_row = max(1 + max(row_count, 1), 2)
+    last_col = get_column_letter(len(FACT_HEADERS))
+    formula = f"PublishedFacts!$A$1:${last_col}${last_row}"
+    replacement = (
+        f'<definedName name="{PIVOT_CACHE_QUERY_NAME}" localSheetId="0">{formula}</definedName>'
+    )
+    pattern = rf'<definedName name="{re.escape(PIVOT_CACHE_QUERY_NAME)}"[^>]*>[^<]*</definedName>'
+    if re.search(pattern, workbook_xml):
+        return re.sub(pattern, replacement, workbook_xml, count=1)
+    return workbook_xml
+
+
+def bind_pivot_cache_for_refreshable(cache_xml: str) -> str:
+    """Point the shared cache at the Power Query table name.
+
+    Refreshable workbooks accumulate months after Refresh All. Binding the
+    cache to a worksheet ``ref`` — including a full-column range — lets Excel
+    rewrite the source to the first refresh's row count. Later history then
+    lands in ``ExternalData_1`` / PublishedFacts UsedRange while all nine
+    PivotTables keep reading the frozen slice. The query-table name grows
+    with the connection refresh and is the cache source Refresh All uses.
+    ``recordCount`` stays 0 until Excel rebuilds records.
+    """
+    source = _cache_source_query_xml()
+    xml = re.sub(r"<cacheSource\b.*?</cacheSource>", source, cache_xml, count=1, flags=re.DOTALL)
+    xml = re.sub(r"<cacheSource\b[^>]*/>", source, xml, count=1)
+    if "refreshOnLoad=" in xml:
+        xml = re.sub(r'refreshOnLoad="\d+"', 'refreshOnLoad="0"', xml, count=1)
+    else:
+        xml = xml.replace("<pivotCacheDefinition ", '<pivotCacheDefinition refreshOnLoad="0" ', 1)
+    xml = re.sub(r'recordCount="\d+"', 'recordCount="0"', xml, count=1)
+    return xml
+
+
 def _page_fields(contract: ReportSheetContract) -> list[tuple[str, str | None]]:
     """(display header, selected shared-item value or None for all)."""
     pages: list[tuple[str, str | None]] = []
-    if contract.default_filter_logic_1:
+    # Service Filter Logic 1 is pinned by captionEqual + slicer, not a pageField
+    # item index. Excel remaps that index after Refresh All and hides every row.
+    if contract.default_filter_logic_1 and contract.name != SERVICE:
         pages.append(("Filter Logic 1", contract.default_filter_logic_1))
     if contract.name == SERVICE:
         pages.append(("Filter Logic 2", None))
@@ -309,7 +378,7 @@ def _axis_for_field(contract: ReportSheetContract, field_name: str) -> str | Non
 
 
 def _page_field_attrs(field_name: str) -> str:
-    if field_name == "Filter Logic 2":
+    if field_name in {"Filter Logic 1", "Filter Logic 2"}:
         return ' multipleItemSelectionAllowed="1"'
     return ""
 
@@ -323,6 +392,10 @@ def _page_item_values(field_name: str) -> tuple[str, ...]:
 
 
 def _page_items_xml(field_name: str, selected: str | None) -> str:
+    # Filter Logic 1 uniques grow as months accumulate. A singleton shared
+    # item list with x="0" remaps after Refresh All and empties Service.
+    if field_name == "Filter Logic 1":
+        return '<items count="1"><item t="default"/></items>'
     values = _page_item_values(field_name)
     if not values or selected is None:
         return '<items count="1"><item t="default"/></items>'
@@ -353,6 +426,150 @@ def _pivot_field_xml(contract: ReportSheetContract, field_name: str, is_data: bo
     return f'<pivotField{axis_attr} showAll="0"/>'
 
 
+def measure_datafield_display_name(header: str) -> str:
+    return header if header not in FACT_HEADERS else f"  {header}"
+
+
+def measure_data_fields_xml() -> str:
+    data_xml = []
+    for header in MEASURE_HEADERS:
+        fld = cache_field_index(header)
+        fmt = datafield_numfmt(header)
+        num = 0 if fmt is None else fmt
+        display = measure_datafield_display_name(header)
+        data_xml.append(
+            f'<dataField name="{_xml_attr(display)}" fld="{fld}" '
+            f'baseField="0" baseItem="0" numFmtId="{num}"/>'
+        )
+    return f'<dataFields count="{len(data_xml)}">{"".join(data_xml)}</dataFields>'
+
+
+def measure_col_items_xml() -> str:
+    col_items = "".join(
+        f'<i t="data"><x v="{index}"/></i>' for index in range(len(MEASURE_HEADERS))
+    )
+    return f'<colItems count="{len(MEASURE_HEADERS)}">{col_items}</colItems>'
+
+
+def sum_measure_headers() -> tuple[str, ...]:
+    return tuple(header for header, kind, *_rest in MEASURE_OPS if kind == "sum")
+
+
+def sum_measure_data_fields_xml() -> str:
+    """Additive sums only. Ratio/diff fields cannot survive a Power Query cache rebuild."""
+    data_xml = []
+    for header in sum_measure_headers():
+        fld = cache_field_index(header)
+        fmt = datafield_numfmt(header)
+        num = 0 if fmt is None else fmt
+        display = measure_datafield_display_name(header)
+        data_xml.append(
+            f'<dataField name="{_xml_attr(display)}" fld="{fld}" '
+            f'baseField="0" baseItem="0" numFmtId="{num}"/>'
+        )
+    return f'<dataFields count="{len(data_xml)}">{"".join(data_xml)}</dataFields>'
+
+
+def sum_measure_col_items_xml() -> str:
+    headers = sum_measure_headers()
+    col_items = "".join(f'<i t="data"><x v="{index}"/></i>' for index in range(len(headers)))
+    return f'<colItems count="{len(headers)}">{col_items}</colItems>'
+
+
+def ensure_measure_data_fields_xml(xml: str) -> str:
+    """Keep all 22 reference measures, including ratio/diff calculated fields."""
+    xml, replaced = re.subn(
+        r"<dataFields\b.*?</dataFields>",
+        measure_data_fields_xml(),
+        xml,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if replaced != 1:
+        return xml
+    xml, _n = re.subn(
+        r"<colItems\b.*?</colItems>",
+        measure_col_items_xml(),
+        xml,
+        count=1,
+        flags=re.DOTALL,
+    )
+    return xml
+
+
+def restore_pivot_measures_excel(pivot) -> None:
+    """Re-add MEASURE_HEADERS in reference order after a cache rebuild.
+
+    Excel PivotCache.Refresh from a Power Query table drops calculated
+    dataFields (22 → 10 additive sums). Unique CTC / Unique Conversions
+    survive but shift left, so the Click-Through / Overall banners sit over
+    blank cells. Re-adding in MEASURE_HEADERS order restores the layout.
+    """
+    xl_hidden = 0
+    while int(pivot.DataFields.Count) > 0:
+        pivot.DataFields.Item(1).Orientation = xl_hidden
+    for header, kind, *_rest in MEASURE_OPS:
+        if kind != "sum":
+            name, formula = header, None
+            for calc_name, calc_formula in calculated_cache_fields():
+                if calc_name == header:
+                    formula = calc_formula
+                    break
+            if formula:
+                try:
+                    pivot.CalculatedFields().Add(name, formula)
+                except Exception:
+                    pass
+        display = measure_datafield_display_name(header)
+        field = None
+        for candidate in (display, header):
+            try:
+                field = pivot.PivotFields(candidate)
+                break
+            except Exception:
+                continue
+        if field is None:
+            continue
+        try:
+            pivot.AddDataField(field)
+        except Exception:
+            continue
+        fmt = datafield_numfmt(header)
+        if fmt is None:
+            continue
+        try:
+            pivot.DataFields.Item(pivot.DataFields.Count).NumberFormat = _excel_number_format(fmt)
+        except Exception:
+            pass
+
+
+def _excel_number_format(num_fmt_id: int) -> str:
+    return {
+        2: "0.00",
+        3: "#,##0",
+        4: "#,##0.00",
+        9: "0%",
+        10: "0.00%",
+        164: "0.0%",
+    }.get(num_fmt_id, "General")
+
+
+def restore_service_page_excel(pivot) -> None:
+    """Pin Service Filter Logic 1 by caption after Excel rebuilds page items."""
+    try:
+        pivot.PageFields("Filter Logic 1").CurrentPage = SERVICE_FILTER_LOGIC_1
+    except Exception:
+        pass
+
+
+def restore_report_pivots_excel(workbook) -> None:
+    for contract in REPORT_CONTRACTS:
+        pivot = workbook.Worksheets(contract.name).PivotTables(1)
+        restore_pivot_measures_excel(pivot)
+        if contract.name == SERVICE and contract.default_filter_logic_1:
+            restore_service_page_excel(pivot)
+
+
 def pivot_table_xml(binding: ReportPivotBinding) -> str:
     contract = binding.contract
     names = cache_field_names()
@@ -373,10 +590,11 @@ def pivot_table_xml(binding: ReportPivotBinding) -> str:
     else:
         page_block = ""
     data_xml = []
-    for index, header in enumerate(MEASURE_HEADERS):
+    for header in MEASURE_HEADERS:
         fld = cache_field_index(header)
-        num = _DATA_NUMFMT[MEASURE_FORMATS[index]]
-        display = header if header not in FACT_HEADERS else f"  {header}"
+        fmt = datafield_numfmt(header)
+        num = 0 if fmt is None else fmt
+        display = measure_datafield_display_name(header)
         data_xml.append(
             f'<dataField name="{_xml_attr(display)}" fld="{fld}" '
             f'baseField="0" baseItem="0" numFmtId="{num}"/>'
@@ -441,6 +659,12 @@ def _excel_safe_pivot_xml(xml: str) -> str:
 
 def _page_field_tag(header: str, selected: str | None) -> str:
     fld = cache_field_index(header)
+    # Filter Logic 1 uniques grow as months accumulate. A numeric pageField
+    # item index is rewritten by Excel after Refresh All and empties Service
+    # Campaigns (captionEqual + the wrong item → zero rows). Pin by caption
+    # / slicer instead. Closed Group1–Group7 lists stay index-stable.
+    if header == "Filter Logic 1":
+        return f'<pageField fld="{fld}" hier="-1"/>'
     values = _page_item_values(header)
     if selected and selected in values:
         return f'<pageField fld="{fld}" item="{values.index(selected)}" hier="-1"/>'
@@ -463,10 +687,11 @@ def _nth_pivot_field(xml: str, fld: int) -> re.Match[str]:
     return matches[fld]
 
 
-def _pin_one_page_field(
-    xml: str, header: str, selected: str | None, values: Sequence[str]
-) -> str:
+def _pin_one_page_field(xml: str, header: str, selected: str | None, values: Sequence[str]) -> str:
     fld = cache_field_index(header)
+    if header == "Filter Logic 1":
+        selected = None
+        values = ()
     if selected and selected in values:
         tag = f'<pageField fld="{fld}" item="{values.index(selected)}" hier="-1"/>'
     else:
@@ -490,6 +715,52 @@ def _pin_one_page_field(
     return xml[: match.start()] + new + xml[match.end() :]
 
 
+def _drop_unmatched_caption_filters(
+    xml: str,
+    *,
+    fl1_values: Sequence[str],
+    group_values: Sequence[str],
+) -> str:
+    """Remove captionEqual pins whose value is not in the snapshot.
+
+    A phantom Service Filter Logic 1 pin empties that sheet when the tenant
+    has no matching campaign, even after cumulative history is in the cache.
+    """
+    fl1_fld = str(cache_field_index("Filter Logic 1"))
+    group_fld = str(cache_field_index("Filter Logic 1_2"))
+
+    def _keep(match: re.Match[str]) -> str:
+        block = match.group(0)
+        fld = re.search(r'fld="(\d+)"', block)
+        val = re.search(r'<filter val="([^"]*)"/>', block)
+        if fld is None or val is None:
+            return block
+        value = (
+            val.group(1)
+            .replace("&amp;", "&")
+            .replace("&lt;", "<")
+            .replace("&gt;", ">")
+            .replace("&quot;", '"')
+        )
+        if fld.group(1) == fl1_fld and value not in fl1_values:
+            return ""
+        if fld.group(1) == group_fld and value not in group_values:
+            return ""
+        return block
+
+    xml = re.sub(
+        r'<filter fld="\d+" type="captionEqual"[^>]*>.*?</filter>',
+        _keep,
+        xml,
+        flags=re.DOTALL,
+    )
+    remaining = len(re.findall(r'type="captionEqual"', xml))
+    xml = re.sub(r'<filters count="\d+">', f'<filters count="{remaining}">', xml, count=1)
+    if remaining == 0:
+        xml = re.sub(r"<filters count=\"0\"></filters>", "", xml, count=1)
+    return xml
+
+
 def _pin_page_field_state(
     xml: str,
     contract: ReportSheetContract,
@@ -501,10 +772,33 @@ def _pin_page_field_state(
         if header == "Filter Logic 2":
             xml = _pin_one_page_field(xml, header, None, ())
         elif header == "Filter Logic 1":
-            xml = _pin_one_page_field(xml, header, selected, fl1_values)
+            xml = _pin_one_page_field(xml, header, None, ())
         else:
             xml = _pin_one_page_field(xml, header, selected, group_values)
-    return xml
+    if contract.name == SERVICE:
+        xml = _strip_service_fl1_page_field(xml)
+    return _drop_unmatched_caption_filters(xml, fl1_values=fl1_values, group_values=group_values)
+
+
+def _strip_service_fl1_page_field(xml: str) -> str:
+    """Remove the Service Filter Logic 1 page field so Excel cannot remap item=0."""
+    fld = cache_field_index("Filter Logic 1")
+    xml, _n = re.subn(rf'<pageField fld="{fld}"[^/]*/>', "", xml)
+    remaining = len(re.findall(r"<pageField ", xml))
+    xml = re.sub(r'<pageFields count="\d+">', f'<pageFields count="{remaining}">', xml, count=1)
+    if remaining == 0:
+        xml = re.sub(r"<pageFields count=\"0\"></pageFields>", "", xml, count=1)
+    match = _nth_pivot_field(xml, fld)
+    old = match.group(0)
+    new = old.replace(' axis="axisPage"', "")
+    new, _r = re.subn(
+        r"<items[^>]*>.*?</items>",
+        '<items count="1"><item t="default"/></items>',
+        new,
+        count=1,
+        flags=re.DOTALL,
+    )
+    return xml[: match.start()] + new + xml[match.end() :]
 
 
 def _replace_cache_shared_items(cache_xml: str, field_name: str, values: Sequence[str]) -> str:
@@ -542,48 +836,304 @@ def page_filter_uniques_from_rows(
     rows: Sequence[Mapping[str, object]],
 ) -> tuple[list[str], list[str]]:
     """First-seen page-filter values, with report defaults present for indexing."""
-    groups = _first_seen(
-        _row_text(row, "filter_logic_1_group", "Filter Logic 1_2") for row in rows
-    )
+    groups = _first_seen(_row_text(row, "filter_logic_1_group", "Filter Logic 1_2") for row in rows)
     fl1 = _first_seen(_row_text(row, "filter_logic_1", "Filter Logic 1") for row in rows)
     for default in (AMC_GROUP, D2C_GROUP, "Group2"):
         if default not in groups:
             groups.append(default)
-    if SERVICE_FILTER_LOGIC_1 not in fl1:
-        fl1.insert(0, SERVICE_FILTER_LOGIC_1)
     return groups, fl1
 
 
-def apply_page_filter_defaults_xml(
-    body: bytes, rows: Sequence[Mapping[str, object]]
-) -> bytes:
+def apply_page_filter_defaults_into(
+    parts: dict[str, bytes], rows: Sequence[Mapping[str, object]]
+) -> None:
+    """Pin pageField item indexes onto an in-memory package."""
+    if not rows:
+        return
+    groups, fl1 = page_filter_uniques_from_rows(rows)
+    workbook_xml = parts["xl/workbook.xml"].decode("utf-8")
+    rels_xml = parts["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    bindings = bindings_from_workbook(workbook_xml, rels_xml)
+    cache = _replace_cache_shared_items(
+        parts[PIVOT_CACHE_PART].decode("utf-8"), "filter_logic_1_group", groups
+    )
+    cache = _replace_cache_shared_items(cache, "Filter Logic 1", fl1)
+    parts[PIVOT_CACHE_PART] = cache.encode("utf-8")
+    for binding in bindings:
+        xml = _pin_page_field_state(
+            parts[binding.pivot_part].decode("utf-8"),
+            binding.contract,
+            groups,
+            fl1,
+        )
+        parts[binding.pivot_part] = ensure_measure_data_fields_xml(xml).encode("utf-8")
+
+
+def apply_page_filter_defaults_xml(body: bytes, rows: Sequence[Mapping[str, object]]) -> bytes:
     """Pin pageField item indexes to first-seen snapshot values (no stale blanks)."""
     if not rows:
         return body
-    groups, fl1 = page_filter_uniques_from_rows(rows)
-    with ZipFile(io.BytesIO(body), "r") as original:
-        workbook_xml = original.read("xl/workbook.xml").decode("utf-8")
-        rels_xml = original.read("xl/_rels/workbook.xml.rels").decode("utf-8")
-        bindings = bindings_from_workbook(workbook_xml, rels_xml)
-        cache = _replace_cache_shared_items(
-            original.read(PIVOT_CACHE_PART).decode("utf-8"), "filter_logic_1_group", groups
+    return mutate_xlsx(body, lambda parts: apply_page_filter_defaults_into(parts, rows))
+
+
+# Compact layout: column B holds every row-field caption; C:L are the 10 sums.
+# Click-Through O:S and Overall T:X sit outside the PivotTable so Refresh All
+# cannot drop them. Identity is the same compact row as C:L (Month/Day context
+# of that outline row). SEQUENCE spill does not survive PivotTable row rewrite;
+# stored fill-down formulas on each row do.
+CONVERSION_STYLE_MARK = "<!--DFIP-CONV-XF:"
+CONVERSION_PIVOT_LOCATION = "B9:L10"
+CONVERSION_VALUE_ROW = 10
+CONVERSION_FILL_ROWS = 12000
+CONVERSION_LAST_FORMULA_ROW = CONVERSION_VALUE_ROW + CONVERSION_FILL_ROWS - 1
+# (column, header, style key, formula builder name)
+CONVERSION_SECTION_FIELDS: tuple[tuple[str, str, str, str], ...] = (
+    ("O", "Unique Click-Through Conversions", "int", "uct"),
+    ("P", "Click-Through Revenue (INR)", "int", "ctc_rev"),
+    ("Q", "Cost/ UCT conversion", "int", "cost_uct"),
+    ("R", "UCT conversion rate", "pct1", "uct_rate"),
+    ("S", "Unique Click Through Conv ROAS", "dec2", "ctc_roas"),
+    ("T", "Unique Conversions", "int", "conv"),
+    ("U", "Revenue (INR)", "int", "rev"),
+    ("V", "Cost/Unique Conversion", "int", "cost_conv"),
+    ("W", "Delivered Thru Conv. rate", "pct2", "del_rate"),
+    ("X", "Overall ROAS", "roas", "overall_roas"),
+)
+_CONVERSION_NUMFMTS: tuple[tuple[str, int], ...] = (
+    ("int", 3),
+    ("dec2", 4),
+    ("pct1", 164),
+    ("pct2", 10),
+    ("roas", 2),
+)
+
+
+def _numeric_copy(col: str) -> str:
+    """Same-row copy of a stable pivot value; skip the header caption row."""
+    return f'IF(ISNUMBER({col}10),{col}10,"")'
+
+
+def _ratio_formula(numerator: str, denominator: str) -> str:
+    den = f"{denominator}10"
+    num = f"{numerator}10"
+    return f'IF(NOT(ISNUMBER({den})),"",IF({den}=0,"",{num}/{den}))'
+
+
+def _conversion_formula(kind: str) -> str:
+    if kind == "uct":
+        return _numeric_copy("I")
+    if kind == "ctc_rev":
+        return _numeric_copy("J")
+    if kind == "cost_uct":
+        return _ratio_formula("C", "I")
+    if kind == "uct_rate":
+        return _ratio_formula("I", "H")
+    if kind == "ctc_roas":
+        return _ratio_formula("J", "C")
+    if kind == "conv":
+        return _numeric_copy("K")
+    if kind == "rev":
+        return _numeric_copy("L")
+    if kind == "cost_conv":
+        return _ratio_formula("C", "K")
+    if kind == "del_rate":
+        return _ratio_formula("K", "F")
+    if kind == "overall_roas":
+        return _ratio_formula("L", "C")
+    raise ValueError(f"unknown conversion formula {kind}")
+
+
+def _append_conversion_number_styles(styles_xml: str) -> tuple[str, dict[str, int]]:
+    """Append worksheet XFs for O:X so formats survive Refresh All (not General)."""
+    marked = re.search(rf"{re.escape(CONVERSION_STYLE_MARK)}(\d+)-->", styles_xml)
+    if marked:
+        start = int(marked.group(1))
+        return styles_xml, {
+            name: start + index for index, (name, _fmt) in enumerate(_CONVERSION_NUMFMTS)
+        }
+    count_match = re.search(r'<cellXfs count="(\d+)"', styles_xml)
+    if count_match is None:
+        return styles_xml, {}
+    start = int(count_match.group(1))
+    extras = "".join(
+        f'<xf numFmtId="{fmt}" fontId="0" fillId="0" borderId="0" xfId="0" applyNumberFormat="1"/>'
+        for _name, fmt in _CONVERSION_NUMFMTS
+    )
+    styles_xml = styles_xml.replace(
+        "<cellXfs ",
+        f"{CONVERSION_STYLE_MARK}{start}--><cellXfs ",
+        1,
+    )
+    styles_xml = re.sub(
+        r'<cellXfs count="\d+"',
+        f'<cellXfs count="{start + len(_CONVERSION_NUMFMTS)}"',
+        styles_xml,
+        count=1,
+    )
+    styles_xml = styles_xml.replace("</cellXfs>", extras + "</cellXfs>", 1)
+    return styles_xml, {
+        name: start + index for index, (name, _fmt) in enumerate(_CONVERSION_NUMFMTS)
+    }
+
+
+def _conversion_header_cells() -> str:
+    return "".join(
+        _inline(f"{col}9", measure_datafield_display_name(header))
+        for col, header, _style, _kind in CONVERSION_SECTION_FIELDS
+    )
+
+
+def _style_attr(style: int | None) -> str:
+    return "" if style is None else f' s="{style}"'
+
+
+def _shared_master_cell(col: str, formula: str, si: int, style: int | None) -> str:
+    last = CONVERSION_LAST_FORMULA_ROW
+    start = CONVERSION_VALUE_ROW
+    return (
+        f'<c r="{col}{start}"{_style_attr(style)}>'
+        f'<f t="shared" ref="{col}{start}:{col}{last}" si="{si}">'
+        f"{_xml_text(formula)}</f></c>"
+    )
+
+
+def _shared_slot_cell(col: str, row: int, si: int, style: int | None) -> str:
+    return f'<c r="{col}{row}"{_style_attr(style)}><f t="shared" si="{si}"/></c>'
+
+
+def _conversion_fill_rows_xml(styles: dict[str, int]) -> str:
+    """Stored same-row formulas for O:X. Shared formulas keep the package small."""
+    last = CONVERSION_LAST_FORMULA_ROW
+    rows = []
+    master = "".join(
+        _shared_master_cell(col, _conversion_formula(kind), index, styles.get(style_key))
+        for index, (col, _header, style_key, kind) in enumerate(CONVERSION_SECTION_FIELDS)
+    )
+    rows.append(f'<row r="{CONVERSION_VALUE_ROW}" spans="15:24">{master}</row>')
+    for row in range(CONVERSION_VALUE_ROW + 1, last + 1):
+        cells = "".join(
+            _shared_slot_cell(col, row, index, styles.get(style_key))
+            for index, (col, _header, style_key, _kind) in enumerate(CONVERSION_SECTION_FIELDS)
         )
-        cache = _replace_cache_shared_items(cache, "Filter Logic 1", fl1)
-        replacements: dict[str, bytes] = {PIVOT_CACHE_PART: cache.encode("utf-8")}
-        for binding in bindings:
-            xml = _pin_page_field_state(
-                original.read(binding.pivot_part).decode("utf-8"),
-                binding.contract,
-                groups,
-                fl1,
-            )
-            replacements[binding.pivot_part] = xml.encode("utf-8")
-        out = io.BytesIO()
-        with ZipFile(out, "w") as written:
-            for info in original.infolist():
-                data = replacements.get(info.filename, original.read(info.filename))
-                written.writestr(_clone_zipinfo(info), data)
-    return out.getvalue()
+        rows.append(f'<row r="{row}" spans="15:24">{cells}</row>')
+    return "".join(rows)
+
+
+def _clear_non_sum_datafield_flags(xml: str) -> str:
+    """Excel rejects Open when dataField='1' count != dataFields count."""
+    match = re.search(r"<pivotFields\b[^>]*>.*?</pivotFields>", xml, re.DOTALL)
+    if match is None:
+        return xml
+    keep = {cache_field_index(header) for header in sum_measure_headers()}
+    block = match.group(0)
+    fields = list(
+        re.finditer(r"<pivotField\b[^>]*/>|<pivotField\b[^>]*>.*?</pivotField>", block, re.DOTALL)
+    )
+    pieces: list[str] = []
+    last = 0
+    for index, field in enumerate(fields):
+        pieces.append(block[last : field.start()])
+        tag = field.group(0)
+        if index not in keep:
+            tag = re.sub(r'\s*dataField="1"', "", tag, count=1)
+        pieces.append(tag)
+        last = field.end()
+    pieces.append(block[last:])
+    return xml[: match.start()] + "".join(pieces) + xml[match.end() :]
+
+
+def _bind_refreshable_sum_pivot(xml: str) -> str:
+    xml, replaced = re.subn(
+        r"<dataFields\b.*?</dataFields>",
+        sum_measure_data_fields_xml(),
+        xml,
+        count=1,
+        flags=re.DOTALL,
+    )
+    if replaced != 1:
+        return xml
+    xml = _clear_non_sum_datafield_flags(xml)
+    xml, _n = re.subn(
+        r"<colItems\b.*?</colItems>",
+        sum_measure_col_items_xml(),
+        xml,
+        count=1,
+        flags=re.DOTALL,
+    )
+    xml = re.sub(
+        r'<location ref="B9:[A-Z]+\d+"',
+        f'<location ref="{CONVERSION_PIVOT_LOCATION}"',
+        xml,
+        count=1,
+    )
+    return xml
+
+
+def _inject_row_cells(sheet_xml: str, row: int, cells: str, spans: str) -> str:
+    self_close = re.search(rf'<row r="{row}"([^>]*)/>', sheet_xml)
+    if self_close:
+        attrs = self_close.group(1)
+        if "spans=" not in attrs:
+            attrs += f' spans="{spans}"'
+        replacement = f'<row r="{row}"{attrs}>{cells}</row>'
+        return sheet_xml[: self_close.start()] + replacement + sheet_xml[self_close.end() :]
+    open_row = re.search(rf'<row r="{row}"[^>]*>', sheet_xml)
+    if open_row:
+        return sheet_xml[: open_row.end()] + cells + sheet_xml[open_row.end() :]
+    return sheet_xml.replace(
+        "</sheetData>",
+        f'<row r="{row}" spans="{spans}">{cells}</row></sheetData>',
+        1,
+    )
+
+
+def _inject_conversion_formulas(
+    sheet_xml: str, styles: dict[str, int], fill: str | None = None
+) -> str:
+    if 't="shared"' in sheet_xml and "ISNUMBER(I10)" in sheet_xml:
+        return sheet_xml
+    sheet_xml = _inject_row_cells(sheet_xml, 9, _conversion_header_cells(), "15:24")
+    fill_xml = fill if fill is not None else _conversion_fill_rows_xml(styles)
+    if re.search(rf'<row r="{CONVERSION_VALUE_ROW}"', sheet_xml):
+        sheet_xml = re.sub(
+            rf'<row r="{CONVERSION_VALUE_ROW}"[^>]*>.*?</row>',
+            "",
+            sheet_xml,
+            count=1,
+            flags=re.DOTALL,
+        )
+    return sheet_xml.replace("</sheetData>", fill_xml + "</sheetData>", 1)
+
+
+def apply_refreshable_conversion_layout_into(parts: dict[str, bytes]) -> None:
+    """Keep conversion sections populated after Power Query Refresh All."""
+    workbook_xml = parts["xl/workbook.xml"].decode("utf-8")
+    rels_xml = parts["xl/_rels/workbook.xml.rels"].decode("utf-8")
+    bindings = bindings_from_workbook(workbook_xml, rels_xml)
+    styles_xml, conv_styles = _append_conversion_number_styles(
+        parts["xl/styles.xml"].decode("utf-8")
+    )
+    parts["xl/styles.xml"] = styles_xml.encode("utf-8")
+    fill = _conversion_fill_rows_xml(conv_styles)
+    for binding in bindings:
+        parts[binding.pivot_part] = _bind_refreshable_sum_pivot(
+            parts[binding.pivot_part].decode("utf-8")
+        ).encode("utf-8")
+        parts[binding.sheet_part] = _inject_conversion_formulas(
+            parts[binding.sheet_part].decode("utf-8"),
+            conv_styles,
+            fill,
+        ).encode("utf-8")
+
+
+def apply_refreshable_conversion_layout_xml(body: bytes) -> bytes:
+    """Keep conversion sections populated after Power Query Refresh All.
+
+    Calculated cache fields are dropped from DataFields when the shared cache
+    rebuilds from ExternalData_1. Shrink each PivotTable to the 10 additive
+    sums (C:L) and place Click-Through / Overall formulas in O:X.
+    """
+    return mutate_xlsx(body, apply_refreshable_conversion_layout_into)
 
 
 def apply_page_filter_defaults_excel(path: str | Path) -> None:
@@ -606,18 +1156,19 @@ def apply_page_filter_defaults_excel(path: str | Path) -> None:
     try:
         workbook = excel.Workbooks.Open(str(target), UpdateLinks=0, ReadOnly=False)
         workbook.Worksheets(REPORT_SHEET_NAMES[0]).PivotTables(1).PivotCache().Refresh()
+        restore_report_pivots_excel(workbook)
         for contract in REPORT_CONTRACTS:
             pivot = workbook.Worksheets(contract.name).PivotTables(1)
             if contract.default_filter_logic_1 and pivot.PageFields.Count >= 1:
-                pivot.PageFields.Item(1).CurrentPage = contract.default_filter_logic_1
-            elif contract.default_group and pivot.PageFields.Count >= 1:
-                pivot.PageFields.Item(1).CurrentPage = contract.default_group
-            for index in range(1, pivot.CalculatedFields().Count + 1):
-                calc = pivot.CalculatedFields().Item(index)
                 try:
-                    pivot.AddDataField(pivot.PivotFields(calc.Name))
+                    pivot.PageFields.Item(1).CurrentPage = contract.default_filter_logic_1
                 except Exception:
-                    continue
+                    pass
+            elif contract.default_group and pivot.PageFields.Count >= 1:
+                try:
+                    pivot.PageFields.Item(1).CurrentPage = contract.default_group
+                except Exception:
+                    pass
         workbook.Save()
         workbook.Close(False)
         workbook = None
@@ -724,17 +1275,86 @@ def slicers_xml(binding: ReportPivotBinding) -> str:
     )
 
 
-def _slicer_anchor(index: int, name: str, shape_id: int) -> str:
-    # Two columns of slicers to the right of the compact pivot (starts at col Z=25).
-    col = 25 + (index % 3) * 5
-    row = 1 + (index // 3) * 14
+# FY-2026 drawing twoCellAnchor boxes per report sheet, in slicer-field order.
+# (from_col, from_row, to_col, to_row, from_colOff, from_rowOff, to_colOff, to_rowOff)
+# Slicers sit to the right of the pivot (AA+). Do not park them in C2:X7.
+SlicerBox = tuple[int, int, int, int, int, int, int, int]
+REFERENCE_SLICER_GEOMETRY: dict[str, tuple[SlicerBox, ...]] = {
+    OVERALL: (
+        (30, 3, 41, 25, 49347, 43360, 49114, 159920),
+        (26, 2, 29, 13, 380633, 185536, 397360, 95249),
+        (26, 14, 29, 28, 304800, 133350, 485775, 133351),
+    ),
+    VERTICAL: (
+        (30, 2, 41, 25, 49347, 157660, 49115, 83720),
+        (26, 2, 29, 13, 542558, 185536, 559285, 95249),
+        (33, 27, 36, 40, 235117, 128336, 221582, 170447),
+        (30, 27, 33, 41, 172451, 165935, 158915, 25067),
+        (26, 15, 29, 31, 323850, 28574, 504825, 99059),
+    ),
+    CHANNEL: (
+        (30, 3, 41, 28, 49347, 62410, 49115, 133350),
+        (26, 3, 29, 13, 352058, 4561, 368785, 104774),
+        (26, 15, 29, 29, 323850, 28575, 504825, 28575),
+    ),
+    SUB_SPLIT: (
+        (30, 3, 41, 28, 49347, 62410, 49115, 133350),
+        (26, 3, 29, 13, 352058, 4561, 368785, 104774),
+        (26, 15, 29, 29, 323850, 28575, 504825, 28575),
+        (26, 30, 29, 44, 230505, 41910, 230505, 41910),
+    ),
+    AMC_DAYWISE: (
+        (30, 3, 41, 25, 49347, 43360, 49115, 159920),
+        (26, 2, 29, 13, 380633, 185536, 397358, 95249),
+        (26, 14, 29, 28, 304800, 133350, 485773, 133351),
+        (26, 29, 29, 43, 386862, 129149, 193429, 134278),
+    ),
+    AMC_SPLIT: (
+        (30, 3, 41, 25, 49347, 43360, 49114, 159920),
+        (26, 2, 29, 13, 380633, 185536, 397360, 95249),
+        (26, 14, 29, 28, 304800, 133350, 485775, 133349),
+        (27, 30, 30, 43, 145171, 31457, 156894, 164785),
+    ),
+    AMC_VERTICAL: (
+        (30, 3, 41, 25, 49347, 43360, 49114, 145266),
+        (26, 2, 29, 13, 380633, 185536, 397360, 95249),
+        (26, 14, 29, 29, 304800, 133349, 485775, 132550),
+        (26, 29, 29, 43, 370308, 170003, 382031, 135345),
+    ),
+    D2C: (
+        (30, 3, 41, 25, 49347, 43360, 49114, 159920),
+        (26, 2, 29, 13, 380633, 185536, 397360, 95249),
+        (26, 13, 29, 29, 304800, 178172, 485775, 6330),
+        (26, 29, 29, 43, 370308, 170003, 382031, 122538),
+    ),
+    SERVICE: (
+        (31, 3, 42, 28, 49347, 62410, 49115, 144847),
+        (27, 3, 30, 13, 352058, 4561, 368785, 104774),
+        (27, 15, 30, 29, 323850, 28575, 504825, 40072),
+        (27, 29, 30, 43, 428625, 95250, 428625, 81882),
+    ),
+}
+
+
+def slicer_anchor_box(sheet_name: str, index: int) -> SlicerBox:
+    """Return FY-2026 two-cell anchor box for one slicer on a report sheet."""
+    boxes = REFERENCE_SLICER_GEOMETRY.get(sheet_name)
+    if not boxes or index < 0 or index >= len(boxes):
+        raise ValueError("slicer layout exceeds the reference drawing.")
+    return boxes[index]
+
+
+def _slicer_anchor(index: int, name: str, shape_id: int, sheet_name: str) -> str:
+    col, row, to_col, to_row, from_col_off, from_row_off, to_col_off, to_row_off = (
+        slicer_anchor_box(sheet_name, index)
+    )
     uid = _uid(f"drawing-{name}")
     return (
         '<xdr:twoCellAnchor editAs="oneCell">'
-        f"<xdr:from><xdr:col>{col}</xdr:col><xdr:colOff>0</xdr:colOff>"
-        f"<xdr:row>{row}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:from>"
-        f"<xdr:to><xdr:col>{col + 4}</xdr:col><xdr:colOff>0</xdr:colOff>"
-        f"<xdr:row>{row + 12}</xdr:row><xdr:rowOff>0</xdr:rowOff></xdr:to>"
+        f"<xdr:from><xdr:col>{col}</xdr:col><xdr:colOff>{from_col_off}</xdr:colOff>"
+        f"<xdr:row>{row}</xdr:row><xdr:rowOff>{from_row_off}</xdr:rowOff></xdr:from>"
+        f"<xdr:to><xdr:col>{to_col}</xdr:col><xdr:colOff>{to_col_off}</xdr:colOff>"
+        f"<xdr:row>{to_row}</xdr:row><xdr:rowOff>{to_row_off}</xdr:rowOff></xdr:to>"
         f'<mc:AlternateContent xmlns:mc="{NS_MC}" '
         'xmlns:a14="http://schemas.microsoft.com/office/drawing/2010/main">'
         '<mc:Choice Requires="a14">'
@@ -769,7 +1389,7 @@ def drawing_xml(binding: ReportPivotBinding) -> str:
     anchors = []
     for index, field in enumerate(binding.contract.slicers):
         name = _slicer_object_name(binding, field)
-        anchors.append(_slicer_anchor(index, name, index + 2))
+        anchors.append(_slicer_anchor(index, name, index + 2, binding.contract.name))
     return (
         '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
         f'<xdr:wsDr xmlns:xdr="{NS_XDR}" '
@@ -846,9 +1466,7 @@ def pivot_sheet_xml(contract: ReportSheetContract) -> str:
         f'xr:uid="{{{uid}}}">'
         f'<dimension ref="A1:{last_col}10"/>'
         '<sheetViews><sheetView workbookViewId="0" showGridLines="0" zoomScale="90">'
-        '<pane xSplit="2" ySplit="9" topLeftCell="C10" '
-        'activePane="bottomRight" state="frozen"/>'
-        '<selection pane="bottomRight" activeCell="B10" sqref="B10"/>'
+        '<selection activeCell="B10" sqref="B10"/>'
         "</sheetView></sheetViews>"
         '<sheetFormatPr defaultRowHeight="15" x14ac:dyDescent="0.3"/>'
         f"{cols}"
@@ -1130,33 +1748,118 @@ def apply_native_pivots(raw: bytes) -> bytes:
                 written.writestr(_clone_zipinfo(info), data)
             for name, payload in generated.items():
                 written.writestr(_new_sheet_zipinfo(name), payload)
-    return out.getvalue()
+    return apply_reference_formatting(out.getvalue())
+
+
+def shared_pivot_cache_binding(workbook_xml: str, rels_xml: str) -> tuple[str, str, str]:
+    """Return (cache_id, r:id, relationship target) for the one shared PivotCache.
+
+    Excel Save may remap the numeric cacheId (1 → 0 or 12). The contract is
+    exactly one workbook PivotCache whose r:id resolves to
+    pivotCacheDefinition1.xml — not a specific number.
+    """
+    block = re.search(r"<pivotCaches>(.*?)</pivotCaches>", workbook_xml, flags=re.DOTALL)
+    if block is None:
+        raise ValueError("Client report is incomplete.")
+    tags = re.findall(r"<pivotCache\b[^/]*/>", block.group(1))
+    if len(tags) != 1:
+        raise ValueError("Client report is incomplete.")
+    cache_id = re.search(r'cacheId="(\d+)"', tags[0])
+    rel_id = re.search(r'r:id="([^"]+)"', tags[0])
+    if cache_id is None or rel_id is None:
+        raise ValueError("Client report is incomplete.")
+    rid = rel_id.group(1)
+    target = None
+    for relationship in re.findall(r"<Relationship\b[^>]*/?>", rels_xml):
+        rel = re.search(r'\bId="([^"]+)"', relationship)
+        href = re.search(r'\bTarget="([^"]+)"', relationship)
+        if rel is not None and href is not None and rel.group(1) == rid:
+            target = href.group(1)
+            break
+    if target is None or not target.replace("\\", "/").endswith(
+        "pivotCache/pivotCacheDefinition1.xml"
+    ):
+        raise ValueError("Client report is incomplete.")
+    return cache_id.group(1), rid, target
+
+
+def _pivot_table_cache_id(table_xml: str) -> str:
+    match = re.search(r"<pivotTableDefinition\b[^>]*cacheId=\"(\d+)\"", table_xml)
+    if match is None:
+        match = re.search(r'cacheId="(\d+)"', table_xml)
+    if match is None:
+        raise ValueError("Client report is incomplete.")
+    return match.group(1)
+
+
+def assert_published_facts_mashup(body: bytes) -> str:
+    """Return DataMashup Section1.m. Raises if the native package is missing."""
+    with ZipFile(io.BytesIO(body), "r") as archive:
+        names = set(archive.namelist())
+        if DATAMASHUP_PART not in names:
+            raise ValueError("Client report is incomplete.")
+        if "xl/connections.xml" not in names:
+            raise ValueError("Client report is incomplete.")
+        connections = archive.read("xl/connections.xml").decode("utf-8")
+        if "Query - PublishedFacts" not in connections:
+            raise ValueError("Client report is incomplete.")
+        try:
+            section = extract_published_facts_section_m(archive.read(DATAMASHUP_PART))
+        except ValueError as exc:
+            raise ValueError("Client report is incomplete.") from exc
+    if "shared PublishedFacts" not in section and "PublishedFacts =" not in section:
+        raise ValueError("Client report is incomplete.")
+    return section
+
+
+def mashup_is_renewal_enabled(section_m: str) -> bool:
+    return "/auth/refresh" in section_m and "publications/history/facts.csv" in section_m
+
+
+def assert_renewal_enabled_mashup(body: bytes) -> None:
+    """Require the Excel-authored /auth/refresh PublishedFacts formula."""
+    section = assert_published_facts_mashup(body)
+    if not mashup_is_renewal_enabled(section):
+        raise ValueError("Client report is incomplete.")
 
 
 def assert_native_pivot_package(body: bytes) -> None:
-    """Raise ValueError if the nine native PivotTables / slicers are missing."""
+    """Raise ValueError if the nine native PivotTables / slicers are missing.
+
+    Does not require a specific numeric workbook cacheId. Excel Save may remap
+    1 → 0 or 1 → 12. All nine PivotTables must share the one workbook cache
+    whose relationship still targets pivotCacheDefinition1.xml.
+    """
     with ZipFile(io.BytesIO(body), "r") as archive:
         names = set(archive.namelist())
         if PIVOT_CACHE_PART not in names or PIVOT_RECORDS_PART not in names:
             raise ValueError("Client report is incomplete.")
         workbook_xml = archive.read("xl/workbook.xml").decode("utf-8")
         rels_xml = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8")
+        cache_id, _rid, _target = shared_pivot_cache_binding(workbook_xml, rels_xml)
         bindings = bindings_from_workbook(workbook_xml, rels_xml)
         if len(bindings) != 9:
             raise ValueError("Client report is incomplete.")
+        seen_names: set[str] = set()
         for binding in bindings:
             if binding.pivot_part not in names or binding.slicer_part not in names:
                 raise ValueError("Client report is incomplete.")
             table = archive.read(binding.pivot_part).decode("utf-8")
             if f'name="{binding.pivot_name}"' not in table:
                 raise ValueError("Client report is incomplete.")
-            if f'cacheId="{PIVOT_CACHE_ID}"' not in table:
+            if _pivot_table_cache_id(table) != cache_id:
                 raise ValueError("Client report is incomplete.")
-        if "xl/slicerCaches/slicerCache1.xml" not in names:
+            seen_names.add(binding.pivot_name)
+        if seen_names != set(PIVOT_TABLE_NAMES.values()):
             raise ValueError("Client report is incomplete.")
-        if "xl/slicerCaches/slicerCache35.xml" not in names:
-            raise ValueError("Client report is incomplete.")
-        if "<pivotCaches>" not in workbook_xml:
+        slicer_caches = [
+            name for name in names if name.startswith("xl/slicerCaches/") and name.endswith(".xml")
+        ]
+        if len(slicer_caches) != 35:
             raise ValueError("Client report is incomplete.")
         if "x14:slicerCaches" not in workbook_xml:
             raise ValueError("Client report is incomplete.")
+        cache_def = archive.read(PIVOT_CACHE_PART).decode("utf-8")
+        if f'pivotCacheId="{SLICER_PIVOT_CACHE_ID}"' not in cache_def:
+            raise ValueError("Client report is incomplete.")
+    assert_published_facts_mashup(body)

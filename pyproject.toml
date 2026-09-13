@@ -64,9 +64,10 @@ pythonpath = [
     "packages/web",
     "packages/analytics",
 ]
-addopts = "-q"
+addopts = "-q -ra --tb=short"
 markers = [
     "postgres: requires PostgreSQL 16 (set DFIP_TEST_DATABASE_URL)",
+    "ask_live: real Gemini Ask wording call; requires DFIP_ASK_LIVE and DFIP_ASK_API_KEY",
 ]
 
 [tool.ruff]

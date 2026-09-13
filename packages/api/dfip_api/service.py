@@ -8,7 +8,18 @@ from __future__ import annotations
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
+from uuid import UUID
 
+from dfip_core.ingest.progress import (
+    ACTIVE_STAGES,
+    STAGE_CANCELLED,
+    STAGE_FAILED,
+    STAGE_PENDING,
+    STAGE_PROCESSING,
+    STAGE_RECEIVED,
+    STAGE_SUCCEEDED,
+    progress_percent,
+)
 from dfip_core.ingest.store import (
     BatchRecord,
     ProcessingRunRecord,
@@ -24,10 +35,12 @@ from dfip_api.qa_store import QaFindingStore
 from dfip_api.schemas import (
     BatchPage,
     BatchResponse,
+    FACT_TABLE_COLUMNS,
     FactHistoryPage,
     FactHistoryResponse,
     FactPage,
     FactResponse,
+    FactTablePage,
     PaginationMeta,
     ProcessingRunPage,
     ProcessingRunResponse,
@@ -78,7 +91,52 @@ def source_file_to_response(record: SourceFileRecord) -> SourceFileResponse:
     )
 
 
-def batch_to_response(record: BatchRecord) -> BatchResponse:
+def derive_processing_stage(batch: BatchRecord, run: ProcessingRunRecord | None = None) -> str:
+    """Map batch/run records to the worker stage the UI must display.
+
+    Transform marks ``batch.status = processed`` before QA finishes. That
+    durable status is not Ready to Publish while ``progress_stage`` is still
+    an in-flight stage.
+    """
+    persisted = (batch.progress_stage or "").strip() or None
+    if batch.status == "cancelled" or persisted == STAGE_CANCELLED:
+        return STAGE_CANCELLED
+    if batch.status == "failed" or persisted == STAGE_FAILED:
+        return STAGE_FAILED
+    if persisted in ACTIVE_STAGES:
+        return persisted
+    if persisted == STAGE_SUCCEEDED:
+        return STAGE_SUCCEEDED
+    if batch.status == "processed":
+        return STAGE_SUCCEEDED
+    if run is not None:
+        if run.status == "succeeded":
+            return STAGE_SUCCEEDED
+        if run.status == "failed":
+            return STAGE_FAILED
+        if run.status == "cancelled":
+            return STAGE_CANCELLED
+        if run.status == "running":
+            return STAGE_PROCESSING
+        if run.status == "pending":
+            return STAGE_PENDING
+    if persisted:
+        return persisted
+    if batch.status == "received":
+        return STAGE_RECEIVED
+    if batch.status in {"staged", "validated"}:
+        return STAGE_PENDING
+    return batch.status
+
+
+def batch_to_response(record: BatchRecord, run: ProcessingRunRecord | None = None) -> BatchResponse:
+    stage = derive_processing_stage(record, run)
+    current = record.progress_current
+    total = record.progress_total
+    heartbeat = record.progress_at
+    if run is not None and run.progress_at is not None:
+        if heartbeat is None or run.progress_at >= heartbeat:
+            heartbeat = run.progress_at
     return BatchResponse(
         batch_id=record.id,
         source_file_id=record.source_file_id,
@@ -96,10 +154,33 @@ def batch_to_response(record: BatchRecord) -> BatchResponse:
         created_at=record.created_at,
         completed_at=record.completed_at,
         error_summary=record.error_summary,
+        stage=stage,
+        stuck=False,
+        progress_at=heartbeat,
+        started_at=record.created_at,
+        progress_current=current,
+        progress_total=total,
+        progress_message=record.progress_message,
+        progress_percent=progress_percent(stage, current, total),
     )
 
 
-def processing_run_to_response(record: ProcessingRunRecord) -> ProcessingRunResponse:
+def processing_run_to_response(
+    record: ProcessingRunRecord, batch: BatchRecord | None = None
+) -> ProcessingRunResponse:
+    stage = None
+    if batch is not None:
+        stage = derive_processing_stage(batch, record)
+    elif record.status == "succeeded":
+        stage = "succeeded"
+    elif record.status == "failed":
+        stage = "failed"
+    elif record.status == "cancelled":
+        stage = "cancelled"
+    elif record.status == "running":
+        stage = "processing"
+    elif record.status == "pending":
+        stage = "pending"
     return ProcessingRunResponse(
         processing_run_id=record.id,
         batch_id=record.batch_id,
@@ -114,6 +195,8 @@ def processing_run_to_response(record: ProcessingRunRecord) -> ProcessingRunResp
         qa_verdict=record.qa_verdict,
         error_summary=record.error_summary,
         progress_at=record.progress_at,
+        stage=stage,
+        stuck=False,
     )
 
 
@@ -222,6 +305,35 @@ def fact_to_response(record: FactRecord) -> FactResponse:
         label_group_version_id=record.label_group_version_id,
         first_seen_at=record.first_seen_at,
         last_seen_at=record.last_seen_at,
+    )
+
+
+def fact_to_table_row(record: FactRecord) -> list[Any]:
+    return [_json_cell(getattr(record, column)) for column in FACT_TABLE_COLUMNS]
+
+
+def _json_cell(value: Any) -> Any:
+    if value is None or isinstance(value, str | int | bool):
+        return value
+    if isinstance(value, Decimal):
+        return format(value, "f")
+    if isinstance(value, datetime):
+        text = value.isoformat()
+        if text.endswith("+00:00"):
+            return text[:-6] + "Z"
+        return text
+    if isinstance(value, date):
+        return value.isoformat()
+    if isinstance(value, UUID):
+        return str(value)
+    return value
+
+
+def facts_to_table_page(records: list[FactRecord], pagination: PaginationMeta) -> FactTablePage:
+    return FactTablePage(
+        columns=list(FACT_TABLE_COLUMNS),
+        rows=[fact_to_table_row(record) for record in records],
+        pagination=pagination,
     )
 
 

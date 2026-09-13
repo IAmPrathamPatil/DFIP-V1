@@ -1,0 +1,27 @@
+# REPOSITORY-DEFINED: module entrypoint, loopback bind, environment variable names.
+# HOST-DEFINED: User, Group, paths.
+
+[Unit]
+Description=DFIP web origin (SPA)
+Documentation=file:///opt/dfip/current/documentation/V1_DEPLOYMENT.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=dfip
+Group=dfip
+WorkingDirectory=/opt/dfip/current
+EnvironmentFile=/etc/dfip/dfip.env
+ExecStart=/opt/dfip/current/.venv/bin/python -m dfip_web
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+KillSignal=SIGTERM
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dfip-web
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target

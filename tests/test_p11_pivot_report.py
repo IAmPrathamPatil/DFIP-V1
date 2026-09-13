@@ -228,6 +228,23 @@ def test_p8_snapshot_rebinds_cache_to_publishedfacts_cells() -> None:
     assert "A1:AS50287" in rebound
     assert "connectionId" not in rebound
     assert rebound.count("</cacheSource>") == 1
+    from dfip_web.pivot_report import bind_pivot_cache_for_refreshable
+
+    growing = bind_pivot_cache_for_refreshable(live)
+    assert 'name="ExternalData_1"' in growing
+    assert "worksheetSource ref=" not in growing
+    assert "A1:AS1048576" not in growing
+    assert 'refreshOnLoad="0"' in growing
+    assert 'recordCount="0"' in growing
+    from dfip_web.pivot_report import bind_refreshable_query_defined_name
+
+    named = bind_refreshable_query_defined_name(
+        '<definedNames><definedName name="ExternalData_1" localSheetId="0">'
+        "PublishedFacts!$A$1</definedName></definedNames>",
+        29129,
+    )
+    assert "PublishedFacts!$A$1:$AS$29130" in named
+    assert "PublishedFacts!$A$1</definedName>" not in named
 
 
 def test_p10_reconstruction_still_matches_client_kpis() -> None:
@@ -395,7 +412,10 @@ def test_snapshot_page_fields_use_first_seen_item_indexes() -> None:
         cache = archive.read(PIVOT_CACHE_PART).decode("utf-8")
     assert f'item="{groups.index(AMC_GROUP)}"' in amc
     assert f'item="{groups.index(D2C_GROUP)}"' in d2c
-    assert 'item="0"' in service
+    assert f'fld="{cache_field_index("Filter Logic 1")}"' in service
+    assert f'fld="{cache_field_index("Filter Logic 1")}" item="' not in service
+    assert "Service | FMS" in service
+    assert "LMS | Campaigns" in service
     assert AMC_GROUP in cache
     assert D2C_GROUP in cache
     assert apply_page_filter_defaults_xml(body, []) == body

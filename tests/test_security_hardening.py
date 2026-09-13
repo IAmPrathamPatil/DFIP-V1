@@ -28,11 +28,11 @@ from test_p5_api import (
     AUTH,
     CLIENT_ID,
     DEV_TOKEN,
-    JWT_SECRET,
     _encode_jwt,
     _ts,
     inspector_settings,
     make_settings,
+    production_settings,
     seed_stores,
 )
 from test_p7_publication import _publish
@@ -218,12 +218,7 @@ def test_scoped_dev_token_publish_and_excel_path_stay_on_bound_client() -> None:
 
 def test_production_disables_openapi_surface() -> None:
     app = create_app(
-        settings=make_settings(
-            dfip_env="production",
-            dfip_auth_mode="jwt",
-            dfip_auth_secret=JWT_SECRET,
-            database_url=PLACEHOLDER_DSN,
-        ),
+        settings=production_settings(),
         ingest_store=InMemoryIngestStore(),
         fact_store=InMemoryFactStore(),
     )

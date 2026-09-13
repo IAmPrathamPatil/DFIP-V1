@@ -19,9 +19,15 @@ from datetime import UTC, date, datetime
 from dfip_config.catalog import CatalogStore
 
 from dfip_core.ingest.ports import IngestStore
+from dfip_core.ingest.progress import (
+    STAGE_PROCESSING,
+    ProcessingCancelled,
+    ProgressCallback,
+    emit_progress,
+)
 from dfip_core.ingest.store import ProcessingRunRecord, StagedRowRecord
 from dfip_core.transform import derive
-from dfip_core.transform.cost import calculate_total_cost
+from dfip_core.transform.cost import calculate_total_cost, persistable_rate_card_rule_id
 from dfip_core.transform.extract import RowValidationError, extract_source_fields
 from dfip_core.transform.fact import FactKey, FactRecord
 from dfip_core.transform.labels import (
@@ -34,11 +40,11 @@ from dfip_core.transform.ports import FactStore
 
 ENGINE_VERSION = "0.4.0"
 
-# One COMMIT per chunk, not per fact. 500 rows keeps the transaction bounded
-# (about 101 commits for a 50,286-row August batch) while collapsing the
-# remote round-trip that previously ran at ~1 fact/sec with one transaction
-# per grain.
-FACT_PERSIST_CHUNK_SIZE = 500
+# One COMMIT per chunk, not per fact. COPY removes the 65535-parameter cap, so
+# 5000 rows is one persist transaction (~100 commits for a 500,000-row batch)
+# while still emitting real processing progress.
+FACT_PERSIST_CHUNK_SIZE = 5000
+STAGED_TRANSFORM_PAGE_SIZE = 5000
 
 
 @dataclass(frozen=True)
@@ -175,7 +181,7 @@ def transform_row(
         filter_logic_1_group=group,
         label_match_status=campaign.match_status,
         template_match_status=template.match_status,
-        rate_card_rule_id=cost.rule_id,
+        rate_card_rule_id=persistable_rate_card_rule_id(client_id, cost.rule_id),
         processing_run_id=processing_run_id,
         batch_id=batch_id,
         campaign_label_version_id=bundle.campaign_label_version_id,
@@ -209,6 +215,15 @@ def transform_rows(
         )
 
 
+def _iter_staged(ingest_store: IngestStore, batch_id: str) -> Iterator[StagedRowRecord]:
+    """Prefer larger keyset pages when the store supports them."""
+    iterator = ingest_store.iter_staged_for_batch
+    try:
+        return iterator(batch_id, page_size=STAGED_TRANSFORM_PAGE_SIZE)
+    except TypeError:
+        return iterator(batch_id)
+
+
 def run_transformation(
     ingest_store: IngestStore,
     fact_store: FactStore,
@@ -219,6 +234,7 @@ def run_transformation(
     catalog: CatalogStore | None = None,
     persist_rejections: bool = True,
     persist_chunk_size: int = FACT_PERSIST_CHUNK_SIZE,
+    on_progress: ProgressCallback | None = None,
 ) -> TransformResult:
     """Transform a staged batch into the explicitly selected processing_run."""
     batch = ingest_store.get_batch(batch_id)
@@ -228,18 +244,20 @@ def run_transformation(
     if run is None:
         raise ValueError(f"unknown processing_run {processing_run_id}")
     if run.batch_id != batch_id:
-        raise ValueError(
-            f"processing_run {processing_run_id} does not belong to batch {batch_id}"
-        )
+        raise ValueError(f"processing_run {processing_run_id} does not belong to batch {batch_id}")
 
     chunk_size = persist_chunk_size if persist_chunk_size > 0 else FACT_PERSIST_CHUNK_SIZE
     run.status = "running"
     run.finished_at = None
+    run.progress_at = datetime.now(tz=UTC)
     ingest_store.save_processing_run(run)
     binder = ConfigBinder(catalog=catalog, client_id=batch.client_id, processing_run=run)
     result = TransformResult(processing_run=run)
     seen: set[FactKey] = set()
     pending: list[FactRecord] = []
+    total = batch.row_count_staged if batch.row_count_staged else None
+    seen_rows = 0
+    emit_progress(on_progress, STAGE_PROCESSING, 0, total, "Transforming campaign/day facts...")
 
     def flush_pending() -> None:
         if not pending:
@@ -255,17 +273,24 @@ def run_transformation(
             result.transformed += 1
         pending.clear()
         run.progress_at = datetime.now(tz=UTC)
-        ingest_store.save_processing_run(run)
+        emit_progress(
+            on_progress,
+            STAGE_PROCESSING,
+            seen_rows,
+            total,
+            "Transforming campaign/day facts...",
+        )
 
     try:
         for outcome in transform_rows(
-            ingest_store.iter_staged_for_batch(batch_id),
+            _iter_staged(ingest_store, batch_id),
             binder,
             client_id=batch.client_id,
             batch_id=batch_id,
             processing_run_id=run.id,
             now=now,
         ):
+            seen_rows += 1
             if outcome.rejection is not None:
                 _record_rejection(
                     ingest_store,
@@ -299,6 +324,13 @@ def run_transformation(
                 flush_pending()
 
         flush_pending()
+        emit_progress(
+            on_progress,
+            STAGE_PROCESSING,
+            seen_rows,
+            total if total is not None else seen_rows,
+            "Transforming campaign/day facts...",
+        )
         result.version_labels = _version_labels(binder)
         run.finished_at = datetime.now(tz=UTC)
         run.status = "succeeded" if result.transformed > 0 or result.rejected == 0 else "failed"
@@ -308,6 +340,8 @@ def run_transformation(
             batch.status = "processed"
             ingest_store.save_batch(batch)
         return result
+    except ProcessingCancelled:
+        raise
     except Exception as exc:
         run.status = "failed"
         run.finished_at = datetime.now(tz=UTC)

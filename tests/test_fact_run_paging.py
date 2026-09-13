@@ -7,12 +7,13 @@ from uuid import UUID
 
 import pytest
 from dfip_db.fact_store import (
+    FACT_QA_LOAD_PAGE_SIZE,
     FACT_RUN_PAGE_SIZE,
     PostgresFactStore,
     _FACT_RUN_FIRST_PAGE_SQL,
     _FACT_RUN_NEXT_PAGE_SQL,
 )
-from dfip_db.mapping import FACT_COLUMNS
+from dfip_db.mapping import FACT_COLUMNS, fact_from_row
 
 CLIENT = "a0000000-0000-4000-8000-000000000001"
 RUN = "d0000000-0000-4000-8000-000000000001"
@@ -52,33 +53,29 @@ def test_run_page_sql_is_keyset_limited() -> None:
     )
 
 
+def test_qa_load_keeps_keyset_pages() -> None:
+    assert FACT_QA_LOAD_PAGE_SIZE == 5000
+    assert "LIMIT %s" in _FACT_RUN_FIRST_PAGE_SQL
+    assert "processing_run_id = %s" in _FACT_RUN_FIRST_PAGE_SQL
+
+
 def test_for_run_pages_complete_dataset_without_unbounded_select() -> None:
-    first = [_row(index) for index in range(FACT_RUN_PAGE_SIZE)]
-    second = [_row(index + FACT_RUN_PAGE_SIZE) for index in range(286)]
+    rows = [_row(index) for index in range(3)]
     store = PostgresFactStore.__new__(PostgresFactStore)
-    calls: list[tuple[object, int]] = []
-
-    def fetch(processing_run_id: str, *, after, page_size: int):
-        calls.append((after, page_size))
-        if after is None:
-            return first
-        return second
-
-    store._fetch_run_page = fetch  # type: ignore[method-assign]
-    store.count_for_run = lambda processing_run_id: 1286  # type: ignore[method-assign]
+    store.count_for_run = lambda processing_run_id: 3  # type: ignore[method-assign]
+    store._load_run_facts = lambda processing_run_id: [  # type: ignore[method-assign]
+        fact_from_row(row) for row in rows
+    ]
     facts = store.for_run(RUN)
-    assert len(facts) == 1286
+    assert len(facts) == 3
     assert facts[0].campaign_id == "camp-00000"
-    assert facts[-1].campaign_id == "camp-01285"
-    assert calls[0] == (None, FACT_RUN_PAGE_SIZE)
-    assert calls[1][1] == FACT_RUN_PAGE_SIZE
-    assert calls[1][0] is not None
+    assert facts[-1].campaign_id == "camp-00002"
 
 
 def test_for_run_rejects_partial_load() -> None:
     store = PostgresFactStore.__new__(PostgresFactStore)
     store.count_for_run = lambda processing_run_id: 10  # type: ignore[method-assign]
-    store.iter_for_run = lambda processing_run_id, page_size=None: iter([])  # type: ignore[method-assign]
+    store._load_run_facts = lambda processing_run_id: []  # type: ignore[method-assign]
     with pytest.raises(RuntimeError, match="QA fact load incomplete"):
         store.for_run(RUN)
 

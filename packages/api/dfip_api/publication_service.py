@@ -9,11 +9,16 @@ from dfip_core.ingest.ports import IngestStore
 from dfip_core.transform.fact import FactRecord
 from dfip_core.transform.ports import FactStore
 from dfip_web.client_report_download import (
-    CLIENT_REPORT_DOWNLOAD_NAME,
+    ARTIFACT_REFRESHABLE,
+    ARTIFACT_STATIC,
+    CLIENT_REPORT_MACRO_MEDIA_TYPE,
+    CLIENT_REPORT_MEDIA_TYPE,
+    client_report_download_filename,
     render_client_report_xlsx,
 )
 
 from dfip_api.auth import Principal
+from dfip_api.client_directory import ClientDirectory
 from dfip_api.errors import (
     INTERNAL_ERROR,
     ApiError,
@@ -21,7 +26,9 @@ from dfip_api.errors import (
     NotFoundError,
     ValidationFailed,
 )
-from dfip_api.ports import PublicationStore
+from dfip_api.lifecycle import require_company_active
+from dfip_api.membership import requires_client_selection
+from dfip_api.publication_progress import PublicationProgressRegistry
 from dfip_api.publication_store import (
     ALLOWED_FACT_SCOPES,
     FACT_SCOPE_PROCESSING_RUN,
@@ -33,13 +40,16 @@ from dfip_api.published_download import (
     CSV_MEDIA_TYPE,
     XLSX_MEDIA_TYPE,
     published_download_filename,
+    render_history_facts_csv,
     render_published_csv,
     render_published_xlsx,
 )
 from dfip_api.roles import can_publish
 from dfip_api.schemas import (
+    HISTORY_FACTS_MAX_PAGE_LIMIT,
     FactPage,
     FactResponse,
+    FactTablePage,
     PaginationMeta,
     PublicationCurrentPointer,
     PublicationCurrentResponse,
@@ -47,10 +57,17 @@ from dfip_api.schemas import (
     PublicationResponse,
     PublicationStateResponse,
 )
-from dfip_api.service import fact_to_response
+from dfip_api.service import fact_to_response, facts_to_table_page
 
 SUCCEEDED_RUN_STATUS = "succeeded"
 SNAPSHOT_READ_PAGE = 1000
+NO_PUBLICATION_WORKBOOK_MESSAGE = (
+    "Cannot generate Company Workbook: this company has no current published report."
+)
+ROW_CAP_WORKBOOK_MESSAGE = (
+    "Cannot generate Company Workbook: the published slice is larger than the "
+    "supported workbook download limit."
+)
 
 
 def publication_to_response(record: PublicationRecord) -> PublicationResponse:
@@ -93,10 +110,16 @@ class PublicationService:
         ingest_store: IngestStore,
         fact_store: FactStore,
         publication_store: PublicationStore,
+        client_directory: ClientDirectory | None = None,
     ) -> None:
         self._ingest = ingest_store
         self._facts = fact_store
         self._publications = publication_store
+        self._clients = client_directory
+        self._progress = PublicationProgressRegistry()
+
+    def has_in_flight_publish(self, client_id: str) -> bool:
+        return self._progress.has_running_for_client(client_id)
 
     def create(
         self,
@@ -112,6 +135,7 @@ class PublicationService:
         if not can_publish(principal.role):
             raise AuthorizationError("Not authorized to create publications.")
         scoped = _enforce_client_scope(principal, client_id)
+        require_company_active(self._clients, scoped)
         if fact_scope not in ALLOWED_FACT_SCOPES:
             raise ValidationFailed("fact_scope must be processing_run or client_current.")
         if period_start is not None and period_end is not None and period_start > period_end:
@@ -119,6 +143,11 @@ class PublicationService:
         run = self._ingest.get_processing_run(processing_run_id)
         if run is None:
             raise NotFoundError("Processing run not found.")
+        batch = self._ingest.get_batch(run.batch_id)
+        if batch is None:
+            raise NotFoundError("Processing run not found.")
+        if batch.client_id != scoped:
+            raise ValidationFailed("Processing run does not belong to this client.")
         if run.status != SUCCEEDED_RUN_STATUS:
             raise ValidationFailed("Processing run must have status succeeded.")
         if run.qa_verdict is None:
@@ -129,29 +158,84 @@ class PublicationService:
             raise ValidationFailed("Processing run QA verdict is fail.")
         if run.qa_verdict not in PUBLISHABLE_QA_VERDICTS:
             raise ValidationFailed("Processing run QA verdict does not allow publication.")
-        batch = self._ingest.get_batch(run.batch_id)
-        if batch is None:
-            raise NotFoundError("Processing run not found.")
-        if batch.client_id != scoped:
-            raise ValidationFailed("Processing run does not belong to this client.")
-        snapshot_facts = self._load_candidate_facts(
-            client_id=scoped,
-            processing_run_id=processing_run_id,
-            period_start=period_start,
-            period_end=period_end,
-            fact_scope=fact_scope,
-        )
-        publication, pointer = self._publications.create(
-            client_id=scoped,
-            processing_run_id=processing_run_id,
-            period_start=period_start,
-            period_end=period_end,
-            published_by=principal.subject,
-            notes=notes,
-            fact_scope=fact_scope,
-            snapshot_facts=snapshot_facts,
-        )
-        return state_to_response(publication, pointer)
+        self._progress.start(client_id=scoped, processing_run_id=processing_run_id)
+        self._progress.set(processing_run_id, "preparing")
+        copy_live = bool(getattr(self._publications, "supports_live_fact_copy", False))
+        snapshot_facts = None
+        total = None
+        try:
+            self._progress.set(processing_run_id, "validating")
+            if copy_live:
+                _page, total = self._facts.list_published_slice(
+                    client_id=scoped,
+                    processing_run_id=processing_run_id,
+                    period_start=period_start,
+                    period_end=period_end,
+                    fact_scope=fact_scope,
+                    limit=1,
+                    offset=0,
+                    working_set=True,
+                )
+            else:
+                snapshot_facts = self._load_candidate_facts(
+                    client_id=scoped,
+                    processing_run_id=processing_run_id,
+                    period_start=period_start,
+                    period_end=period_end,
+                    fact_scope=fact_scope,
+                )
+                total = len(snapshot_facts)
+            self._progress.set(
+                processing_run_id,
+                "validating",
+                total_count=total,
+                current_count=total,
+            )
+            self._progress.set(processing_run_id, "creating", total_count=total)
+
+            def on_progress(stage: str, message: str) -> None:
+                self._progress.set(
+                    processing_run_id,
+                    stage,
+                    message=message,
+                    total_count=total,
+                )
+
+            publication, pointer = self._publications.create(
+                client_id=scoped,
+                processing_run_id=processing_run_id,
+                period_start=period_start,
+                period_end=period_end,
+                published_by=principal.subject,
+                notes=notes,
+                fact_scope=fact_scope,
+                snapshot_facts=snapshot_facts,
+                on_progress=on_progress,
+            )
+            self._progress.succeed(processing_run_id, publication.id)
+            return state_to_response(publication, pointer)
+        except Exception:
+            self._progress.fail(processing_run_id, "Publication failed.")
+            raise
+
+    def progress_for(
+        self,
+        *,
+        principal: Principal,
+        processing_run_id: str,
+        requested_client_id: str | None,
+    ):
+        item = self._progress.get(processing_run_id)
+        if item is None:
+            raise NotFoundError("Publication progress not found.")
+        scoped = _resolve_client_id(principal, requested_client_id)
+        if scoped is None:
+            _enforce_client_scope(principal, item.client_id)
+        elif scoped != item.client_id:
+            raise NotFoundError("Publication progress not found.")
+        else:
+            _enforce_client_scope(principal, item.client_id)
+        return item
 
     def get_current(
         self,
@@ -207,6 +291,7 @@ class PublicationService:
                 items=[],
                 pagination=PaginationMeta(limit=limit, offset=offset, total=0),
             )
+        require_company_active(self._clients, client_id)
         publication, pointer = self._publications.get_current(client_id)
         if publication is None or pointer is None:
             return FactPage(
@@ -217,6 +302,64 @@ class PublicationService:
         return FactPage(
             items=[fact_to_response(item) for item in records],
             pagination=PaginationMeta(limit=limit, offset=offset, total=total),
+        )
+
+    def list_published_history_facts(
+        self,
+        *,
+        principal: Principal,
+        requested_client_id: str | None,
+        limit: int,
+        offset: int,
+        layout: str = "objects",
+    ) -> FactPage | FactTablePage:
+        """Paginated union of complete published snapshots for one tenant.
+
+        Newest publication wins per campaign/variation/day grain, matching
+        existing republish pointer semantics. Unpublished working-set facts
+        are not included. JWT client_id scopes the result. layout=table is
+        the compact Excel Refresh All encoding; objects remains the default
+        JSON list contract.
+        """
+        client_id = _resolve_client_id(principal, requested_client_id)
+        pagination = PaginationMeta(limit=limit, offset=offset, total=0)
+        empty_objects = FactPage(items=[], pagination=pagination)
+        if client_id is None:
+            if layout == "table":
+                return facts_to_table_page([], pagination)
+            return empty_objects
+        require_company_active(self._clients, client_id)
+        records, total = self._publications.list_published_history(
+            client_id,
+            limit=limit,
+            offset=offset,
+        )
+        pagination = PaginationMeta(limit=limit, offset=offset, total=total)
+        if layout == "table":
+            return facts_to_table_page(records, pagination)
+        return FactPage(
+            items=[fact_to_response(item) for item in records],
+            pagination=pagination,
+        )
+
+    def download_published_history_csv(
+        self,
+        *,
+        principal: Principal,
+        requested_client_id: str | None,
+    ) -> bytes:
+        """Cumulative newest-wins history as CSV. Same tenant rules as history/facts.
+
+        Does not change JSON history/facts. Cap matches HISTORY_FACTS_MAX_PAGE_LIMIT
+        so Excel Refresh All can load current tenants in one file.
+        """
+        client_id = _resolve_client_id(principal, requested_client_id)
+        if client_id is None:
+            return render_history_facts_csv([])
+        require_company_active(self._clients, client_id)
+        return self._publications.copy_published_history_csv(
+            client_id,
+            max_rows=HISTORY_FACTS_MAX_PAGE_LIMIT,
         )
 
     def list_publication_facts(
@@ -254,6 +397,7 @@ class PublicationService:
         client_id = _resolve_client_id(principal, requested_client_id)
         if client_id is None:
             raise ValidationFailed("client_id is required.")
+        require_company_active(self._clients, client_id)
         publication, pointer = self._publications.get_current(client_id)
         filename = published_download_filename(
             client_id,
@@ -279,39 +423,57 @@ class PublicationService:
         publication_id: str | None,
         requested_client_id: str | None,
         max_rows: int,
-        page_size: int = 1000,
+        page_size: int = 5000,
+        artifact: str = ARTIFACT_STATIC,
+        api_base_url: str | None = None,
+        refresh_bearer_token: str | None = None,
     ) -> tuple[bytes, str, str]:
         """Return the nine-sheet Client_Report for current or one publication.
 
         Read-only. Uses the same tenant and snapshot rules as published facts.
-        Does not process, publish, or move publication_current.
+        Does not process, publish, or move publication_current. Current
+        download without a publication returns an explicit error rather than
+        an empty workbook. Refreshable artifacts stamp the current snapshot;
+        Refresh All pages cumulative published history for the company.
         """
+        if artifact == ARTIFACT_REFRESHABLE and publication_id is not None:
+            raise ValidationFailed("Refreshable workbooks follow publication_current only.")
         if publication_id is None:
             client_id = _resolve_client_id(principal, requested_client_id)
             if client_id is None:
                 raise ValidationFailed("client_id is required.")
+            require_company_active(self._clients, client_id)
             publication, pointer = self._publications.get_current(client_id)
             if publication is None or pointer is None:
-                items: list[FactResponse] = []
-                published_at = None
-            else:
-                items = self._load_published_items(
-                    publication=publication,
-                    max_rows=max_rows,
-                    page_size=page_size,
-                )
-                published_at = publication.published_at
+                raise NotFoundError(NO_PUBLICATION_WORKBOOK_MESSAGE)
         else:
             publication = self._scoped_publication(principal, publication_id, requested_client_id)
+            client_id = publication.client_id
+        try:
             items = self._load_published_items(
                 publication=publication,
                 max_rows=max_rows,
                 page_size=page_size,
             )
-            published_at = publication.published_at
+        except ValidationFailed as exc:
+            if "exceeds the download row limit" in str(exc):
+                raise ValidationFailed(ROW_CAP_WORKBOOK_MESSAGE) from None
+            raise
+        published_at = publication.published_at
+        code, name = self._company_identity(client_id)
         payloads = [item.model_dump() for item in items]
         try:
-            body = render_client_report_xlsx(payloads, published_at=published_at)
+            body = render_client_report_xlsx(
+                payloads,
+                published_at=published_at,
+                client_id=client_id,
+                client_code=code,
+                client_name=name,
+                publication_id=publication.id,
+                artifact=artifact,
+                api_base_url=api_base_url,
+                refresh_bearer_token=refresh_bearer_token,
+            )
         except ApiError:
             raise
         except Exception:
@@ -320,7 +482,24 @@ class PublicationService:
                 INTERNAL_ERROR,
                 "Client report could not be generated.",
             ) from None
-        return body, CLIENT_REPORT_DOWNLOAD_NAME, XLSX_MEDIA_TYPE
+        filename = client_report_download_filename(
+            code,
+            published_at,
+            artifact=artifact,
+            publication_id=publication_id,
+        )
+        media_type = (
+            CLIENT_REPORT_MACRO_MEDIA_TYPE
+            if artifact == ARTIFACT_REFRESHABLE
+            else CLIENT_REPORT_MEDIA_TYPE
+        )
+        return body, filename, media_type
+
+    def _company_identity(self, client_id: str) -> tuple[str, str]:
+        record = self._clients.get(client_id) if self._clients is not None else None
+        if record is None:
+            return client_id, client_id
+        return record.code, record.name
 
     def _load_published_items(
         self,
@@ -424,6 +603,8 @@ def _published_slice_args(publication: PublicationRecord) -> dict[str, object]:
 
 
 def _enforce_client_scope(principal: Principal, client_id: str) -> str:
+    if requires_client_selection(principal):
+        raise AuthorizationError("Not authorized to access this client.")
     if principal.client_id and principal.client_id != client_id:
         raise AuthorizationError("Not authorized to access this client.")
     if (
@@ -439,8 +620,11 @@ def inspector_filter_client_ids(principal: Principal) -> tuple[str, ...] | None:
     """Allowed clients for inspector reads. None means no membership filter.
 
     JWT or bound development ``client_id`` is a hard bound. Empty tuple is
-    fail-closed (no rows).
+    fail-closed (no rows). A multi-membership inspector JWT without a bound
+    client must select a company first.
     """
+    if requires_client_selection(principal):
+        return ()
     if principal.client_id:
         if (
             principal.membership_client_ids is not None
@@ -466,6 +650,8 @@ def _resolve_client_id(principal: Principal, requested_client_id: str | None) ->
     ``DATABASE_URL``) may pass ``client_id`` explicitly. That combination is
     refused when a database is configured.
     """
+    if requires_client_selection(principal):
+        raise AuthorizationError("Not authorized to access this client.")
     if principal.client_id:
         if requested_client_id and requested_client_id != principal.client_id:
             raise AuthorizationError("Not authorized to access this client.")

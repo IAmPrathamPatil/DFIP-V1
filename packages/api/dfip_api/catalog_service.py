@@ -32,7 +32,9 @@ from dfip_core.transform.labels import DEFAULT_LABEL_GROUP_VERSION
 from openpyxl import Workbook
 
 from dfip_api.auth import Principal
+from dfip_api.client_directory import ClientDirectory
 from dfip_api.errors import AuthorizationError, NotFoundError, PayloadTooLarge, ValidationFailed
+from dfip_api.lifecycle import require_company_active
 from dfip_api.publication_service import _resolve_client_id
 from dfip_api.roles import can_inspect
 from dfip_api.schemas import (
@@ -59,9 +61,15 @@ LABEL_DOWNLOAD_HEADERS = ("Group Name", "Filter Logic 1")
 
 
 class CatalogService:
-    def __init__(self, store: CatalogStore, settings: Settings) -> None:
+    def __init__(
+        self,
+        store: CatalogStore,
+        settings: Settings,
+        client_directory: ClientDirectory | None = None,
+    ) -> None:
         self._store = store
         self._settings = settings
+        self._clients = client_directory
 
     @property
     def store(self) -> CatalogStore:
@@ -93,6 +101,7 @@ class CatalogService:
         requested_client_id: str | None,
     ) -> CatalogImportResponse:
         client_id = self._client(principal, requested_client_id)
+        require_company_active(self._clients, client_id)
         safe_name = _safe_workbook_name(filename)
         _assert_xlsx_payload(payload)
         try:
@@ -165,6 +174,7 @@ class CatalogService:
         requested_client_id: str | None,
     ) -> CatalogVersionResponse:
         client_id = self._client(principal, requested_client_id)
+        require_company_active(self._clients, client_id)
         record = self._store.get_for_client(client_id, version_id)
         if record is None or record.kind != kind:
             raise NotFoundError("Resource not found.")
@@ -183,6 +193,7 @@ class CatalogService:
         requested_client_id: str | None,
     ) -> CatalogVersionResponse:
         client_id = self._client(principal, requested_client_id)
+        require_company_active(self._clients, client_id)
         record = self._store.get_for_client(client_id, version_id)
         if record is None or record.kind != kind:
             raise NotFoundError("Resource not found.")

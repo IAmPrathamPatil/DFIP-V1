@@ -41,6 +41,11 @@ def _query(params: dict[str, Any] | None) -> dict[str, str]:
     for key, value in params.items():
         if value is None:
             continue
+        if isinstance(value, (list, tuple)):
+            encoded[key] = [
+                item.isoformat() if isinstance(item, date) else str(item) for item in value
+            ]
+            continue
         if isinstance(value, date):
             encoded[key] = value.isoformat()
         else:
@@ -94,8 +99,67 @@ class DfipApiClient:
     def get_current_publication(self, **params: Any) -> dict[str, Any]:
         return self._request("GET", f"{self.prefix}/publications/current", params=params)
 
+    def get_overview_kpis(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/overview", params=params)
+
+    def get_overview_trends(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/trends", params=params)
+
+    def get_overview_drilldown(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/drilldown", params=params)
+
+    def get_overview_explorer(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/explorer", params=params)
+
+    def get_overview_insights(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/insights", params=params)
+
+    def get_overview_anomalies(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/anomalies", params=params)
+
+    def post_overview_ask(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"{self.prefix}/analytics/ask", json_body=payload)
+
+    def list_saved_analyses(self) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/saved")
+
+    def create_saved_analysis(self, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request("POST", f"{self.prefix}/analytics/saved", json_body=payload)
+
+    def get_saved_analysis(self, analysis_id: str) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/analytics/saved/{analysis_id}")
+
+    def update_saved_analysis(self, analysis_id: str, payload: dict[str, Any]) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"{self.prefix}/analytics/saved/{analysis_id}",
+            json_body=payload,
+        )
+
+    def delete_saved_analysis(self, analysis_id: str) -> dict[str, Any]:
+        return self._request("DELETE", f"{self.prefix}/analytics/saved/{analysis_id}")
+
+    def download_overview_export(self, **params: Any) -> bytes:
+        headers: dict[str, str] = {"Accept": "text/csv"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            response = self._client.get(
+                f"{self.prefix}/analytics/export.csv",
+                params=_query(params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            raise ApiClientError(0, NETWORK_FAILURE, "Network failure contacting the API.") from exc
+        if response.status_code >= 400:
+            _parse_response(response)
+        return response.content
+
     def list_published_facts(self, **params: Any) -> dict[str, Any]:
         return self._request("GET", f"{self.prefix}/publications/current/facts", params=params)
+
+    def list_published_history_facts(self, **params: Any) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/publications/history/facts", params=params)
 
     def list_publication_facts(self, publication_id: str, **params: Any) -> dict[str, Any]:
         return self._request(
@@ -317,16 +381,26 @@ class DfipApiClient:
         *,
         publication_id: str | None = None,
         client_id: str | None = None,
+        refreshable: bool = False,
     ) -> bytes:
         headers: dict[str, str] = {"Accept": "*/*"}
         if self.token:
             headers["Authorization"] = f"Bearer {self.token}"
         params = _query({"client_id": client_id} if client_id else {})
-        path = (
-            f"{self.prefix}/publications/{publication_id}/client-report.xlsx"
-            if publication_id
-            else f"{self.prefix}/publications/current/client-report.xlsx"
-        )
+        if refreshable:
+            if publication_id:
+                raise ApiClientError(
+                    422,
+                    "VALIDATION_ERROR",
+                    "Refreshable workbooks follow publication_current only.",
+                )
+            path = f"{self.prefix}/publications/current/refreshable-client-report.xlsx"
+        else:
+            path = (
+                f"{self.prefix}/publications/{publication_id}/client-report.xlsx"
+                if publication_id
+                else f"{self.prefix}/publications/current/client-report.xlsx"
+            )
         try:
             response = self._client.get(path, params=params, headers=headers)
         except httpx.RequestError as exc:
@@ -337,6 +411,27 @@ class DfipApiClient:
 
     def health(self) -> dict[str, Any]:
         return self._request("GET", "/health", auth=False)
+
+    def ready(self) -> dict[str, Any]:
+        headers: dict[str, str] = {"Accept": "application/json"}
+        if not self.token:
+            raise ApiClientError(401, "AUTHENTICATION_FAILED", "Authentication required.")
+        headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            response = self._client.get(f"{self.prefix}/ops/ready", headers=headers)
+        except httpx.RequestError as exc:
+            raise ApiClientError(0, NETWORK_FAILURE, "Network failure contacting the API.") from exc
+        try:
+            payload = response.json()
+        except ValueError:
+            payload = None
+        if (
+            response.status_code in {200, 503}
+            and isinstance(payload, dict)
+            and payload.get("status") in {"ready", "not_ready"}
+        ):
+            return payload
+        return _parse_response(response)
 
     def session(self) -> dict[str, Any]:
         return self._request("GET", f"{self.prefix}/session")
@@ -357,6 +452,23 @@ class DfipApiClient:
             self.token = token
         return payload
 
+    def setup_status(self) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/auth/setup-status", auth=False)
+
+    def setup_publisher(
+        self, username: str, password: str, confirm_password: str
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"{self.prefix}/auth/setup-publisher",
+            json_body={
+                "username": username,
+                "password": password,
+                "confirm_password": confirm_password,
+            },
+            auth=False,
+        )
+
     def logout(self) -> dict[str, Any]:
         return self._request("POST", f"{self.prefix}/auth/logout")
 
@@ -366,6 +478,52 @@ class DfipApiClient:
         if isinstance(token, str) and token:
             self.token = token
         return payload
+
+    def select_client(self, client_id: str) -> dict[str, Any]:
+        payload = self._request(
+            "POST",
+            f"{self.prefix}/auth/select-client",
+            json_body={"client_id": client_id},
+        )
+        token = payload.get("access_token") if isinstance(payload, dict) else None
+        if isinstance(token, str) and token:
+            self.token = token
+        return payload
+
+    def list_clients(self) -> dict[str, Any]:
+        return self._request("GET", f"{self.prefix}/clients")
+
+    def rename_client(self, client_id: str, name: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"{self.prefix}/clients/{client_id}/rename",
+            json_body={"name": name},
+        )
+
+    def create_client(self, name: str) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"{self.prefix}/clients",
+            json_body={"name": name},
+        )
+
+    def create_client_user(
+        self,
+        client_id: str,
+        username: str,
+        password: str,
+        confirm_password: str,
+    ) -> dict[str, Any]:
+        return self._request(
+            "POST",
+            f"{self.prefix}/clients/{client_id}/users",
+            json_body={
+                "username": username,
+                "password": password,
+                "confirm_password": confirm_password,
+                "role": "client",
+            },
+        )
 
     def list_source_files(self, **params: Any) -> dict[str, Any]:
         return self._request("GET", f"{self.prefix}/source-files", params=params)

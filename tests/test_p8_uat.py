@@ -311,9 +311,12 @@ def test_excel_and_power_query_have_no_secrets_or_staging() -> None:
     mashup = mashup_text()
     disk = M_PATH.read_text(encoding="utf-8")
     assert mashup == disk
-    assert PUBLISHED_FACTS_PATH in mashup
+    assert "/api/v1/publications/history/facts.csv" in mashup
+    assert PUBLISHED_FACTS_PATH not in mashup
     assert _omits_working_set_facts_url(mashup)
-    assert WORKING_SET_FACTS_PATH not in mashup.replace(PUBLISHED_FACTS_PATH, "")
+    assert WORKING_SET_FACTS_PATH not in mashup.replace(
+        "/api/v1/publications/history/facts.csv", ""
+    )
     assert "stg_source_row" not in mashup
     raw = XLSX_PATH.read_bytes()
     for token in FORBIDDEN_TEMPLATE_TOKENS:

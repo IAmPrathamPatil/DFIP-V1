@@ -99,3 +99,27 @@ class InMemoryFactStore:
             key=lambda item: (item.day, item.campaign_id, item.variation_id_key, item.client_id)
         )
         return records[offset : offset + limit], len(records)
+
+    def revert_run(self, processing_run_id: str) -> None:
+        """Restore restated grains and drop facts first seen in this run."""
+        latest: dict[FactKey, SupersededFact] = {}
+        remaining: list[SupersededFact] = []
+        for item in self.history:
+            if item.superseded_by_run_id != processing_run_id:
+                remaining.append(item)
+                continue
+            previous = latest.get(item.fact.key)
+            if previous is None or item.superseded_at >= previous.superseded_at:
+                latest[item.fact.key] = item
+        for item in latest.values():
+            self.facts[item.fact.key] = item.fact
+        self.history = remaining
+        self.facts = {
+            key: fact
+            for key, fact in self.facts.items()
+            if fact.processing_run_id != processing_run_id
+        }
+
+    def purge_client(self, client_id: str) -> None:
+        self.facts = {key: fact for key, fact in self.facts.items() if fact.client_id != client_id}
+        self.history = [item for item in self.history if item.fact.client_id != client_id]

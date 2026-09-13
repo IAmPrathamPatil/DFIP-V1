@@ -39,6 +39,7 @@ RUN_A = "d0000000-0000-4000-8000-000000000001"
 
 _TENANT_TABLES = (
     "qa_finding",
+    "publication_history_grain",
     "publication_fact",
     "publication_current",
     "publication",
@@ -50,6 +51,8 @@ _TENANT_TABLES = (
     "batch",
     "source_file",
     "client_membership",
+    "excel_workbook_grant",
+    "analytics_saved_analysis",
     "app_user",
     "audit_log",
 )

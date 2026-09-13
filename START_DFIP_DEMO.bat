@@ -38,22 +38,42 @@ if not exist "%ROOT%\apps\web\static\index.html" (
     echo FAIL: Website static files missing: apps\web\static
     exit /b 1
 )
+if not exist "%ROOT%\scripts\dfip_demo_prepare.py" (
+    echo FAIL: Missing scripts\dfip_demo_prepare.py
+    exit /b 1
+)
 
 REM Match pyproject.toml [tool.pytest.ini_options] pythonpath. Not a secret store.
 set "PYTHONPATH=%ROOT%\packages\core;%ROOT%\packages\db;%ROOT%\packages\shared;%ROOT%\packages\config;%ROOT%\packages\api;%ROOT%\packages\web;%ROOT%\packages\analytics"
 
-echo Checking Python modules (dfip_api, dfip_web)...
-"%PY%" -c "import dfip_api, dfip_web" 2>nul
-if errorlevel 1 (
-    echo FAIL: Cannot import dfip_api / dfip_web.
-    echo From the repository root run: python -m pip install -e ".[dev]"
-    echo PYTHONPATH is also set from pyproject.toml package dirs.
-    exit /b 1
-)
+REM Pin local demo bind/advertise URLs. Do not inherit a stale parent-shell
+REM DFIP_API_BASE_URL such as http://127.0.0.1:8010.
+set "DFIP_API_BASE_URL=http://127.0.0.1:8000"
+set "DFIP_API_PORT=8000"
+set "DFIP_WEB_PORT=3000"
+
+REM Do not "import dfip_api, dfip_web" here. import dfip_web loads
+REM dfip_web.app and constructs the FastAPI app at import time. Entrypoints
+REM were already checked above; runtime validation is python -m dfip_api / dfip_web.
+echo Entrypoints present: packages\api\dfip_api\__main__.py
+echo Entrypoints present: packages\web\dfip_web\__main__.py
 
 echo Checking auth configuration names only (values are never printed)...
-powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_env_presence.ps1" -RepoRoot "%ROOT%"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_env_presence.ps1" -RepoRoot "%ROOT%" -RequireDemoLogin
 if errorlevel 1 exit /b 1
+
+echo Preparing local demo database and identities...
+"%PY%" "%ROOT%\scripts\dfip_demo_prepare.py"
+set "PREPARE_EXIT=%ERRORLEVEL%"
+if not "%PREPARE_EXIT%"=="0" (
+    echo FAIL: Local demo prepare did not succeed.
+    echo Step: scripts\dfip_demo_prepare.py
+    echo Command: python scripts\dfip_demo_prepare.py
+    echo Exit code: %PREPARE_EXIT%
+    echo Next: fix the stderr message above, then run START_DFIP_DEMO.bat again.
+    echo Passwords and secrets are never printed.
+    exit /b 1
+)
 
 echo Checking ports 8000 and 3000...
 powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_port.ps1" -Action start-check -RepoRoot "%ROOT%"
@@ -89,20 +109,41 @@ goto wait_api
 :api_ok
 echo API health: PASS
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri '%WEB_URL%' -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } } catch { }; exit 1"
-if not errorlevel 1 (
-    echo Website already responding; skipping new website window.
-    goto web_ok
+echo Checking website API configuration...
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_port.ps1" -Action web-config-check -RepoRoot "%ROOT%"
+set "WEB_CFG_EXIT=%ERRORLEVEL%"
+if "%WEB_CFG_EXIT%"=="3" (
+    echo Website API configuration is stale/incorrect.
+    echo Stopping stale website process tree on port 3000 only...
+    powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_port.ps1" -Action stop-web -RepoRoot "%ROOT%"
+    if errorlevel 1 (
+        echo FAIL: Could not stop the stale website on port 3000.
+        echo API on port 8000 was not stopped.
+        exit /b 1
+    )
+    goto start_web
 )
+if "%WEB_CFG_EXIT%"=="2" goto start_web
+if not "%WEB_CFG_EXIT%"=="0" (
+    echo FAIL: Website API configuration check failed.
+    exit /b 1
+)
+echo Website already responding with API %API_URL%; skipping new website window.
+goto web_ok
 
+:start_web
 echo Starting website in a new window: python -m dfip_web
+echo DFIP_API_BASE_URL=%DFIP_API_BASE_URL%
 start "DFIP-WEB" /D "%ROOT%" cmd /k ""%PY%" -m dfip_web"
 
 echo Waiting for %WEB_URL% ...
 set /a ELAPSED=0
 :wait_web
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri '%WEB_URL%' -TimeoutSec 2; if ($r.StatusCode -eq 200) { exit 0 } } catch { }; exit 1"
+if errorlevel 1 goto wait_web_retry
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_port.ps1" -Action web-config-check -RepoRoot "%ROOT%"
 if not errorlevel 1 goto web_ok
+:wait_web_retry
 set /a ELAPSED+=2
 if %ELAPSED% GEQ %WAIT_SECONDS% (
     echo.
@@ -110,6 +151,7 @@ if %ELAPSED% GEQ %WAIT_SECONDS% (
     echo Command: python -m dfip_web
     echo Working directory: %ROOT%
     echo Expected URL: %WEB_URL%
+    echo Expected /config.json apiBaseUrl: %DFIP_API_BASE_URL%
     echo See the DFIP-WEB window for the Python traceback.
     exit /b 1
 )
@@ -129,8 +171,15 @@ echo ============================================================
 echo API:      %API_URL%
 echo Health:   %API_HEALTH%
 echo Website:  %WEB_URL%
-echo Login:    use an existing app_user (DEMO USER NOT SEEDED)
+echo SPA API:  %DFIP_API_BASE_URL%
+echo.
+echo SPA login username: demo-publisher
+echo Client portal username: demo-client
+echo Passwords come from DFIP_LOCAL_DEMO_*_PASSWORD in the environment / .env
+echo and are never printed here.
+echo Optional Company 2 is not created by this launcher.
 echo Stop:     double-click STOP_DFIP_DEMO.bat
-echo Secrets:  not printed (loaded from environment / .env by the app)
+echo Secrets:  not printed
 echo ============================================================
 exit /b 0
+pause

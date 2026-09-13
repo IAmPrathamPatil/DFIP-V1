@@ -22,6 +22,7 @@ from dfip_config.catalog import (
     CatalogStore,
     CatalogVersion,
 )
+from dfip_config.catalog_identity import persistable_catalog_version_id
 from dfip_config.rate_cards import RATE_CARD_VERSIONS
 from dfip_config.resolve import (
     CampaignResolution,
@@ -122,6 +123,7 @@ def bind_configuration(
 
     An active uploaded Logic/Labels version for `client_id` replaces the
     packaged JSON axis. Templates and rate cards remain packaged date windows.
+    Packaged version UUIDs are stored only when they belong to `client_id`.
     """
     ids = _packaged_ids()
     campaign_overlay = catalog.active_for(client_id, LOGIC_KIND) if catalog and client_id else None
@@ -129,7 +131,11 @@ def bind_configuration(
 
     if campaign_overlay is not None:
         campaign_label = campaign_overlay.version_label
-        campaign_id = campaign_overlay.id
+        campaign_id = persistable_catalog_version_id(
+            client_id,
+            campaign_overlay.id,
+            owner_client_id=campaign_overlay.client_id,
+        )
         campaign_rows = _overlay_rows(campaign_overlay)
     else:
         campaign_label = _require(
@@ -137,7 +143,7 @@ def bind_configuration(
             "campaign label",
             day,
         )
-        campaign_id = ids.get(campaign_label)
+        campaign_id = persistable_catalog_version_id(client_id, ids.get(campaign_label))
         campaign_rows = None
 
     template_label = _require(
@@ -149,11 +155,15 @@ def bind_configuration(
 
     if label_overlay is not None:
         group_label = label_overlay.version_label
-        group_id = label_overlay.id
+        group_id = persistable_catalog_version_id(
+            client_id,
+            label_overlay.id,
+            owner_client_id=label_overlay.client_id,
+        )
         group_rows = _overlay_rows(label_overlay)
     else:
         group_label = DEFAULT_LABEL_GROUP_VERSION
-        group_id = ids.get(group_label)
+        group_id = persistable_catalog_version_id(client_id, ids.get(group_label))
         group_rows = None
 
     return ConfigBundle(
@@ -162,8 +172,10 @@ def bind_configuration(
         rate_card_version_label=rate_label,
         label_group_version_label=group_label,
         campaign_label_version_id=campaign_id,
-        template_label_version_id=ids.get(template_label),
-        rate_card_version_id=ids.get(rate_label),
+        template_label_version_id=persistable_catalog_version_id(
+            client_id, ids.get(template_label)
+        ),
+        rate_card_version_id=persistable_catalog_version_id(client_id, ids.get(rate_label)),
         label_group_version_id=group_id,
         binding_day=day,
         campaign_rows=campaign_rows,
@@ -190,7 +202,7 @@ def bind_configuration_for_run(
     fallback = bind_configuration(day, catalog=None, client_id=None)
 
     campaign_label = packaged_label_for_id(campaign_label_version_id)
-    campaign_id = campaign_label_version_id or fallback.campaign_label_version_id
+    campaign_id = persistable_catalog_version_id(client_id, campaign_label_version_id)
     campaign_rows = None
     overlay_campaign = (
         catalog.get_for_client(client_id, campaign_label_version_id)
@@ -199,24 +211,35 @@ def bind_configuration_for_run(
     )
     if overlay_campaign is not None and overlay_campaign.kind == LOGIC_KIND:
         campaign_label = overlay_campaign.version_label
-        campaign_id = overlay_campaign.id
+        campaign_id = persistable_catalog_version_id(
+            client_id,
+            overlay_campaign.id,
+            owner_client_id=overlay_campaign.client_id,
+        )
         campaign_rows = _overlay_rows(overlay_campaign)
     elif campaign_label is None:
         campaign_label = fallback.campaign_version_label
-        campaign_id = fallback.campaign_label_version_id
+        if campaign_id is None:
+            campaign_id = persistable_catalog_version_id(
+                client_id, fallback.campaign_label_version_id
+            )
 
     template_label = packaged_label_for_id(template_label_version_id)
     if template_label is None:
         template_label = fallback.template_version_label
-    template_id = template_label_version_id or ids.get(template_label)
+    template_id = persistable_catalog_version_id(client_id, template_label_version_id)
+    if template_id is None:
+        template_id = persistable_catalog_version_id(client_id, ids.get(template_label))
 
     rate_label = packaged_label_for_id(rate_card_version_id)
     if rate_label is None:
         rate_label = fallback.rate_card_version_label
-    rate_id = rate_card_version_id or ids.get(rate_label)
+    rate_id = persistable_catalog_version_id(client_id, rate_card_version_id)
+    if rate_id is None:
+        rate_id = persistable_catalog_version_id(client_id, ids.get(rate_label))
 
     group_label = packaged_label_for_id(label_group_version_id) or DEFAULT_LABEL_GROUP_VERSION
-    group_id = label_group_version_id or ids.get(group_label)
+    group_id = persistable_catalog_version_id(client_id, label_group_version_id)
     group_rows = None
     overlay_group = (
         catalog.get_for_client(client_id, label_group_version_id)
@@ -225,8 +248,14 @@ def bind_configuration_for_run(
     )
     if overlay_group is not None and overlay_group.kind == LABELS_KIND:
         group_label = overlay_group.version_label
-        group_id = overlay_group.id
+        group_id = persistable_catalog_version_id(
+            client_id,
+            overlay_group.id,
+            owner_client_id=overlay_group.client_id,
+        )
         group_rows = _overlay_rows(overlay_group)
+    elif group_id is None:
+        group_id = persistable_catalog_version_id(client_id, ids.get(group_label))
 
     if campaign_label is None:
         raise ConfigurationBindingError(

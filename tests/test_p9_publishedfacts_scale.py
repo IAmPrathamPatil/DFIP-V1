@@ -16,6 +16,7 @@ from dfip_web.daily_report import (
     report_formula,
 )
 from dfip_web.published_facts_pages import (
+    PUBLISHED_FACTS_CSV_RELATIVE_PATH,
     PUBLISHED_FACTS_PAGE_LIMIT,
     PUBLISHED_FACTS_RELATIVE_PATH,
     published_facts_combine,
@@ -39,17 +40,19 @@ from test_p8_client_report import _campaign_ids, _client_report_path, _sheet_nam
 AUGUST_PUBLISHED_FACTS_SCALE = 50_286
 
 
-def test_publishedfacts_m_pages_current_facts_at_200() -> None:
+def test_publishedfacts_m_pages_history_facts_at_200() -> None:
     mashup = mashup_text()
     disk = M_PATH.read_text(encoding="utf-8")
     assert mashup == disk
-    assert "PageLimit = 200" in mashup
-    assert PUBLISHED_FACTS_RELATIVE_PATH in mashup
-    assert PUBLISHED_FACTS_PATH in mashup
+    assert "Csv.Document" in mashup
+    assert "Table.PromoteHeaders" in mashup
+    assert PUBLISHED_FACTS_CSV_RELATIVE_PATH in mashup
+    assert "/api/v1/publications/history/facts.csv" in mashup
+    assert PUBLISHED_FACTS_PATH not in mashup
     assert _omits_working_set_facts_url(mashup)
-    assert "offset" in mashup
-    assert "RoundDown((Total - 1) / PageLimit)" in mashup
-    assert WORKING_SET_FACTS_PATH not in mashup.replace(PUBLISHED_FACTS_PATH, "")
+    assert "PageLimit" not in mashup
+    assert "layout = \"table\"" not in mashup
+    assert WORKING_SET_FACTS_PATH not in mashup.replace(PUBLISHED_FACTS_CSV_RELATIVE_PATH, "")
     assert "/qa-findings" not in mashup
     assert "/source-files" not in mashup
     assert "stg_source_row" not in mashup
@@ -58,16 +61,13 @@ def test_publishedfacts_m_pages_current_facts_at_200() -> None:
 
 
 def test_publishedfacts_page_plan_covers_august_scale_without_gaps_or_dupes() -> None:
-    assert PUBLISHED_FACTS_PAGE_LIMIT == 200
+    assert PUBLISHED_FACTS_PAGE_LIMIT == 250000
     assert published_facts_page_offsets(0) == ()
-    assert published_facts_page_offsets(200) == (0,)
-    assert published_facts_page_offsets(201) == (0, 200)
+    assert published_facts_page_offsets(250000) == (0,)
+    assert published_facts_page_offsets(250001) == (0, 250000)
     offsets = published_facts_page_offsets(AUGUST_PUBLISHED_FACTS_SCALE)
-    assert offsets[0] == 0
-    assert offsets[1] == 200
-    assert offsets[-1] == 50_200
-    assert len(offsets) == 252
-    assert published_facts_last_page_size(AUGUST_PUBLISHED_FACTS_SCALE) == 86
+    assert offsets == (0,)
+    assert published_facts_last_page_size(AUGUST_PUBLISHED_FACTS_SCALE) == AUGUST_PUBLISHED_FACTS_SCALE
     rows = list(range(AUGUST_PUBLISHED_FACTS_SCALE))
     combined = published_facts_combine(rows)
     assert combined == rows
@@ -131,7 +131,7 @@ def test_http_published_facts_first_and_final_page_match_m_plan() -> None:
     http = TestClient(app)
     _publish(http)
     total = 204
-    offsets = published_facts_page_offsets(total)
+    offsets = published_facts_page_offsets(total, page_limit=200)
     assert offsets == (0, 200)
     first = http.get(
         "/api/v1/publications/current/facts",
@@ -145,7 +145,7 @@ def test_http_published_facts_first_and_final_page_match_m_plan() -> None:
     ).json()
     assert first["pagination"]["total"] == total
     assert len(first["items"]) == 200
-    assert len(last["items"]) == published_facts_last_page_size(total)
+    assert len(last["items"]) == published_facts_last_page_size(total, page_limit=200)
     keys = [
         (item["campaign_id"], item["day"], item["variation_id_key"])
         for item in first["items"] + last["items"]
@@ -178,3 +178,66 @@ def test_p8_client_report_still_downloads_and_stays_publication_scoped() -> None
     with ZipFile(XLSX_PATH) as archive:
         mashup_names = archive.namelist()
     assert "xl/connections.xml" in mashup_names
+
+
+def test_history_facts_excel_page_size_is_250000() -> None:
+    from dfip_api.schemas import HISTORY_FACTS_MAX_PAGE_LIMIT, MAX_PAGE_LIMIT
+
+    app, *_rest = publisher_app()
+    http = TestClient(app)
+    _publish(http)
+    assert MAX_PAGE_LIMIT == 200
+    assert HISTORY_FACTS_MAX_PAGE_LIMIT == 250000
+    allowed = http.get(
+        "/api/v1/publications/history/facts",
+        headers=AUTH,
+        params={"client_id": CLIENT_ID, "limit": 250000},
+    )
+    assert allowed.status_code == 200, allowed.text
+    assert allowed.json()["pagination"]["limit"] == 250000
+    rejected = http.get(
+        "/api/v1/publications/history/facts",
+        headers=AUTH,
+        params={"client_id": CLIENT_ID, "limit": 250001},
+    )
+    assert rejected.status_code == 422
+    facts_rejected = http.get(f"/api/v1/facts?limit={MAX_PAGE_LIMIT + 1}", headers=AUTH)
+    assert facts_rejected.status_code == 422
+
+
+def test_history_facts_table_layout_matches_object_items() -> None:
+    from dfip_api.schemas import FACT_TABLE_COLUMNS
+    from dfip_web.client_report_download import FACT_VALUE_FIELDS
+
+    assert tuple(FACT_TABLE_COLUMNS) == FACT_VALUE_FIELDS
+    app, *_rest = publisher_app()
+    http = TestClient(app)
+    _publish(http)
+    objects = http.get(
+        "/api/v1/publications/history/facts",
+        headers=AUTH,
+        params={"client_id": CLIENT_ID, "limit": 5000},
+    )
+    table = http.get(
+        "/api/v1/publications/history/facts",
+        headers=AUTH,
+        params={"client_id": CLIENT_ID, "limit": 5000, "layout": "table"},
+    )
+    assert objects.status_code == 200, objects.text
+    assert table.status_code == 200, table.text
+    object_body = objects.json()
+    table_body = table.json()
+    assert "items" in object_body
+    assert "rows" in table_body
+    assert "items" not in table_body
+    assert table_body["columns"] == list(FACT_VALUE_FIELDS)
+    assert table_body["pagination"]["total"] == object_body["pagination"]["total"]
+    assert len(table_body["rows"]) == len(object_body["items"])
+    for item, row in zip(object_body["items"], table_body["rows"], strict=True):
+        assert row == [item[column] for column in FACT_VALUE_FIELDS]
+    rejected = http.get(
+        "/api/v1/publications/history/facts",
+        headers=AUTH,
+        params={"client_id": CLIENT_ID, "layout": "csv"},
+    )
+    assert rejected.status_code == 422

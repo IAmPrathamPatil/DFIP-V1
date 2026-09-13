@@ -2,24 +2,28 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from datetime import UTC, datetime
 from typing import Any
 from uuid import uuid4
 
 from dfip_core.ingest.store import (
+    PROCESSED_BATCH_STATUS,
+    RECOVERABLE_BATCH_STATUSES,
     SUCCESS_BATCH_STATUSES,
     BatchRecord,
     ProcessingRunRecord,
     RejectedRowRecord,
     SourceFileRecord,
     StagedRowRecord,
+    apply_batch_progress,
 )
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import (
+    as_uuid_text,
     batch_from_row,
     processing_run_from_row,
     rejected_from_row,
@@ -144,6 +148,66 @@ class PostgresIngestStore:
             ).fetchone()
         return batch_from_row(row) if row else None
 
+    def processed_batch_for_file(self, source_file_id: str) -> BatchRecord | None:
+        with self._tx() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM batch
+                WHERE source_file_id = %s AND status = %s
+                ORDER BY created_at ASC, id ASC
+                LIMIT 1
+                """,
+                (source_file_id, PROCESSED_BATCH_STATUS),
+            ).fetchone()
+        return batch_from_row(row) if row else None
+
+    def recoverable_batch_for_file(self, source_file_id: str) -> BatchRecord | None:
+        statuses = tuple(RECOVERABLE_BATCH_STATUSES)
+        with self._tx() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM batch
+                WHERE source_file_id = %s AND status = ANY(%s)
+                ORDER BY created_at DESC, id DESC
+                LIMIT 1
+                """,
+                (source_file_id, list(statuses)),
+            ).fetchone()
+        return batch_from_row(row) if row else None
+
+    def list_auto_resume_batches(
+        self, *, limit: int = 50, resume_reasons: tuple[str, ...] = ()
+    ) -> list[BatchRecord]:
+        reasons = list(resume_reasons)
+        cap = max(1, min(int(limit), 100))
+        with self._tx() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM batch
+                WHERE cancel_requested = FALSE
+                  AND status <> 'cancelled'
+                  AND (
+                    status = 'received'
+                    OR (status = 'staged' AND row_count_staged > 0)
+                    OR (
+                        status = 'failed'
+                        AND (
+                            error_summary = ANY(%s)
+                            OR EXISTS (
+                                SELECT 1 FROM processing_run AS r
+                                WHERE r.batch_id = batch.id
+                                  AND r.error_summary = ANY(%s)
+                            )
+                        )
+                      )
+                  )
+                ORDER BY created_at ASC, id ASC
+                LIMIT %s
+                """,
+                (reasons, reasons, cap),
+            ).fetchall()
+        return [batch_from_row(row) for row in rows]
+
     def create_batch(
         self,
         *,
@@ -230,31 +294,122 @@ class PostgresIngestStore:
                 ),
             )
 
-    def add_staged_row(self, record: StagedRowRecord) -> None:
+    def save_batch_progress(
+        self,
+        batch_id: str,
+        *,
+        stage: str | None = None,
+        current: int | None = None,
+        total: int | None = None,
+        message: str | None = None,
+    ) -> None:
+        now = datetime.now(tz=UTC)
         with self._tx() as conn:
-            client_id = conn.execute(
-                "SELECT client_id FROM batch WHERE id = %s", (record.batch_id,)
+            row = conn.execute(
+                "SELECT * FROM batch WHERE id = %s FOR UPDATE",
+                (batch_id,),
             ).fetchone()
-            if client_id is None:
-                raise KeyError(f"unknown batch {record.batch_id}")
+            if row is None:
+                return
+            loaded = batch_from_row(row)
+            if loaded.cancel_requested and stage not in {"cancelling", "cancelled"}:
+                from dfip_core.ingest.progress import ProcessingCancelled
+
+                raise ProcessingCancelled(batch_id)
+            record = apply_batch_progress(
+                loaded,
+                stage=stage,
+                current=current,
+                total=total,
+                message=message,
+                at=now,
+            )
             conn.execute(
                 """
-                INSERT INTO stg_source_row (
-                    id, batch_id, client_id, source_row_number, raw, campaign_id, variation_id, day
-                )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                UPDATE batch SET
+                    progress_stage = %s,
+                    progress_current = %s,
+                    progress_total = %s,
+                    progress_message = %s,
+                    progress_at = %s
+                WHERE id = %s
                 """,
+                (
+                    record.progress_stage,
+                    record.progress_current,
+                    record.progress_total,
+                    record.progress_message,
+                    record.progress_at,
+                    batch_id,
+                ),
+            )
+
+    def add_staged_row(self, record: StagedRowRecord) -> None:
+        self.add_staged_rows((record,))
+
+    def add_staged_rows(self, records: Sequence[StagedRowRecord]) -> None:
+        if not records:
+            return
+        batch_id = records[0].batch_id
+        with self._tx() as conn:
+            client_row = conn.execute(
+                "SELECT client_id FROM batch WHERE id = %s", (batch_id,)
+            ).fetchone()
+            if client_row is None:
+                raise KeyError(f"unknown batch {batch_id}")
+            client_id = client_row["client_id"]
+            payload = [
                 (
                     record.id,
                     record.batch_id,
-                    client_id["client_id"],
+                    client_id,
                     record.source_row_number,
                     Jsonb(record.raw),
                     record.campaign_id,
                     record.variation_id,
                     record.day,
-                ),
+                )
+                for record in records
+            ]
+            temp = f"_dfip_bulk_stg_{uuid4().hex}"
+            conn.execute(
+                f"""
+                CREATE TEMP TABLE {temp} (
+                    id uuid,
+                    batch_id uuid,
+                    client_id uuid,
+                    source_row_number integer,
+                    raw jsonb,
+                    campaign_id text,
+                    variation_id text,
+                    day date
+                ) ON COMMIT DROP
+                """
             )
+            with conn.cursor() as cursor:
+                with cursor.copy(
+                    f"""
+                    COPY {temp} (
+                        id, batch_id, client_id, source_row_number, raw,
+                        campaign_id, variation_id, day
+                    ) FROM STDIN
+                    """
+                ) as copy:
+                    for row in payload:
+                        copy.write_row(row)
+            conn.execute(
+                f"""
+                INSERT INTO stg_source_row (
+                    id, batch_id, client_id, source_row_number, raw,
+                    campaign_id, variation_id, day
+                )
+                SELECT
+                    id, batch_id, client_id, source_row_number, raw,
+                    campaign_id, variation_id, day
+                FROM {temp}
+                """
+            )
+            conn.execute(f"DROP TABLE {temp}")
 
     def add_rejected_row(
         self,
@@ -392,10 +547,22 @@ class PostgresIngestStore:
                 """
                 UPDATE processing_run SET
                     batch_id = %s,
-                    campaign_label_version_id = %s,
-                    template_label_version_id = %s,
-                    rate_card_version_id = %s,
-                    label_group_version_id = %s,
+                    campaign_label_version_id = (
+                        SELECT v.id FROM campaign_label_version AS v
+                        WHERE v.id = %s AND v.client_id = processing_run.client_id
+                    ),
+                    template_label_version_id = (
+                        SELECT v.id FROM template_label_version AS v
+                        WHERE v.id = %s AND v.client_id = processing_run.client_id
+                    ),
+                    rate_card_version_id = (
+                        SELECT v.id FROM rate_card_version AS v
+                        WHERE v.id = %s AND v.client_id = processing_run.client_id
+                    ),
+                    label_group_version_id = (
+                        SELECT v.id FROM label_group_version AS v
+                        WHERE v.id = %s AND v.client_id = processing_run.client_id
+                    ),
                     engine_version = %s,
                     started_at = %s,
                     finished_at = %s,
@@ -432,9 +599,9 @@ class PostgresIngestStore:
         label_group_version_id: str | None,
         engine_version: str | None,
     ) -> ProcessingRunRecord:
-        existing = self.processing_run_for_batch(batch_id)
-        if existing is not None:
-            return existing
+        active = self.active_processing_run_for_batch(batch_id)
+        if active is not None:
+            return active
         return self.add_processing_run(
             batch_id=batch_id,
             campaign_label_version_id=campaign_label_version_id,
@@ -465,7 +632,30 @@ class PostgresIngestStore:
                     finished_at, status, qa_verdict
                 )
                 SELECT
-                    %s, b.id, b.client_id, %s, %s, %s, %s, %s, %s, NULL, 'pending', NULL
+                    %s,
+                    b.id,
+                    b.client_id,
+                    (
+                        SELECT v.id FROM campaign_label_version AS v
+                        WHERE v.id = %s AND v.client_id = b.client_id
+                    ),
+                    (
+                        SELECT v.id FROM template_label_version AS v
+                        WHERE v.id = %s AND v.client_id = b.client_id
+                    ),
+                    (
+                        SELECT v.id FROM rate_card_version AS v
+                        WHERE v.id = %s AND v.client_id = b.client_id
+                    ),
+                    (
+                        SELECT v.id FROM label_group_version AS v
+                        WHERE v.id = %s AND v.client_id = b.client_id
+                    ),
+                    %s,
+                    %s,
+                    NULL,
+                    'pending',
+                    NULL
                 FROM batch AS b
                 WHERE b.id = %s
                 RETURNING *
@@ -484,3 +674,127 @@ class PostgresIngestStore:
         if row is None:
             raise KeyError(f"unknown batch {batch_id}")
         return processing_run_from_row(row)
+
+    def reset_staging_for_batch(self, batch_id: str) -> None:
+        with self._tx() as conn:
+            batch = conn.execute("SELECT id FROM batch WHERE id = %s", (batch_id,)).fetchone()
+            if batch is None:
+                raise KeyError(batch_id)
+            conn.execute("DELETE FROM stg_source_row WHERE batch_id = %s", (batch_id,))
+            conn.execute("DELETE FROM stg_rejected_row WHERE batch_id = %s", (batch_id,))
+            conn.execute(
+                """
+                UPDATE batch SET
+                    status = 'received',
+                    row_count_declared = NULL,
+                    row_count_staged = 0,
+                    row_count_rejected = 0,
+                    empty_row_count = 0,
+                    observed_day_min = NULL,
+                    observed_day_max = NULL,
+                    completed_at = NULL,
+                    error_summary = NULL,
+                    worksheet_name = NULL,
+                    header_row = NULL,
+                    source_start_column = NULL,
+                    progress_stage = NULL,
+                    progress_current = NULL,
+                    progress_total = NULL,
+                    progress_message = NULL,
+                    progress_at = NULL
+                WHERE id = %s
+                """,
+                (batch_id,),
+            )
+
+    def list_processing_runs_for_batch(self, batch_id: str) -> list[ProcessingRunRecord]:
+        with self._tx() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM processing_run
+                WHERE batch_id = %s
+                ORDER BY started_at DESC, id DESC
+                """,
+                (batch_id,),
+            ).fetchall()
+        return [processing_run_from_row(row) for row in rows]
+
+    def request_cancel(self, batch_id: str) -> BatchRecord | None:
+        now = datetime.now(tz=UTC)
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT * FROM batch WHERE id = %s FOR UPDATE",
+                (batch_id,),
+            ).fetchone()
+            if row is None:
+                return None
+            conn.execute(
+                """
+                UPDATE batch SET
+                    cancel_requested = TRUE,
+                    progress_stage = 'cancelling',
+                    progress_message = %s,
+                    progress_at = %s
+                WHERE id = %s
+                """,
+                ("Cancelling...", now, batch_id),
+            )
+            updated = conn.execute(
+                "SELECT * FROM batch WHERE id = %s",
+                (batch_id,),
+            ).fetchone()
+        return batch_from_row(updated) if updated else None
+
+    def discard_staging(self, batch_id: str) -> None:
+        with self._tx() as conn:
+            conn.execute("DELETE FROM stg_source_row WHERE batch_id = %s", (batch_id,))
+            conn.execute("DELETE FROM stg_rejected_row WHERE batch_id = %s", (batch_id,))
+
+    def delete_batch_record(self, batch_id: str) -> str | None:
+        with self._tx() as conn:
+            batch = conn.execute(
+                "SELECT source_file_id FROM batch WHERE id = %s FOR UPDATE",
+                (batch_id,),
+            ).fetchone()
+            if batch is None:
+                raise KeyError(batch_id)
+            source_id = as_uuid_text(batch["source_file_id"])
+            conn.execute("DELETE FROM stg_source_row WHERE batch_id = %s", (batch_id,))
+            conn.execute("DELETE FROM stg_rejected_row WHERE batch_id = %s", (batch_id,))
+            conn.execute("DELETE FROM processing_run WHERE batch_id = %s", (batch_id,))
+            conn.execute("DELETE FROM batch WHERE id = %s", (batch_id,))
+            leftover = conn.execute(
+                "SELECT 1 FROM batch WHERE source_file_id = %s LIMIT 1",
+                (source_id,),
+            ).fetchone()
+            if leftover is not None:
+                return None
+            catalog_hit = conn.execute(
+                """
+                SELECT 1 FROM campaign_label_version WHERE source_file_id = %s
+                UNION ALL
+                SELECT 1 FROM template_label_version WHERE source_file_id = %s
+                LIMIT 1
+                """,
+                (source_id, source_id),
+            ).fetchone()
+            if catalog_hit is not None:
+                return None
+            conn.execute("DELETE FROM source_file WHERE id = %s", (source_id,))
+            return source_id
+
+    def fail_abandoned_processing_runs(self, *, reason: str) -> int:
+        now = datetime.now(tz=UTC)
+        with transaction(self._pool, rls=None) as conn:
+            rows = conn.execute(
+                """
+                UPDATE processing_run
+                SET status = 'failed',
+                    finished_at = COALESCE(finished_at, %s),
+                    error_summary = %s
+                WHERE status IN ('pending', 'running')
+                RETURNING id
+                """,
+                (now, reason),
+            ).fetchall()
+        return len(rows)

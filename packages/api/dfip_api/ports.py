@@ -30,7 +30,10 @@ class PublicationStore(Protocol):
         notes: str | None,
         fact_scope: str = "processing_run",
         snapshot_facts: Sequence[FactRecord] | None = None,
+        on_progress=None,
     ) -> tuple[PublicationRecord, PublicationCurrentRecord]: ...
+
+    def has_publication_for_runs(self, run_ids: Sequence[str]) -> bool: ...
 
     def get(self, publication_id: str) -> PublicationRecord | None: ...
 
@@ -48,6 +51,88 @@ class PublicationStore(Protocol):
         limit: int,
         offset: int,
     ) -> tuple[list[FactRecord], int]: ...
+
+    def list_published_history(
+        self,
+        client_id: str,
+        *,
+        limit: int,
+        offset: int,
+    ) -> tuple[list[FactRecord], int]: ...
+
+    def copy_published_history_csv(self, client_id: str, *, max_rows: int) -> bytes: ...
+
+    def list_published_month_starts(self, client_id: str) -> list[date]: ...
+
+    def published_day_bounds(self, client_id: str) -> tuple[date | None, date | None]: ...
+
+    def sum_published_history_month(
+        self, client_id: str, month_start: date
+    ) -> tuple[dict[str, object], int, date | None, date | None]: ...
+
+    def sum_published_history(
+        self,
+        client_id: str,
+        *,
+        day_from: date,
+        day_to_exclusive: date,
+        campaign_ids: tuple[str, ...] = (),
+        channels: tuple[str, ...] = (),
+        filter_logic_1: tuple[str, ...] = (),
+        filter_logic_1_group: tuple[str, ...] = (),
+    ) -> tuple[dict[str, object], int, date | None, date | None]: ...
+
+    def list_published_filter_values(
+        self,
+        client_id: str,
+        *,
+        day_from: date,
+        day_to_exclusive: date,
+        dimension: str,
+    ) -> list[tuple[str, str]]: ...
+
+    def list_published_history_series(
+        self,
+        client_id: str,
+        *,
+        day_from: date,
+        day_to_exclusive: date,
+        grain: str,
+        breakdown: str | None = None,
+        rank_measure: str | None = None,
+        limit_series: int | None = None,
+        campaign_ids: tuple[str, ...] = (),
+        channels: tuple[str, ...] = (),
+        filter_logic_1: tuple[str, ...] = (),
+        filter_logic_1_group: tuple[str, ...] = (),
+    ) -> tuple[list[tuple[date, str | None, str | None, dict[str, object], int]], int]: ...
+
+    def list_published_history_groups(
+        self,
+        client_id: str,
+        *,
+        day_from: date,
+        day_to_exclusive: date,
+        dimension: str,
+        campaign_ids: tuple[str, ...] = (),
+        channels: tuple[str, ...] = (),
+        filter_logic_1: tuple[str, ...] = (),
+        filter_logic_1_group: tuple[str, ...] = (),
+    ) -> list[tuple[str, str, dict[str, object], int]]: ...
+
+    def list_published_history_pairs(
+        self,
+        client_id: str,
+        *,
+        day_from: date,
+        day_to_exclusive: date,
+        primary: str,
+        secondary: str,
+        campaign_ids: tuple[str, ...] = (),
+        channels: tuple[str, ...] = (),
+        filter_logic_1: tuple[str, ...] = (),
+        filter_logic_1_group: tuple[str, ...] = (),
+    ) -> list[tuple[str, str, str, str, dict[str, object], int]]: ...
 
 
 class ReadRepository(Protocol):

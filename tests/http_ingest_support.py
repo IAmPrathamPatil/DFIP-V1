@@ -13,8 +13,8 @@ from test_p4_transform import GROUP7_CAMPAIGN
 
 AUG_DAY = datetime(2025, 8, 1)
 XLSX_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-TERMINAL_BATCH = frozenset({"processed", "failed"})
-TERMINAL_RUN = frozenset({"succeeded", "failed"})
+TERMINAL_BATCH = frozenset({"processed", "failed", "cancelled"})
+TERMINAL_RUN = frozenset({"succeeded", "failed", "cancelled"})
 
 
 def source_row(**overrides: Any) -> dict[str, object]:

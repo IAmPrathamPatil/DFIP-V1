@@ -17,6 +17,8 @@ from dfip_web.api_client import DfipApiClient
 from dfip_web.client_report_download import (
     CLIENT_REPORT_DOWNLOAD_NAME,
     CLIENT_REPORT_MEDIA_TYPE,
+    FACT_VALUE_FIELDS,
+    client_report_download_filename,
     render_client_report_xlsx,
 )
 from dfip_web.client_workbook import FAKE_MASHUP_ZIP_PARTS, XLSX_PATH
@@ -96,6 +98,14 @@ def _settings_value(body: bytes, parameter: str) -> object:
             break
     workbook.close()
     return found
+
+
+def _session_jwt_stamped(value: object) -> bool:
+    """True when Settings BearerToken looks like a JWT. Do not print the value."""
+    if not isinstance(value, str):
+        return False
+    parts = value.split(".")
+    return len(parts) == 3 and all(parts) and " " not in value
 
 
 def _scan_workbook_text(body: bytes) -> str:
@@ -218,7 +228,10 @@ def test_authenticated_client_downloads_current_nine_sheet_report() -> None:
     elapsed_ms = (time.perf_counter() - started) * 1000
     assert response.status_code == 200
     assert response.headers["content-type"].startswith(XLSX_TYPE)
-    assert 'attachment; filename="Client_Report.xlsx"' in response.headers["content-disposition"]
+    disposition = response.headers["content-disposition"]
+    assert CLIENT_REPORT_DOWNLOAD_NAME in disposition
+    assert disposition.startswith('attachment; filename="DFIP_')
+    assert disposition.endswith('_Client_Report.xlsx"')
     body = response.content
     assert _sheet_names(body) == list(CLIENT_WORKBOOK_SHEET_NAMES)
     assert _sheet_names(body)[2:] == list(REPORT_SHEET_NAMES)
@@ -359,7 +372,7 @@ def test_download_does_not_reprocess_and_fact_csv_xlsx_remain() -> None:
     assert hist_json.status_code == 200
     assert "text/csv" in csv_body.headers["content-type"]
     assert "published-facts-" in csv_body.headers["content-disposition"]
-    assert csv_body.text.splitlines()[0].startswith("client_id,")
+    assert csv_body.text.splitlines()[0] == ",".join(FACT_VALUE_FIELDS)
     assert set(ingest.processing_runs) == run_ids
 
 
@@ -431,6 +444,7 @@ def test_python_and_spa_client_report_wiring() -> None:
     app_js = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
     client_js = (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
     assert "data-download-client-report" in views
+    assert "Download Company Workbook" in views
     assert "downloadClientReport" in app_js
     assert "downloadClientReport" in client_js
     assert "client-report.xlsx" in client_js
@@ -462,3 +476,4 @@ def test_render_preserves_report_formulas_and_is_deterministic() -> None:
     assert XLSX_PATH.is_file()
     assert CLIENT_REPORT_DOWNLOAD_NAME == "Client_Report.xlsx"
     assert CLIENT_REPORT_MEDIA_TYPE == XLSX_TYPE
+    assert client_report_download_filename("default", None).endswith("_Client_Report.xlsx")

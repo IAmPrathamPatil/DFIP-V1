@@ -2,9 +2,13 @@
 
 Professional Publisher/Admin and Client SPA.
 
-The browser talks only to the P5/P7 API (`/health` and `/api/v1/*`). This folder
-does not contain React/Vite/Next, does not open a database, and does not
-implement a KPI calculator, Excel processing, or RLS. Review displays inspector
+The browser talks only to the P5/P7 API (`/health`, `/api/v1/ops/ready`, and
+`/api/v1/*`). Website `GET /health` is this process (`dfip-web`) and does not
+prove API or database readiness. Publisher Dashboard Environment shows API
+liveness vs authenticated readiness. Clients do not receive operator readiness.
+
+This folder does not contain React/Vite/Next, does not open a database, and does
+not implement a KPI calculator, Excel processing, or RLS. Review displays inspector
 QA findings from `GET /api/v1/processing-runs/{id}/qa-findings` when the API
 returns them. Admin `/admin/facts` uses `GET /api/v1/facts` (working set;
 admin/publisher only). Client `/client/facts` uses
@@ -44,13 +48,15 @@ development you may still set `DFIP_AUTH_MODE=dev_token` and
 `DFIP_DEV_AUTH_TOKEN` for curl; if `DFIP_AUTH_SECRET` is also set, the same
 process accepts both. The in-memory API starts with an empty user directory
 unless you inject users (tests do). PostgreSQL mode uses `app_user.password_hash`
-and `client_membership`.
+and `client_membership`. Local demo users: `python -m dfip_api.local_demo_seed --confirm-local-only` (not automatic). Optional `--company-2` adds `demo-client-2` / `demo-publisher-2` and grants `demo-publisher` a Company 2 membership. A publisher with two inspector memberships sees a company picker (`POST /api/v1/auth/select-client`). Clients do not. Publishers can open `/admin/companies` to list authorized tenants, add a company (`POST /api/v1/clients`), and rename display names (`POST /api/v1/clients/{client_id}/rename`); `client_id` does not change on rename. A new company is processing-ready with packaged fallback after select-client; Logic/Labels overlays are optional and tenant-scoped. The first publisher account is one-time operator setup on the sign-in screen when no publisher exists. Publishers provision a client-portal login (`POST /api/v1/clients/{id}/users`) with an operator-chosen username, password, and confirmation; DFIP stores a hash only.
 
 Default in-memory API stores are empty. Empty tables are expected: API startup
 does not ingest an XLSX. Publishers upload a `.xlsx` from Upload Center
 (`POST /api/v1/uploads` returns 202 and the page polls batch/run status; does not publish) or call the same endpoint directly
 (see `documentation/HTTP_WORKFLOW.md`). Client home, `/client/facts`, and
-`/admin/downloads` can download the published slice as CSV or XLSX.
+`/admin/downloads` can download the published slice as CSV or XLSX, and
+**Download Company Workbook** for the selected company's current static
+snapshot (`DFIP_<client_code>_<YYYY-MM-DD>_Client_Report.xlsx`).
 
 ## Auth limitation
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from dfip_api.errors import AuthConfigurationError
 from dfip_config.settings import Settings, load_settings
 from fastapi import FastAPI
 from fastapi.responses import FileResponse, JSONResponse
@@ -13,8 +14,20 @@ from dfip_web.paths import static_root
 from dfip_web.roles import ADMIN_ROLES
 
 
+def _require_production_https_origins(settings: Settings) -> None:
+    if not settings.is_production_grade:
+        return
+    origin = settings.dfip_web_origin.strip()
+    api_base = settings.dfip_api_base_url.strip()
+    if not origin.lower().startswith("https://"):
+        raise AuthConfigurationError("Production requires HTTPS DFIP_WEB_ORIGIN.")
+    if not api_base.lower().startswith("https://"):
+        raise AuthConfigurationError("Production requires HTTPS DFIP_API_BASE_URL.")
+
+
 def create_web_app(settings: Settings | None = None) -> FastAPI:
     resolved = settings if settings is not None else load_settings()
+    _require_production_https_origins(resolved)
     assets = static_root().resolve()
     if not (assets / "index.html").is_file():
         raise FileNotFoundError(f"P6 static SPA is missing: {assets / 'index.html'}")
@@ -62,7 +75,7 @@ def create_web_app(settings: Settings | None = None) -> FastAPI:
     def spa(path: str) -> Response:
         safe = _safe_static_file(assets, path)
         if safe is not None:
-            return FileResponse(safe)
+            return FileResponse(safe, headers={"Cache-Control": "no-store"})
         return _html(assets / "index.html")
 
     return application

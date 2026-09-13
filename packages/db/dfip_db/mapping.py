@@ -67,6 +67,58 @@ FACT_COLUMNS: tuple[str, ...] = (
 
 FACT_SELECT = ", ".join(FACT_COLUMNS)
 
+# Excel / JSON table / history CSV wire order. Must match FACT_VALUE_FIELDS.
+FACT_WIRE_COLUMNS: tuple[str, ...] = (
+    "filter_logic_1",
+    "filter_logic_2",
+    "template_status",
+    "amc_status_filter_logic_3",
+    "amc_device_category_filter_logic_4",
+    "amc_product_cat_filter_logic_5",
+    "manual_or_automated",
+    "total_cost",
+    "hhh",
+    "month_label",
+    "day",
+    "campaign_name",
+    "campaign_id",
+    "variation_name",
+    "variation_id",
+    "channel",
+    "type_of_campaign",
+    "start_date",
+    "sent",
+    "failed",
+    "delivered",
+    "unique_impressions",
+    "unique_clicks",
+    "unique_conversions",
+    "unique_impression_through_conversions",
+    "unique_click_through_conversions",
+    "revenue_inr",
+    "impression_through_revenue_inr",
+    "click_through_revenue_inr",
+    "template_name_whatsapp",
+    "client_id",
+    "variation_id_key",
+    "month_start",
+    "filter_logic_1_group",
+    "label_match_status",
+    "template_match_status",
+    "rate_card_rule_id",
+    "processing_run_id",
+    "batch_id",
+    "campaign_label_version_id",
+    "template_label_version_id",
+    "rate_card_version_id",
+    "label_group_version_id",
+    "first_seen_at",
+    "last_seen_at",
+)
+
+if frozenset(FACT_WIRE_COLUMNS) != frozenset(FACT_COLUMNS):
+    raise RuntimeError("FACT_WIRE_COLUMNS must list the same names as FACT_COLUMNS.")
+
 
 def as_text(value: Any) -> str | None:
     if value is None:
@@ -161,6 +213,12 @@ def batch_from_row(row: dict[str, Any]) -> BatchRecord:
         header_row=as_int(row.get("header_row")),
         source_start_column=row.get("source_start_column"),
         empty_row_count=int(row["empty_row_count"] or 0),
+        progress_stage=row.get("progress_stage"),
+        progress_current=as_int(row.get("progress_current")),
+        progress_total=as_int(row.get("progress_total")),
+        progress_message=row.get("progress_message"),
+        progress_at=as_optional_datetime(row.get("progress_at")),
+        cancel_requested=bool(row.get("cancel_requested") or False),
     )
 
 

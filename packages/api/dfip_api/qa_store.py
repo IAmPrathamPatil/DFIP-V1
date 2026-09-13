@@ -54,3 +54,10 @@ class InMemoryQaFindingStore:
 
     def list_for_run(self, processing_run_id: str) -> list[dict[str, Any]]:
         return [dict(item) for item in self._by_run.get(processing_run_id, ())]
+
+    def purge_client(self, client_id: str) -> None:
+        self._by_run = {
+            run_id: rows
+            for run_id, rows in self._by_run.items()
+            if not any(row.get("client_id") == client_id for row in rows)
+        }

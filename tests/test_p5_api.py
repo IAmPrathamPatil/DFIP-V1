@@ -13,6 +13,7 @@ import os
 import socket
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -60,6 +61,12 @@ RUN_C = "d0000000-0000-4000-8000-000000000003"
 MISSING_ID = "e0000000-0000-4000-8000-000000000099"
 DEV_TOKEN = "p5-test-dev-token"
 JWT_SECRET = "p5-test-jwt-secret-not-for-production"
+PRODUCTION_JWT_SECRET = "dfip-p13a-accept-jwt-secret-ok32"
+PRODUCTION_BOOTSTRAP_TOKEN = "dfip-p13a-bootstrap-token-ok"
+HTTPS_WEB_ORIGIN = "https://app.example.invalid"
+HTTPS_API_BASE = "https://api.example.invalid"
+LOCAL_PLACEHOLDER_DSN = "postgresql://postgres@127.0.0.1:1/dfip"
+REMOTE_TLS_DSN = "postgresql://dfip@db.example.internal:5432/dfip?sslmode=require"
 SECRET_PATH = "file:///C:/Users/secret/workbook.xlsx"
 AUTH = {"Authorization": f"Bearer {DEV_TOKEN}"}
 PROTECTED_PATHS = (
@@ -74,6 +81,7 @@ PROTECTED_PATHS = (
     f"/api/v1/processing-runs/{RUN_A}/qa-findings",
     "/api/v1/facts",
     "/api/v1/facts/history",
+    "/api/v1/ops/ready",
 )
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -89,9 +97,30 @@ def make_settings(**overrides: Any) -> Settings:
         "database_url": "",
         "dfip_api_prefix": "/api/v1",
         "dfip_web_origin": "http://127.0.0.1:3000",
+        "dfip_bootstrap_token": "",
+        "dfip_ask_provider": "none",
+        "dfip_ask_api_key": "",
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
+
+
+def production_settings(**overrides: Any) -> Settings:
+    """Valid production-grade settings for startup tests. Local DSN needs no TLS."""
+    values: dict[str, Any] = {
+        "dfip_env": "production",
+        "dfip_auth_mode": "jwt",
+        "dfip_auth_secret": PRODUCTION_JWT_SECRET,
+        "database_url": LOCAL_PLACEHOLDER_DSN,
+        "dfip_web_origin": HTTPS_WEB_ORIGIN,
+        "dfip_api_base_url": HTTPS_API_BASE,
+        "dfip_bootstrap_token": "",
+        "dfip_storage_endpoint": str(
+            Path(tempfile.gettempdir()) / "dfip-p13b-test-archive"
+        ),
+    }
+    values.update(overrides)
+    return make_settings(**values)
 
 
 def inspector_settings(**overrides: Any) -> Settings:
@@ -424,11 +453,17 @@ def test_api_v1_routes_exist_in_openapi(client: TestClient) -> None:
         "/api/v1/processing-runs/{processing_run_id}/qa-findings",
         "/api/v1/facts",
         "/api/v1/facts/history",
+        "/api/v1/ops/ready",
     ):
         assert path in paths
         assert "get" in paths[path]
     assert "/api/v1/batches/{batch_id}/process" in paths
     assert "post" in paths["/api/v1/batches/{batch_id}/process"]
+    assert "/api/v1/batches/{batch_id}/cancel" in paths
+    assert "post" in paths["/api/v1/batches/{batch_id}/cancel"]
+    assert "delete" in paths["/api/v1/batches/{batch_id}"]
+    assert "/api/v1/publications/progress" in paths
+    assert "get" in paths["/api/v1/publications/progress"]
     assert "/api/v1/processing-runs/{processing_run_id}/qa" in paths
     assert "post" in paths["/api/v1/processing-runs/{processing_run_id}/qa"]
 
@@ -468,6 +503,7 @@ def test_valid_dev_token_reaches_session() -> None:
         "auth_mode": "dev_token",
         "role": "reader",
         "client_id": None,
+        "clients": [],
     }
 
 

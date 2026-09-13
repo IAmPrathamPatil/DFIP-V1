@@ -5,10 +5,11 @@ from __future__ import annotations
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, File, Form, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Request, Response, UploadFile
 
-from dfip_api.deps import InspectorDep, UploadServiceDep, get_principal
-from dfip_api.errors import ValidationFailed
+from dfip_api.audit import write_audit_event
+from dfip_api.deps import InspectorDep, SettingsDep, UploadServiceDep, get_principal
+from dfip_api.errors import PayloadTooLarge, ValidationFailed
 from dfip_api.schemas import ErrorResponse, UploadGroupResponse, UploadResponse
 
 ERROR_RESPONSES = {
@@ -16,6 +17,7 @@ ERROR_RESPONSES = {
     403: {"model": ErrorResponse, "description": "Authorization failed."},
     413: {"model": ErrorResponse, "description": "Workbook exceeds the size limit."},
     422: {"model": ErrorResponse, "description": "Validation error."},
+    429: {"model": ErrorResponse, "description": "Too many requests."},
     503: {"model": ErrorResponse, "description": "Persistence unavailable."},
 }
 
@@ -42,8 +44,10 @@ upload_router = APIRouter(
     tags=["Uploads"],
 )
 async def upload_workbook(
+    request: Request,
     principal: InspectorDep,
     service: UploadServiceDep,
+    settings: SettingsDep,
     response: Response,
     file: Annotated[UploadFile | None, File()] = None,
     files: Annotated[list[UploadFile] | None, File()] = None,
@@ -51,14 +55,40 @@ async def upload_workbook(
     force: Annotated[bool, Form()] = False,
 ) -> UploadResponse | UploadGroupResponse:
     parts = _multipart_workbooks(file, files)
+    max_files = settings.dfip_upload_max_files
+    if len(parts) > max_files:
+        raise PayloadTooLarge("Too many files in one upload request.")
+    max_total = settings.upload_max_total_bytes
     payloads: list[tuple[str | None, bytes]] = []
+    total = 0
     for upload in parts:
-        payloads.append((upload.filename, await service.read_upload(upload)))
+        remaining = max_total - total
+        if remaining <= 0:
+            raise PayloadTooLarge("Upload request exceeds the maximum allowed size.")
+        payload = await service.read_upload(upload, remaining_total_bytes=remaining)
+        total += len(payload)
+        if total > max_total:
+            raise PayloadTooLarge("Upload request exceeds the maximum allowed size.")
+        payloads.append((upload.filename, payload))
     body, status = service.accept_parts(
         principal=principal,
         parts=payloads,
         requested_client_id=str(client_id) if client_id else None,
         force=force,
+    )
+    batch_id = getattr(getattr(body, "batch", None), "batch_id", None)
+    write_audit_event(
+        getattr(request.app.state, "db_pool", None),
+        actor=principal.subject,
+        action="upload.accept",
+        entity_type="batch",
+        entity_id=batch_id,
+        client_id=getattr(body, "client_id", None),
+        after={
+            "status": getattr(getattr(body, "batch", None), "status", None),
+            "replayed": getattr(body, "replayed", None),
+            "original_filename": getattr(body, "original_filename", None),
+        },
     )
     response.status_code = status
     return body

@@ -12,18 +12,13 @@ from dfip_core.ingest.store import InMemoryIngestStore
 from dfip_core.transform.store import InMemoryFactStore
 from fastapi.testclient import TestClient
 
-from test_p5_api import JWT_SECRET, make_settings
+from test_p5_api import JWT_SECRET, make_settings, production_settings
 
 
 def test_production_requires_database_url() -> None:
     with pytest.raises(PersistenceConfigurationError):
         create_app(
-            settings=make_settings(
-                dfip_env="production",
-                dfip_auth_mode="jwt",
-                dfip_auth_secret="production-secret-not-for-reuse",
-                database_url="",
-            ),
+            settings=production_settings(database_url=""),
             ingest_store=InMemoryIngestStore(),
             fact_store=InMemoryFactStore(),
         )

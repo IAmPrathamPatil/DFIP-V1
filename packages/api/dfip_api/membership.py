@@ -17,12 +17,22 @@ from dfip_api.roles import ALLOWED_ROLES
 _ROLE_RANK = {"client": 0, "reader": 0, "publisher": 1, "admin": 2}
 
 
+def requires_client_selection(principal: Principal) -> bool:
+    """True when a multi-membership inspector JWT is not yet bound to one client."""
+    if principal.platform_admin or principal.client_id:
+        return False
+    ids = principal.membership_client_ids
+    return ids is not None and len(ids) > 1
+
+
 def rls_context_for(principal: Principal, *, db_mode: bool) -> RlsContext | None:
     if not db_mode:
         return None
     client_ids = principal.membership_client_ids or ()
     if principal.client_id:
         client_ids = (principal.client_id,)
+    elif requires_client_selection(principal):
+        client_ids = ()
     return RlsContext(
         user_id=principal.user_id or "",
         role=principal.role,

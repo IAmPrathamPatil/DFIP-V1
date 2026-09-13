@@ -1,0 +1,23 @@
+# Example coordinated backup. Operator-configurable; not enabled by default.
+# REPOSITORY-DEFINED: python -m dfip_api.backup, stop API then dump then copy.
+# HOST-DEFINED: paths, timer calendar, operator environment file.
+
+[Unit]
+Description=DFIP coordinated PostgreSQL + source-archive backup
+Documentation=file:///opt/dfip/current/documentation/V1_DEPLOYMENT.md
+After=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+Group=root
+WorkingDirectory=/opt/dfip/current
+# Application env first, then operator overlay. The overlay must replace
+# DATABASE_URL with a superuser/BYPASSRLS DSN. Never grant BYPASSRLS to dfip_api.
+EnvironmentFile=/etc/dfip/dfip.env
+EnvironmentFile=/etc/dfip/dfip-operator.env
+ExecStart=/opt/dfip/current/deploy/scripts/backup-run.sh
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dfip-backup
+NoNewPrivileges=true

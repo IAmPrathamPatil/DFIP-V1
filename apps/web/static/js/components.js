@@ -1,4 +1,4 @@
-import { canAccessAdmin } from "./roles.js";
+import { canAccessAdmin, companyLabel, inspectorClients, isCompanyInactive, operationalClients } from "./roles.js";
 import { html, raw } from "./format.js";
 
 function svg(markup) {
@@ -22,7 +22,14 @@ export function icon(name) {
     batches: '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>',
     history: '<circle cx="12" cy="12" r="8"/><path d="M12 8v5l3 2"/>',
     client: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 10h18"/>',
+    overview:
+      '<path d="M4 19V5h16v14z"/><path d="M8 15l2.5-3 2 2 3.5-4.5"/><circle cx="8" cy="15" r="0.6" fill="currentColor"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
+    ask: '<path d="M5 6h14v10H8l-3 3z"/>',
+    spark: '<path d="M12 3l1.35 6.15L20 12l-6.65 2.85L12 21l-1.35-6.15L4 12l6.65-2.85z"/>',
+    save: '<path d="M7 4h10v16l-5-3-5 3z"/>',
+    trends: '<path d="M4 16l5-5 3 3 7-8"/><path d="M4 19h16"/>',
+    explorer: '<path d="M5 19V10"/><path d="M10 19V5"/><path d="M15 19v-7"/><path d="M20 19V8"/>',
   };
   return svg(icons[name] || icons.dashboard);
 }
@@ -43,6 +50,7 @@ function navItem(href, label, current, allowed, iconName) {
 
 function pageTitleFor(path) {
   if (path === "/admin") return "Dashboard";
+  if (path.startsWith("/admin/companies")) return "Companies";
   if (path.startsWith("/admin/upload")) return "Upload Center";
   if (path.startsWith("/admin/source-files")) return "Source files";
   if (path.startsWith("/admin/batches")) return "Batches";
@@ -55,10 +63,47 @@ function pageTitleFor(path) {
   if (path.startsWith("/admin/catalogs")) return "Logic & Labels";
   if (path.startsWith("/admin/publications")) return "Publications";
   if (path.startsWith("/admin/downloads")) return "Downloads";
-  if (path === "/client") return "Published reporting";
+  if (path === "/client/overview") return "Overview";
+  if (path === "/client") return "Reports";
   if (path.startsWith("/client/facts")) return "Published data";
   if (path === "/unauthorized") return "Not authorized";
   return "DFIP";
+}
+
+function activeCompanyChip(session) {
+  if (!session || !canAccessAdmin(session.role)) return "";
+  const current = session.client_id || "";
+  if (!current) {
+    return html`<span class="role-pill" data-active-company="">No company selected</span>`;
+  }
+  const item = inspectorClients(session).find((row) => row.client_id === current);
+  return html`<span class="role-pill" data-active-company="${current}">${companyLabel(item) || current}</span>`;
+}
+
+function companySwitcher(session) {
+  const choices = operationalClients(session);
+  if (!session || !canAccessAdmin(session.role) || inspectorClients(session).length < 2) return "";
+  const current = session.client_id || "";
+  const currentRow = inspectorClients(session).find((item) => item.client_id === current);
+  const currentInactive = isCompanyInactive(currentRow);
+  return html`
+    <form class="company-switcher" data-company-select-form="true">
+      <label>
+        <span class="visually-hidden">Active company</span>
+        <select name="client_id" data-company-select="true" aria-label="Active company">
+          ${
+            current && !currentInactive
+              ? ""
+              : html`<option value="" selected disabled>${currentInactive ? "Inactive — select a company" : "Select company"}</option>`
+          }
+          ${choices.map(
+            (item) =>
+              html`<option value="${item.client_id}" ${!currentInactive && item.client_id === current ? raw(" selected") : ""}>${companyLabel(item)}</option>`,
+          )}
+        </select>
+      </label>
+    </form>
+  `;
 }
 
 export function layout({ path, session, body }) {
@@ -89,6 +134,8 @@ export function layout({ path, session, body }) {
                 <div class="nav-section">Operate</div>
                 <ul>
                   ${navItem("/admin", "Dashboard", path, admin, "dashboard")}
+                  ${navItem("/admin/companies", "Companies", path, admin, "client")}
+                  ${navItem("/client/overview", "Overview", path, admin, "overview")}
                   ${navItem("/admin/upload", "Upload Center", path, admin, "upload")}
                   ${navItem("/admin/processing-runs", "Processing", path, admin, "runs")}
                   ${navItem("/admin/review", "Review", path, admin, "review")}
@@ -118,7 +165,8 @@ export function layout({ path, session, body }) {
             ? html`
                 <div class="nav-section">Reporting</div>
                 <ul>
-                  ${navItem("/client", "Overview", path, signedIn, "client")}
+                  ${navItem("/client/overview", "Overview", path, signedIn && !admin, "overview")}
+                  ${navItem("/client", "Reports", path, signedIn, "client")}
                   ${navItem("/client/facts", "Published data", path, signedIn, "facts")}
                 </ul>
               `
@@ -143,6 +191,8 @@ export function layout({ path, session, body }) {
             ${
               session
                 ? html`<span class="role-pill">${session.subject} · ${session.role}</span>
+                    ${activeCompanyChip(session)}
+                    ${companySwitcher(session)}
                     <a class="btn-secondary" href="/sign-out" style="padding:0.38rem 0.7rem;border-radius:999px;display:inline-flex;align-items:center;">Sign out</a>`
                 : html`<a href="/">Sign in</a>`
             }
@@ -171,6 +221,78 @@ export function pageHeader({ eyebrow, title, description, actions, crumbs }) {
         ${actions ? html`<div class="page-actions">${actions}</div>` : ""}
       </div>
     </header>
+  `;
+}
+
+export function overviewKpiCard({
+  id,
+  label,
+  value,
+  deltaText,
+  deltaDirection,
+  vsText,
+  definition,
+  comparisonNone,
+  unavailableComparison,
+  detailsHref,
+  trendHref,
+  selected,
+  sparklineHtml,
+}) {
+  const direction = deltaDirection === "up" || deltaDirection === "down" || deltaDirection === "flat" ? deltaDirection : "";
+  const arrow = direction === "up" ? "↑" : direction === "down" ? "↓" : direction === "flat" ? "→" : "";
+  const stateClass = selected ? "is-selected" : "";
+  const accessibleBits = [label, value];
+  if (comparisonNone) accessibleBits.push("No comparison");
+  else if (unavailableComparison) accessibleBits.push("No prior-period comparison");
+  else {
+    if (deltaText) accessibleBits.push(direction === "down" ? `down ${deltaText}` : direction === "up" ? `up ${deltaText}` : deltaText);
+    if (vsText) accessibleBits.push(vsText);
+  }
+  accessibleBits.push("View details");
+  return html`
+    <a
+      class="metric-card overview-kpi ${stateClass}"
+      href="${detailsHref || "#"}"
+      data-overview-kpi="${id || ""}"
+      data-overview-kpi-selected="${selected ? "true" : "false"}"
+      data-overview-drill-kpi="${id || ""}"
+      data-overview-trend-kpi="${id || ""}"
+      data-overview-trend-href="${trendHref || ""}"
+      title="${definition || `View ${label || "KPI"} details`}"
+      aria-label="${accessibleBits.filter(Boolean).join(". ")}"
+      aria-current="${selected ? "true" : "false"}"
+    >
+      <span class="kpi-card-head">
+        <span class="metric-label">${label}</span>
+        <span class="kpi-card-affordance" aria-hidden="true">→</span>
+      </span>
+      <span class="metric-value">${value}</span>
+      ${
+        comparisonNone
+          ? html`<span class="metric-hint kpi-card-none" data-kpi-comparison="none">No comparison</span>`
+          : unavailableComparison
+            ? html`<span class="metric-hint kpi-card-none" data-kpi-comparison="unavailable">No prior-period comparison</span>`
+            : html`
+                ${
+                  deltaText
+                    ? html`<span class="metric-delta kpi-card-delta is-delta-${direction}" data-kpi-delta="${direction}">
+                        <span aria-hidden="true">${arrow}</span> ${deltaText}
+                      </span>`
+                    : ""
+                }
+              `
+      }
+      <span class="kpi-sparkline-slot" data-kpi-sparkline="${id || ""}" aria-hidden="true">${sparklineHtml || ""}</span>
+      ${
+        comparisonNone || unavailableComparison
+          ? ""
+          : vsText
+            ? html`<span class="metric-hint kpi-card-vs" data-kpi-vs="true">${vsText}</span>`
+            : ""
+      }
+      <span class="kpi-card-action">View details</span>
+    </a>
   `;
 }
 

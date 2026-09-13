@@ -79,7 +79,10 @@ def reconcile_fact(fact: FactRecord, rate_card_version_label: str) -> list[str]:
     if rate is None and fact.rate_card_rule_id is not None:
         problems.append(f"{where}: unmatched rate rule but rate_card_rule_id is set")
     if rate is not None and fact.rate_card_rule_id is None:
-        problems.append(f"{where}: matched rate rule but rate_card_rule_id is NULL")
+        # Packaged fallback stores neither rate_card_version_id nor a foreign
+        # rate_card_rule UUID. Cost math still uses packaged labels.
+        if fact.rate_card_version_id is not None:
+            problems.append(f"{where}: matched rate rule but rate_card_rule_id is NULL")
 
     if fact.month_label != month_label(fact.day):
         problems.append(f"{where}: month_label {fact.month_label!r}")
@@ -114,7 +117,8 @@ def reconcile_run(
         report.counts["facts"] += 1
         report.counts[f"label_{fact.label_match_status}"] += 1
         report.counts[f"template_{fact.template_match_status}"] += 1
-        report.counts["rate_matched" if fact.rate_card_rule_id else "rate_unmatched"] += 1
+        matched_rate = expected_rate(rate_card_version_label, fact.template_status, fact.channel)
+        report.counts["rate_matched" if matched_rate is not None else "rate_unmatched"] += 1
         report.total_cost += fact.total_cost or ZERO_COST
         report.total_delivered += fact.delivered or 0
 

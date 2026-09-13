@@ -867,8 +867,6 @@ def worksheet_xml(contract: ReportSheetContract) -> str:
         _inline(ref, value, style=style) for ref, value, style in _header_row(contract)
     )
     measure_start = 2 + len(contract.display_fields)
-    freeze_col = 1 + len(contract.display_fields)
-    freeze_cell = f"{_col(freeze_col + 1)}10"
     uct_start = _col(measure_start + 12)
     uct_end = _col(measure_start + 16)
     overall_start = _col(measure_start + 17)
@@ -972,9 +970,7 @@ def worksheet_xml(contract: ReportSheetContract) -> str:
         f'xr:uid="{{{uid}}}">'
         f'<dimension ref="A1:{last_col}10"/>'
         '<sheetViews><sheetView workbookViewId="0" showGridLines="0" zoomScale="90">'
-        f'<pane xSplit="{freeze_col}" ySplit="9" topLeftCell="{freeze_cell}" '
-        'activePane="bottomRight" state="frozen"/>'
-        '<selection pane="bottomRight" activeCell="B10" sqref="B10"/>'
+        '<selection activeCell="B10" sqref="B10"/>'
         "</sheetView></sheetViews>"
         '<sheetFormatPr defaultRowHeight="15" x14ac:dyDescent="0.3"/>'
         f"{_cols_xml(contract)}"
@@ -992,7 +988,7 @@ def _ensure_report_styles(styles_xml: str) -> str:
         return styles_xml
     num_fmts = (
         '<numFmts count="3">'
-        '<numFmt numFmtId="164" formatCode="#,##0"/>'
+        '<numFmt numFmtId="164" formatCode="0.0%"/>'
         '<numFmt numFmtId="165" formatCode="#,##0.00"/>'
         '<numFmt numFmtId="166" formatCode="0.00%"/>'
         "</numFmts>"
@@ -1000,9 +996,9 @@ def _ensure_report_styles(styles_xml: str) -> str:
     if "<numFmts" not in styles_xml:
         styles_xml = styles_xml.replace("<fonts ", num_fmts + "<fonts ", 1)
     extra_fonts = (
-        '<font><b/><sz val="16"/><color theme="1"/><name val="Calibri"/><family val="2"/>'
+        '<font><sz val="16"/><color theme="1"/><name val="Aptos Narrow"/><family val="2"/>'
         '<scheme val="minor"/></font>'
-        '<font><sz val="10"/><color rgb="FF666666"/><name val="Calibri"/><family val="2"/>'
+        '<font><sz val="10"/><color rgb="FF666666"/><name val="Aptos Narrow"/><family val="2"/>'
         '<scheme val="minor"/></font>'
     )
     styles_xml = styles_xml.replace('fonts count="2"', 'fonts count="4"', 1)
@@ -1010,7 +1006,7 @@ def _ensure_report_styles(styles_xml: str) -> str:
     extra_fills = (
         '<fill><patternFill patternType="solid"><fgColor rgb="FFF2F2F2"/>'
         '<bgColor indexed="64"/></patternFill></fill>'
-        '<fill><patternFill patternType="solid"><fgColor rgb="FFFFF2CC"/>'
+        '<fill><patternFill patternType="solid"><fgColor rgb="FFFFEB9C"/>'
         '<bgColor indexed="64"/></patternFill></fill>'
         '<fill><patternFill patternType="solid"><fgColor rgb="FFD6E3F0"/>'
         '<bgColor indexed="64"/></patternFill></fill>'
@@ -1083,11 +1079,11 @@ def _ensure_report_styles(styles_xml: str) -> str:
             xf(font=1, fill=4, border=2, wrap=True, horizontal="center"),  # 9 metric header
             xf(font=1, fill=6, border=2, horizontal="center"),  # 10 group banner
             xf(font=1, fill=5, border=2),  # 11 total label
-            xf(num=164, border=2),  # 12 count
+            xf(num=3, border=2),  # 12 count #,##0
             xf(num=165, border=2),  # 13 money
-            xf(num=166, border=2),  # 14 rate
-            xf(num=165, border=2),  # 15 roas
-            xf(num=164, font=1, fill=5, border=2),  # 16 count total
+            xf(num=166, border=2),  # 14 rate 0.00%
+            xf(num=165, border=2),  # 15 roas #,##0.00
+            xf(num=3, font=1, fill=5, border=2),  # 16 count total
             xf(num=165, font=1, fill=5, border=2),  # 17 money total
             xf(num=166, font=1, fill=5, border=2),  # 18 rate total
             xf(num=165, font=1, fill=5, border=2),  # 19 roas total
@@ -1132,6 +1128,52 @@ def _clone_zipinfo(info: ZipInfo) -> ZipInfo:
     cloned.internal_attr = info.internal_attr
     cloned.external_attr = info.external_attr
     return cloned
+
+
+class ZipParts:
+    """In-memory OOXML package. ``namelist`` / ``read`` match ``ZipFile``."""
+
+    def __init__(self, parts: dict[str, bytes]) -> None:
+        self.parts = parts
+
+    def namelist(self) -> list[str]:
+        return list(self.parts)
+
+    def read(self, name: str) -> bytes:
+        return self.parts[name]
+
+
+def xlsx_parts(body: bytes) -> tuple[list[ZipInfo], dict[str, bytes]]:
+    """Decompress an xlsx/xlsm package once."""
+    with ZipFile(io.BytesIO(body), "r") as original:
+        infos = [_clone_zipinfo(info) for info in original.infolist()]
+        parts = {info.filename: original.read(info.filename) for info in original.infolist()}
+    return infos, parts
+
+
+def write_xlsx_parts(infos: Sequence[ZipInfo], parts: Mapping[str, bytes]) -> bytes:
+    """Compress an in-memory OOXML package once."""
+    out = io.BytesIO()
+    seen: set[str] = set()
+    with ZipFile(out, "w") as written:
+        for info in infos:
+            data = parts.get(info.filename)
+            if data is None:
+                continue
+            written.writestr(info, data)
+            seen.add(info.filename)
+        for name, data in parts.items():
+            if name in seen:
+                continue
+            written.writestr(_new_sheet_zipinfo(name), data)
+    return out.getvalue()
+
+
+def mutate_xlsx(body: bytes, mutator) -> bytes:
+    """Apply in-memory part mutations with a single decompress/recompress."""
+    infos, parts = xlsx_parts(body)
+    mutator(parts)
+    return write_xlsx_parts(infos, parts)
 
 
 def _new_sheet_zipinfo(name: str) -> ZipInfo:

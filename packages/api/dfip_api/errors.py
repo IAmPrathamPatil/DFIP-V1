@@ -6,6 +6,7 @@ environment values.
 
 from __future__ import annotations
 
+import logging
 from typing import Any
 
 from fastapi import Request
@@ -17,11 +18,20 @@ VALIDATION_ERROR = "VALIDATION_ERROR"
 AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
 AUTHORIZATION_FAILED = "AUTHORIZATION_FAILED"
 NOT_FOUND = "NOT_FOUND"
+CONFLICT = "CONFLICT"
 INVALID_PAGINATION = "INVALID_PAGINATION"
 PAYLOAD_TOO_LARGE = "PAYLOAD_TOO_LARGE"
+TOO_MANY_REQUESTS = "TOO_MANY_REQUESTS"
 PERSISTENCE_UNAVAILABLE = "PERSISTENCE_UNAVAILABLE"
 INTERNAL_ERROR = "INTERNAL_ERROR"
 METHOD_NOT_ALLOWED = "METHOD_NOT_ALLOWED"
+
+log = logging.getLogger(__name__)
+
+
+def safe_route(request: Request) -> str:
+    """Method + path only. Never query strings, headers, or bodies."""
+    return f"{request.method} {request.url.path}"
 
 
 class ApiError(Exception):
@@ -56,6 +66,11 @@ class NotFoundError(ApiError):
         super().__init__(404, NOT_FOUND, message)
 
 
+class ConflictError(ApiError):
+    def __init__(self, message: str = "Resource already exists.") -> None:
+        super().__init__(409, CONFLICT, message)
+
+
 class PersistenceUnavailableError(ApiError):
     def __init__(self, message: str = "Persistence is unavailable.") -> None:
         super().__init__(503, PERSISTENCE_UNAVAILABLE, message)
@@ -73,6 +88,11 @@ class ValidationFailed(ApiError):
 class PayloadTooLarge(ApiError):
     def __init__(self, message: str = "Workbook exceeds the maximum allowed size.") -> None:
         super().__init__(413, PAYLOAD_TOO_LARGE, message)
+
+
+class TooManyRequests(ApiError):
+    def __init__(self, message: str = "Too many requests.") -> None:
+        super().__init__(429, TOO_MANY_REQUESTS, message)
 
 
 class AuthConfigurationError(Exception):
@@ -116,10 +136,14 @@ def _http_code_for_status(status_code: int) -> str:
         return AUTHORIZATION_FAILED
     if status_code == 404:
         return NOT_FOUND
+    if status_code == 409:
+        return CONFLICT
     if status_code == 405:
         return METHOD_NOT_ALLOWED
     if status_code == 413:
         return PAYLOAD_TOO_LARGE
+    if status_code == 429:
+        return TOO_MANY_REQUESTS
     if status_code == 422:
         return VALIDATION_ERROR
     if status_code == 503:
@@ -138,7 +162,17 @@ def _safe_http_message(status_code: int, detail: Any) -> str:
     return "Request failed."
 
 
-async def api_error_handler(_request: Request, exc: ApiError) -> JSONResponse:
+async def api_error_handler(request: Request, exc: ApiError) -> JSONResponse:
+    if exc.code == PERSISTENCE_UNAVAILABLE:
+        log.error(
+            "persistence-unavailable type=%s route=%s",
+            type(exc).__name__,
+            safe_route(request),
+        )
+    if exc.code == PAYLOAD_TOO_LARGE:
+        log.warning("payload-too-large route=%s", safe_route(request))
+    if exc.code == TOO_MANY_REQUESTS:
+        log.warning("rate-limited route=%s", safe_route(request))
     return error_response(exc.status_code, exc.code, exc.message, exc.details)
 
 
@@ -169,5 +203,6 @@ async def http_exception_handler(_request: Request, exc: StarletteHTTPException)
     )
 
 
-async def unexpected_error_handler(_request: Request, _exc: Exception) -> JSONResponse:
+async def unexpected_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    log.error("unexpected-error type=%s route=%s", type(exc).__name__, safe_route(request))
     return error_response(500, INTERNAL_ERROR, "An unexpected error occurred.")

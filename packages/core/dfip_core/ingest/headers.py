@@ -5,7 +5,11 @@ from __future__ import annotations
 from collections import Counter
 from dataclasses import dataclass
 
-from dfip_db.catalog import WEB_ENGAGE_SOURCE_COLUMNS, WEB_ENGAGE_SOURCE_HEADERS
+from dfip_db.catalog import (
+    APPROVED_EXTRA_SOURCE_HEADERS,
+    WEB_ENGAGE_SOURCE_COLUMNS,
+    WEB_ENGAGE_SOURCE_HEADERS,
+)
 from openpyxl.utils import get_column_letter
 
 PREFERRED_SHEET = "Web-Engage Raw"
@@ -17,6 +21,7 @@ class HeaderMatch:
     header_row: int
     start_index: int  # 0-based
     headers: tuple[str, ...]
+    extra_headers: tuple[str, ...] = ()
 
     @property
     def start_column_letter(self) -> str:
@@ -124,16 +129,87 @@ def locate_source_headers(row_values: list[object]) -> int:
     )
 
 
+def classify_trailing_headers(observed: list[str | None], start_index: int) -> tuple[str, ...]:
+    """Headers immediately after the locked 57-column region.
+
+    Trailing blank cells are ignored. Identity is the exact header text, not
+    Excel letter. Approved extras are optional. Anything else fails closed.
+    """
+    rest = list(observed[start_index + 57 :])
+    while rest and rest[-1] is None:
+        rest.pop()
+    extras: list[str] = []
+    for header in rest:
+        if header is None or header == "":
+            raise HeaderContractError(
+                "EMPTY_COLUMN_NAME",
+                "Empty/invalid source column header",
+                observed=tuple(observed[start_index : start_index + 57] + rest),
+            )
+        extras.append(header)
+    if not extras:
+        return ()
+    dups = duplicate_headers(extras)
+    clash = tuple(name for name in extras if name in expected_source_headers())
+    if dups or clash:
+        raise HeaderContractError(
+            "DUPLICATE_HEADERS",
+            "duplicate headers in or against the source region: "
+            + ", ".join(dict.fromkeys((*dups, *clash))),
+            duplicates=tuple(dict.fromkeys((*dups, *clash))),
+            observed=tuple(observed),
+        )
+    unknown = tuple(name for name in extras if name not in APPROVED_EXTRA_SOURCE_HEADERS)
+    if unknown:
+        raise HeaderContractError(
+            "UNAPPROVED_SOURCE_COLUMN",
+            "Unapproved source column: " + ", ".join(unknown),
+            unexpected=unknown,
+            observed=tuple(observed),
+        )
+    return tuple(extras)
+
+
+_SPECIFIC_HEADER_ERRORS = frozenset(
+    {
+        "DUPLICATE_HEADERS",
+        "UNAPPROVED_SOURCE_COLUMN",
+        "EMPTY_COLUMN_NAME",
+        "AMBIGUOUS_REGION",
+    }
+)
+
+
+def _prefer_header_error(
+    current: HeaderContractError | None, new: HeaderContractError
+) -> HeaderContractError:
+    """Keep a specific contract error instead of a later data-row HEADER_CONTRACT."""
+    if current is None:
+        return new
+    if (
+        current.reason_code in _SPECIFIC_HEADER_ERRORS
+        and new.reason_code not in _SPECIFIC_HEADER_ERRORS
+    ):
+        return current
+    return new
+
+
 def match_header_rows(rows: list[tuple[int, list[object]]]) -> HeaderMatch:
     last_error: HeaderContractError | None = None
     for excel_row, values in rows:
         try:
             start = locate_source_headers(values)
+            observed = [_as_header(value) for value in values]
+            extras = classify_trailing_headers(observed, start)
         except HeaderContractError as exc:
-            last_error = exc
+            last_error = _prefer_header_error(last_error, exc)
             continue
-        headers = expected_source_headers()
-        return HeaderMatch(header_row=excel_row, start_index=start, headers=headers)
+        return HeaderMatch(
+            header_row=excel_row,
+            start_index=start,
+            headers=expected_source_headers(),
+            extra_headers=extras,
+        )
     if last_error is not None:
         raise last_error
     raise HeaderContractError("HEADER_CONTRACT", "no header row found in the scanned region")

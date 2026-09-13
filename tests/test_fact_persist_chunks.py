@@ -113,7 +113,7 @@ def test_large_synthetic_fixture_is_not_one_transaction_per_fact() -> None:
     assert facts.many_sizes == [40, 40, 40]
     assert sum(facts.many_sizes) == 120
     assert len(facts.many_sizes) < 120
-    assert FACT_PERSIST_CHUNK_SIZE == 500
+    assert FACT_PERSIST_CHUNK_SIZE == 5000
 
 
 def test_worker_exception_marks_run_failed_and_preserves_partial_facts() -> None:

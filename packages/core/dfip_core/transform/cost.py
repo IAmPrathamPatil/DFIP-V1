@@ -21,6 +21,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal
 
+from dfip_config.catalog_identity import packaged_catalog_owner_client_id
 from dfip_config.rate_cards import RateCardRule
 from dfip_config.resolve import resolve_rate_card_rule
 
@@ -56,6 +57,23 @@ def rate_card_rule_id(rule: RateCardRule | None) -> str | None:
     if rule is None:
         return None
     return RATE_CARD_RULE_IDS.get((rule.version_label, rule.priority))
+
+
+def persistable_rate_card_rule_id(client_id: str | None, rule_id: str | None) -> str | None:
+    """Store a rate-card rule UUID only when it belongs to ``client_id``.
+
+    Packaged P1 rule rows are owned by the default catalog client. Packaged
+    fallback still computes Total Cost; non-default tenants persist NULL
+    instead of another tenant's rule identity.
+    """
+    if not rule_id:
+        return None
+    if not client_id:
+        return rule_id
+    packaged = frozenset(RATE_CARD_RULE_IDS.values())
+    if rule_id in packaged:
+        return rule_id if client_id == packaged_catalog_owner_client_id() else None
+    return None
 
 
 def calculate_total_cost(

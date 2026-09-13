@@ -1,0 +1,15 @@
+# Example schedule only. Operators must choose a calendar that matches RPO.
+# Do not enable until first-boot backup has been verified once by hand.
+
+[Unit]
+Description=DFIP daily coordinated backup timer
+Documentation=file:///opt/dfip/current/documentation/V1_DEPLOYMENT.md
+
+[Timer]
+OnCalendar=*-*-* 02:30:00
+Persistent=true
+RandomizedDelaySec=10min
+Unit=dfip-backup.service
+
+[Install]
+WantedBy=timers.target

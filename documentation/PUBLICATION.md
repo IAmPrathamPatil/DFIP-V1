@@ -5,7 +5,9 @@ same published slice. P9 adds **application-level authorization** on the
 existing API boundary. P10 locked data/report parity. P11 is native Excel
 PivotTable presentation of that same published slice. It does not add
 PostgreSQL RLS, a KPI engine, a QA engine, a live database, or an HTTP upload
-pipeline. P12/P13/P14 are not started.
+pipeline. **P12 COMPLETE** (historical reports / recovery on the existing
+catalog). **P13A COMPLETE**. **P13B COMPLETE**. **P13C COMPLETE**.
+**P13D COMPLETE**. **P13E COMPLETE**. **P13F COMPLETE**. **P13G COMPLETE**. P14 is not started.
 
 P3 ingestion and P4 transformation are libraries. V2 adds authenticated
 multipart ingest (`POST /api/v1/uploads`) that calls those libraries and does
@@ -58,14 +60,16 @@ Upload does not publish. Only `admin` and `publisher` may publish. `reader` /
 | Client `/client/facts` | `GET /api/v1/publications/current/facts` | **Published slice** for `publication_current`. |
 | Excel `Client_Report.xlsx` | `GET /api/v1/publications/current/facts` | Same published slice, paged at 200. The committed file is **Desktop-native V2-X** (`PublishedFacts` + `Facts` + nine Daily Report sheets, native connections/query tables). Fake `xl/queryMashup/` parts are forbidden. Refresh All was verified on a local pointer-test workbook. Do not commit a BearerToken. See `documentation/DESKTOP_ACCEPTANCE.md` and `documentation/DAILY_REPORT.md`. |
 | Published download | `GET /api/v1/publications/current/facts.csv` and `.xlsx` | Same published slice as a file. **IMPLEMENTED**. |
-| Client Report download | `GET /api/v1/publications/current/client-report.xlsx` and `GET /api/v1/publications/{id}/client-report.xlsx` | Nine-sheet `Client_Report.xlsx` bound to that publication's snapshot. No token is embedded. **IMPLEMENTED**. |
+| Client Report download | `GET /api/v1/publications/current/client-report.xlsx` and `GET /api/v1/publications/{id}/client-report.xlsx` | Current static recovery uses `DFIP_<client_code>_<YYYY-MM-DD>_Client_Report.xlsx`. Historical static uses `DFIP_<client_code>_<YYYY-MM-DD>_<publication_short_id>_Client_Report.xlsx`. No token is embedded. Current download with no publication is 404. Historical download does not follow `publication_current`. **IMPLEMENTED**. |
 
 `publication_current` is one pointer per client. Republishing replaces the
-pointer. Empty current publication returns `items: []` and `total: 0` — the
-client portal does not fall back to `/facts`. Current and historical fact
-reads use `publication_fact` when `snapshot_status=complete`. Excel
-`PublishedFacts.m` still calls `GET /publications/current/facts` and does not
-need a path change.
+pointer. Deactivating a company does **not** clear the pointer. Current client
+portal and current/refreshable workbooks are blocked while inactive; publisher
+historical `{id}` downloads remain available until operator CLI purge. Empty
+current publication returns `items: []` and `total: 0` — the client portal
+does not fall back to `/facts`. Current and historical fact reads use
+`publication_fact` when `snapshot_status=complete`. Excel `PublishedFacts.m`
+still calls `GET /publications/current/facts` and does not need a path change.
 
 ## Immutable snapshots
 
@@ -102,7 +106,23 @@ Distinguish three states. Do not collapse them:
 
 Power Query calls `GET /api/v1/publications/current/facts` with Bearer
 authentication and pages `limit=200` until `total` is consumed. It does not
-call working-set `GET /api/v1/facts`.
+call working-set `GET /api/v1/facts`. JSON object keys follow `FACT_VALUE_FIELDS`
+so the native mashup's first-row expansion matches `queryTableFields`.
+`publication_current` / `fact_scope` are unchanged: refresh returns the current
+processing-run snapshot (or `client_current` if that publication was created
+that way).
+
+RUN 005C deliverable modes: static recovery
+`GET /publications/current/client-report.xlsx` and refreshable
+`GET /publications/current/refreshable-client-report.xlsx`. Historical
+`/{id}/refreshable-client-report.xlsx` is not a route.
+
+P12 historical static downloads use the same generator as current static
+recovery. They stay bound to `publication_id`. Same-day republishes are
+distinguished by the 8-character publication short id in the historical
+filename only. The current filename contract is unchanged. Downloads do not
+create publications, move `publication_current`, or mutate `publication_fact`.
+Legacy `snapshot_status=none` is not a frozen snapshot.
 
 ## Authentication notes
 

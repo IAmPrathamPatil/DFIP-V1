@@ -14,7 +14,7 @@ from typing import Any
 import httpx
 import pytest
 from dfip_api.app import create_app
-from dfip_api.errors import PersistenceUnavailableError
+from dfip_api.errors import AuthConfigurationError, PersistenceUnavailableError
 from dfip_config.settings import Settings
 from dfip_core.ingest.store import InMemoryIngestStore
 from dfip_core.transform.store import InMemoryFactStore
@@ -31,6 +31,7 @@ from test_p5_api import (
     RUN_A,
     inspector_settings,
     make_settings,
+    production_settings,
     seed_stores,
 )
 
@@ -148,6 +149,15 @@ def test_javascript_declares_the_same_admin_roles() -> None:
     assert 'access: "client"' in app_js
     assert "/admin/source-files" in views
     assert "/client/facts" in views
+    assert "/client/overview" in app_js
+    assert "getOverviewTrends" in (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
+    assert "getOverviewDrilldown" in (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
+    assert "getOverviewExplorer" in (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
+    assert "listSavedAnalyses" in (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
+    assert "downloadOverviewExport" in (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
+    assert "API liveness" in views
+    assert "Readiness" in views
+    assert "progress_at" in views
     assert "dfip_core" not in app_js
 
 
@@ -170,6 +180,7 @@ def test_nav_current_state_is_exclusive_per_route() -> None:
 
     nav_hrefs = [
         "/admin",
+        "/admin/companies",
         "/admin/upload",
         "/admin/source-files",
         "/admin/batches",
@@ -182,10 +193,12 @@ def test_nav_current_state_is_exclusive_per_route() -> None:
         "/admin/publications",
         "/admin/downloads",
         "/client",
+        "/client/overview",
         "/client/facts",
     ]
     paths = {
         "/admin": "/admin",
+        "/admin/companies": "/admin/companies",
         "/admin/upload": "/admin/upload",
         "/admin/source-files": "/admin/source-files",
         "/admin/source-files/b0000000-0000-4000-8000-000000000001": "/admin/source-files",
@@ -202,6 +215,7 @@ def test_nav_current_state_is_exclusive_per_route() -> None:
         "/admin/publications": "/admin/publications",
         "/admin/downloads": "/admin/downloads",
         "/client": "/client",
+        "/client/overview": "/client/overview",
         "/client/facts": "/client/facts",
         "/client/facts/detail": "/client/facts",
     }
@@ -387,6 +401,33 @@ def test_spa_upload_and_published_download_wiring() -> None:
     assert 'data-upload-form="true"' in views
     assert "data-upload-status" in views
     assert "The website stays usable while this file is processed" in views
+    assert "data-upload-stage" in views
+    assert "Ready to Publish" in views
+    assert "Ingesting" in views
+    assert "data-indeterminate" in views
+    assert "processingProgressPanel" in views
+    assert "pollBatchProgress" in app_js
+    assert "data-batch-progress-host" in views
+    assert "Validating" in views
+    assert "cancelBatch" in client_js
+    assert "deleteBatch" in client_js
+    assert "getPublicationProgress" in client_js
+    assert "data-batch-cancel" in views
+    assert "data-batch-delete" in views
+    assert "Cancelling..." in views
+    assert "Cancelled" in views
+    assert "data-publish-progress-host" in views
+    term = app_js[
+        app_js.index("function isTerminalBatch(") : app_js.index("function scheduleBatchPoll(")
+    ]
+    assert 'stage === "succeeded"' in term
+    assert 'stage === "cancelled"' in term
+    assert 'item.status === "processed"' not in term
+    retry = views[
+        views.index("function batchRetryAction(") : views.index("function moneyCell(")
+    ]
+    assert 'stage === "validating"' in retry
+    assert "50%" not in views
     assert "data-download-published" in views
     assert "does not publish" in views.lower()
     assert "excel export" not in client_js.lower()
@@ -494,3 +535,30 @@ def test_packages_web_does_not_duplicate_p5_routes() -> None:
     assert "source-files" not in app_source
     assert "fact_campaign_day" not in app_source
     assert "create_web_app" in app_source
+
+
+def test_production_web_requires_https_origin_strings() -> None:
+    with pytest.raises(AuthConfigurationError, match="HTTPS DFIP_WEB_ORIGIN"):
+        create_web_app(
+            production_settings(
+                dfip_web_origin="http://127.0.0.1:3000",
+                dfip_api_base_url="https://dfip.example.com",
+            )
+        )
+    with pytest.raises(AuthConfigurationError, match="HTTPS DFIP_API_BASE_URL"):
+        create_web_app(
+            production_settings(
+                dfip_web_origin="https://dfip.example.com",
+                dfip_api_base_url="http://127.0.0.1:8000",
+            )
+        )
+    http = TestClient(create_web_app(production_settings()))
+    config = http.get("/config.json")
+    assert config.status_code == 200
+    assert config.json()["apiBaseUrl"].startswith("https://")
+    docs = http.get("/docs")
+    assert docs.status_code == 200
+    assert "swagger" not in docs.text.lower()
+    spec = http.get("/openapi.json")
+    assert "paths" not in spec.text
+    assert "text/html" in spec.headers.get("content-type", "")

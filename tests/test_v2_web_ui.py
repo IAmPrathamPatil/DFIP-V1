@@ -115,7 +115,8 @@ def test_website_client_surface_is_reporting_not_pipeline() -> None:
     admin_block = components[operate:reporting]
     assert "Upload Center" in admin_block
     assert "canAccessAdmin" in components
-    assert "Published reporting" in views
+    assert "Reports" in views
+    assert "export function clientOverviewView" in views
     assert 'data-upload-form="true"' in views
     start = views.index("export function clientHomeView")
     end = views.index("export function clientFactListView")

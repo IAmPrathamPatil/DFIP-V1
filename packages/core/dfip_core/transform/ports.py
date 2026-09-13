@@ -28,6 +28,8 @@ class FactStore(Protocol):
 
     def list_history(self) -> list[SupersededFact]: ...
 
+    def revert_run(self, processing_run_id: str) -> None: ...
+
     def list_published_slice(
         self,
         *,

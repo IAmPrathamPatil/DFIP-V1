@@ -1,9 +1,10 @@
 param(
     [Parameter(Mandatory = $true)]
-    [ValidateSet("start-check", "stop")]
+    [ValidateSet("start-check", "stop", "stop-web", "web-config-check")]
     [string]$Action,
     [Parameter(Mandatory = $true)]
-    [string]$RepoRoot
+    [string]$RepoRoot,
+    [string]$ExpectedApiBaseUrl = "http://127.0.0.1:8000"
 )
 
 $ErrorActionPreference = "Continue"
@@ -68,6 +69,126 @@ function Test-HttpOk {
     catch {
         return $false
     }
+}
+
+function Normalize-ApiBaseUrl {
+    param([string]$Url)
+    if ([string]::IsNullOrWhiteSpace($Url)) {
+        return ""
+    }
+    return $Url.Trim().TrimEnd("/")
+}
+
+function Get-AdvertisedApiBaseUrl {
+    try {
+        $r = Invoke-WebRequest -UseBasicParsing -Uri "http://127.0.0.1:3000/config.json" -TimeoutSec 2
+        if ($r.StatusCode -ne 200) {
+            return ""
+        }
+        $json = $r.Content | ConvertFrom-Json
+        return [string]$json.apiBaseUrl
+    }
+    catch {
+        return ""
+    }
+}
+
+function Stop-DfipMarkedTree {
+    param([int]$Port, [string]$Marker)
+    $toStop = New-Object System.Collections.Generic.List[int]
+    $pids = Get-ListenPids -Port $Port
+    foreach ($procId in $pids) {
+        $cmd = Get-CommandLine -ProcessId $procId
+        if (-not (Test-DfipCommand -CommandLine $cmd -Marker $Marker)) {
+            Write-Host "Port $Port PID $procId is not a DFIP $Marker process; not killed."
+            continue
+        }
+        if (-not $toStop.Contains($procId)) {
+            $toStop.Add($procId)
+        }
+        try {
+            $proc = Get-CimInstance Win32_Process -Filter "ProcessId=$procId" -ErrorAction SilentlyContinue
+            if ($proc -and $proc.ParentProcessId) {
+                $parentId = [int]$proc.ParentProcessId
+                $parentCmd = Get-CommandLine -ProcessId $parentId
+                if ((Test-DfipCommand -CommandLine $parentCmd -Marker $Marker) -and -not $toStop.Contains($parentId)) {
+                    $toStop.Add($parentId)
+                }
+            }
+        }
+        catch {
+        }
+        try {
+            $children = Get-CimInstance Win32_Process -Filter "ParentProcessId=$procId" -ErrorAction SilentlyContinue
+            foreach ($child in $children) {
+                $childId = [int]$child.ProcessId
+                if ((Test-DfipCommand -CommandLine ([string]$child.CommandLine) -Marker $Marker) -and -not $toStop.Contains($childId)) {
+                    $toStop.Add($childId)
+                }
+            }
+        }
+        catch {
+        }
+    }
+    $stopped = 0
+    foreach ($procId in $toStop) {
+        Write-Host "Stopping DFIP $Marker process tree member (PID $procId) on port $Port."
+        Stop-Process -Id $procId -Force -ErrorAction SilentlyContinue
+        $stopped += 1
+    }
+    if ($stopped -eq 0) {
+        Write-Host "Port ${Port}: no DFIP $Marker process to stop."
+    }
+    return $stopped
+}
+
+if ($Action -eq "web-config-check") {
+    $expected = Normalize-ApiBaseUrl -Url $ExpectedApiBaseUrl
+    $pageOk = Test-HttpOk -Uri "http://127.0.0.1:3000/"
+    if (-not $pageOk) {
+        Write-Host "Website not reachable at http://127.0.0.1:3000"
+        exit 2
+    }
+    $advertised = Get-AdvertisedApiBaseUrl
+    $normalized = Normalize-ApiBaseUrl -Url $advertised
+    if ($normalized -ne $expected) {
+        if ([string]::IsNullOrWhiteSpace($advertised)) {
+            Write-Host "Advertised apiBaseUrl: (missing)"
+        }
+        else {
+            Write-Host "Advertised apiBaseUrl: $advertised"
+        }
+        exit 3
+    }
+    Write-Host "[PASS] Website reachable: http://127.0.0.1:3000"
+    Write-Host "[PASS] Website API configuration: $expected"
+    exit 0
+}
+
+if ($Action -eq "stop-web") {
+    Stop-DfipMarkedTree -Port 3000 -Marker "dfip_web" | Out-Null
+    $deadline = (Get-Date).AddSeconds(8)
+    do {
+        $still = $false
+        foreach ($procId in (Get-ListenPids -Port 3000)) {
+            if (Test-DfipCommand -CommandLine (Get-CommandLine -ProcessId $procId) -Marker "dfip_web") {
+                $still = $true
+                break
+            }
+        }
+        if (-not $still) {
+            break
+        }
+        Start-Sleep -Milliseconds 400
+    } while ((Get-Date) -lt $deadline)
+    foreach ($procId in (Get-ListenPids -Port 3000)) {
+        if (Test-DfipCommand -CommandLine (Get-CommandLine -ProcessId $procId) -Marker "dfip_web") {
+            Write-Host "FAIL: dfip_web still listening on port 3000 after stop."
+            exit 1
+        }
+    }
+    Write-Host "Port 3000: DFIP website process tree cleared."
+    exit 0
 }
 
 if ($Action -eq "stop") {
@@ -138,7 +259,20 @@ else {
     Write-Host "Port 8000: available for python -m dfip_api"
 }
 if ($webOk) {
-    Write-Host "Port 3000: existing DFIP website OK (will not start a second website)."
+    $advertised = Normalize-ApiBaseUrl -Url (Get-AdvertisedApiBaseUrl)
+    $expected = Normalize-ApiBaseUrl -Url $ExpectedApiBaseUrl
+    if ($advertised -eq $expected) {
+        Write-Host "Port 3000: existing DFIP website OK."
+    }
+    else {
+        Write-Host "Port 3000: website responds but API URL is stale; launcher will replace it."
+        if ([string]::IsNullOrWhiteSpace($advertised)) {
+            Write-Host "Advertised apiBaseUrl: (missing)"
+        }
+        else {
+            Write-Host "Advertised apiBaseUrl: $advertised"
+        }
+    }
 }
 else {
     Write-Host "Port 3000: available for python -m dfip_web"

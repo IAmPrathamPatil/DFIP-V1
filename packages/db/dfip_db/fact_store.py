@@ -4,16 +4,18 @@ from __future__ import annotations
 
 from collections.abc import Iterator, Sequence
 from datetime import UTC, date, datetime
+from uuid import uuid4
 
 from dfip_core.transform.fact import FactKey, FactRecord
 from dfip_core.transform.store import SupersededFact
-from psycopg.errors import UniqueViolation
 from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import (
     FACT_COLUMNS,
     FACT_SELECT,
+    as_date,
+    as_uuid_text,
     fact_from_row,
     fact_values,
     history_from_row,
@@ -42,12 +44,11 @@ WHERE processing_run_id = %s
 ORDER BY client_id, campaign_id, variation_id_key, day
 LIMIT %s
 """
-_FACT_INSERT_PREFIX = f"INSERT INTO fact_campaign_day ({FACT_SELECT}) VALUES "
-_HISTORY_INSERT_PREFIX = (
-    "INSERT INTO fact_campaign_day_history ("
-    + FACT_SELECT
-    + ", superseded_at, superseded_by_run_id) VALUES "
-)
+_HISTORY_COLUMNS = FACT_SELECT + ", superseded_at, superseded_by_run_id"
+# QA loads the complete run working set. Pages stay keyset-bounded; they run
+# inside one RLS transaction so 5000-row fetches do not re-bind identity.
+FACT_QA_LOAD_PAGE_SIZE = 5000
+FACT_QA_LOAD_STATEMENT_TIMEOUT = "180s"
 
 
 class PostgresFactStore:
@@ -76,84 +77,50 @@ class PostgresFactStore:
 
         Matches single-row upsert semantics: insert, restate-with-history, or
         last_seen-only. One COMMIT for the whole chunk, not one per fact.
+
+        PostgreSQL rejects COPY FROM on RLS tables, so new rows COPY into a
+        TEMP table (no RLS) and INSERT ... SELECT into fact_campaign_day.
+        ON CONFLICT DO NOTHING skips existing grains; those rows then follow
+        the SELECT FOR UPDATE restatement path.
         """
         if not records:
             return []
-        try:
-            return self._upsert_many_once(records)
-        except UniqueViolation:
-            return self._upsert_many_once(records)
+        if len({record.key for record in records}) != len(records):
+            return self._upsert_lookup_merge(records)
+        return self._upsert_insert_first(records)
 
-    def _upsert_many_once(self, records: Sequence[FactRecord]) -> list[str]:
-        keys = [record.key for record in records]
+    def _upsert_insert_first(self, records: Sequence[FactRecord]) -> list[str]:
         with self._tx() as conn:
             conn.execute(f"SET LOCAL statement_timeout = '{_FACT_PERSIST_STATEMENT_TIMEOUT}'")
-            previous_by_key = _load_for_update(conn, keys)
-            actions: list[str] = []
-            state = dict(previous_by_key)
-            inserts: list[FactRecord] = []
-            history_rows: list[tuple[FactRecord, str | None]] = []
-            restates: list[FactRecord] = []
-            touches: list[FactRecord] = []
-            now = datetime.now(tz=UTC)
-            for record in records:
-                previous = state.get(record.key)
-                if previous is None:
-                    inserts.append(record)
-                    state[record.key] = record
-                    actions.append("inserted")
-                    continue
-                carried = record.carry_first_seen(previous)
-                if previous.business_values() == carried.business_values():
-                    touches.append(carried)
-                    state[record.key] = carried
-                    actions.append("unchanged")
-                    continue
-                history_rows.append((previous, record.processing_run_id))
-                restates.append(carried)
-                state[record.key] = carried
-                actions.append("restated")
-            _insert_many(conn, _FACT_INSERT_PREFIX, [fact_values(item) for item in inserts])
-            _insert_many(
+            inserted = _copy_then_insert(
                 conn,
-                _HISTORY_INSERT_PREFIX,
-                [(*fact_values(previous), now, run_id) for previous, run_id in history_rows],
+                dest_table="fact_campaign_day",
+                columns=FACT_SELECT,
+                rows=[fact_values(item) for item in records],
+                on_conflict=(
+                    "ON CONFLICT (client_id, campaign_id, variation_id_key, day) DO NOTHING"
+                ),
+                returning="client_id, campaign_id, variation_id_key, day",
             )
-            if restates or touches:
-                with conn.pipeline():
-                    for carried in restates:
-                        update_values = tuple(
-                            getattr(carried, name)
-                            for name in FACT_COLUMNS
-                            if name != "first_seen_at"
-                        )
-                        conn.execute(
-                            _FACT_UPDATE,
-                            (
-                                *update_values,
-                                carried.client_id,
-                                carried.campaign_id,
-                                carried.variation_id_key,
-                                carried.day,
-                            ),
-                        )
-                    for carried in touches:
-                        conn.execute(
-                            """
-                            UPDATE fact_campaign_day
-                            SET last_seen_at = %s
-                            WHERE client_id = %s AND campaign_id = %s
-                              AND variation_id_key = %s AND day = %s
-                            """,
-                            (
-                                carried.last_seen_at,
-                                carried.client_id,
-                                carried.campaign_id,
-                                carried.variation_id_key,
-                                carried.day,
-                            ),
-                        )
-        return actions
+            inserted_keys = {_fact_key_from_row(row) for row in inserted}
+            if len(inserted_keys) == len(records):
+                return ["inserted"] * len(records)
+            conflicts = [record for record in records if record.key not in inserted_keys]
+            conflict_actions = _merge_existing(conn, conflicts)
+            conflict_by_key = {
+                record.key: action
+                for record, action in zip(conflicts, conflict_actions, strict=True)
+            }
+            return [
+                "inserted" if record.key in inserted_keys else conflict_by_key[record.key]
+                for record in records
+            ]
+
+    def _upsert_lookup_merge(self, records: Sequence[FactRecord]) -> list[str]:
+        """Sequential insert/restate/touch for chunks that repeat a grain."""
+        with self._tx() as conn:
+            conn.execute(f"SET LOCAL statement_timeout = '{_FACT_PERSIST_STATEMENT_TIMEOUT}'")
+            return _merge_existing(conn, records)
 
     def for_batch(self, batch_id: str) -> list[FactRecord]:
         with self._tx() as conn:
@@ -208,23 +175,83 @@ class PostgresFactStore:
     ) -> list:
         with self._tx() as conn:
             conn.execute(_FACT_RUN_TIMEOUT_SQL)
-            if after is None:
-                result = conn.execute(_FACT_RUN_FIRST_PAGE_SQL, (processing_run_id, page_size))
-            else:
-                result = conn.execute(
-                    _FACT_RUN_NEXT_PAGE_SQL,
-                    (processing_run_id, *after, page_size),
-                )
-            return list(result.fetchall())
+            return _fetch_run_page_on(conn, processing_run_id, after=after, page_size=page_size)
 
     def for_run(self, processing_run_id: str) -> list[FactRecord]:
         expected = self.count_for_run(processing_run_id)
-        facts = list(self.iter_for_run(processing_run_id))
+        facts = self._load_run_facts(processing_run_id)
         if len(facts) != expected:
             raise RuntimeError(
                 f"QA fact load incomplete for run {processing_run_id}: "
                 f"loaded {len(facts)}, expected {expected}"
             )
+        return facts
+
+    def revert_run(self, processing_run_id: str) -> None:
+        """Restore restated grains, then drop facts still owned by this run."""
+        pk = ("client_id", "campaign_id", "variation_id_key", "day")
+        assignments = ", ".join(
+            f"{name} = latest.{name}" for name in FACT_COLUMNS if name not in pk
+        )
+        with self._tx() as conn:
+            conn.execute(
+                f"""
+                WITH latest AS (
+                    SELECT DISTINCT ON (client_id, campaign_id, variation_id_key, day)
+                           {FACT_SELECT}
+                    FROM fact_campaign_day_history
+                    WHERE superseded_by_run_id = %s
+                    ORDER BY client_id, campaign_id, variation_id_key, day,
+                             superseded_at DESC
+                )
+                UPDATE fact_campaign_day AS fact
+                SET {assignments}
+                FROM latest
+                WHERE fact.client_id = latest.client_id
+                  AND fact.campaign_id = latest.campaign_id
+                  AND fact.variation_id_key = latest.variation_id_key
+                  AND fact.day = latest.day
+                """,
+                (processing_run_id,),
+            )
+            conn.execute(
+                "DELETE FROM fact_campaign_day_history WHERE superseded_by_run_id = %s",
+                (processing_run_id,),
+            )
+            conn.execute(
+                "DELETE FROM fact_campaign_day WHERE processing_run_id = %s",
+                (processing_run_id,),
+            )
+
+    def _load_run_facts(self, processing_run_id: str) -> list[FactRecord]:
+        """Load the run-scoped working set in one RLS transaction.
+
+        evaluate_qa still receives the complete FactRecord list. Keyset pages
+        stay bounded; sharing one transaction avoids re-applying RLS per page.
+        """
+        facts: list[FactRecord] = []
+        after: tuple[object, object, object, object] | None = None
+        with self._tx() as conn:
+            conn.execute(f"SET LOCAL statement_timeout = '{FACT_QA_LOAD_STATEMENT_TIMEOUT}'")
+            while True:
+                page = _fetch_run_page_on(
+                    conn,
+                    processing_run_id,
+                    after=after,
+                    page_size=FACT_QA_LOAD_PAGE_SIZE,
+                )
+                if not page:
+                    break
+                facts.extend(fact_from_row(row) for row in page)
+                if len(page) < FACT_QA_LOAD_PAGE_SIZE:
+                    break
+                last = page[-1]
+                after = (
+                    last["client_id"],
+                    last["campaign_id"],
+                    last["variation_id_key"],
+                    last["day"],
+                )
         return facts
 
     def list_current(self) -> list[FactRecord]:
@@ -295,10 +322,30 @@ class PostgresFactStore:
         return [fact_from_row(row) for row in rows], total
 
 
+def _fetch_run_page_on(
+    conn,
+    processing_run_id: str,
+    *,
+    after: tuple[object, object, object, object] | None,
+    page_size: int,
+) -> list:
+    if after is None:
+        result = conn.execute(_FACT_RUN_FIRST_PAGE_SQL, (processing_run_id, page_size))
+    else:
+        result = conn.execute(
+            _FACT_RUN_NEXT_PAGE_SQL,
+            (processing_run_id, *after, page_size),
+        )
+    return list(result.fetchall())
+
+
 def _load_for_update(conn, keys: Sequence[FactKey]) -> dict[FactKey, FactRecord]:
-    placeholders = ",".join(["(%s, %s, %s, %s)"] * len(keys))
+    if not keys:
+        return {}
+    unique_keys = list(dict.fromkeys(keys))
+    placeholders = ",".join(["(%s, %s, %s, %s)"] * len(unique_keys))
     params: list[object] = []
-    for key in keys:
+    for key in unique_keys:
         params.extend((key.client_id, key.campaign_id, key.variation_id_key, key.day))
     rows = conn.execute(
         f"""
@@ -315,13 +362,122 @@ def _load_for_update(conn, keys: Sequence[FactKey]) -> dict[FactKey, FactRecord]
     return loaded
 
 
-def _insert_many(conn, sql_prefix: str, rows: Sequence[tuple[object, ...]]) -> None:
+def _fact_key_from_row(row: dict) -> FactKey:
+    return FactKey(
+        as_uuid_text(row["client_id"]),
+        str(row["campaign_id"]),
+        str(row["variation_id_key"]),
+        as_date(row["day"]),
+    )
+
+
+def _merge_existing(conn, records: Sequence[FactRecord]) -> list[str]:
+    """Apply insert / restate / last_seen-only in record order."""
+    if not records:
+        return []
+    previous_by_key = _load_for_update(conn, [record.key for record in records])
+    actions: list[str] = []
+    state = dict(previous_by_key)
+    leftover_inserts: list[FactRecord] = []
+    history_rows: list[tuple[FactRecord, str | None]] = []
+    restates: list[FactRecord] = []
+    touches: list[FactRecord] = []
+    now = datetime.now(tz=UTC)
+    for record in records:
+        previous = state.get(record.key)
+        if previous is None:
+            leftover_inserts.append(record)
+            state[record.key] = record
+            actions.append("inserted")
+            continue
+        carried = record.carry_first_seen(previous)
+        if previous.business_values() == carried.business_values():
+            touches.append(carried)
+            state[record.key] = carried
+            actions.append("unchanged")
+            continue
+        history_rows.append((previous, record.processing_run_id))
+        restates.append(carried)
+        state[record.key] = carried
+        actions.append("restated")
+    if leftover_inserts:
+        _copy_then_insert(
+            conn,
+            dest_table="fact_campaign_day",
+            columns=FACT_SELECT,
+            rows=[fact_values(item) for item in leftover_inserts],
+        )
+    if history_rows:
+        _copy_then_insert(
+            conn,
+            dest_table="fact_campaign_day_history",
+            columns=_HISTORY_COLUMNS,
+            rows=[(*fact_values(previous), now, run_id) for previous, run_id in history_rows],
+        )
+    if restates or touches:
+        with conn.pipeline():
+            for carried in restates:
+                update_values = tuple(
+                    getattr(carried, name) for name in FACT_COLUMNS if name != "first_seen_at"
+                )
+                conn.execute(
+                    _FACT_UPDATE,
+                    (
+                        *update_values,
+                        carried.client_id,
+                        carried.campaign_id,
+                        carried.variation_id_key,
+                        carried.day,
+                    ),
+                )
+            for carried in touches:
+                conn.execute(
+                    """
+                    UPDATE fact_campaign_day
+                    SET last_seen_at = %s
+                    WHERE client_id = %s AND campaign_id = %s
+                      AND variation_id_key = %s AND day = %s
+                    """,
+                    (
+                        carried.last_seen_at,
+                        carried.client_id,
+                        carried.campaign_id,
+                        carried.variation_id_key,
+                        carried.day,
+                    ),
+                )
+    return actions
+
+
+def _copy_then_insert(
+    conn,
+    *,
+    dest_table: str,
+    columns: str,
+    rows: Sequence[tuple[object, ...]],
+    on_conflict: str = "",
+    returning: str = "",
+) -> list:
+    """COPY into a TEMP table, then INSERT ... SELECT into the RLS table.
+
+    PostgreSQL FeatureNotSupported: COPY FROM is not allowed on RLS tables.
+    TEMP tables are session-local and are not RLS-protected, so COPY is legal
+    there. The INSERT still applies inspector WITH CHECK policies.
+    """
     if not rows:
-        return
-    width = len(rows[0])
-    one = "(" + ",".join(["%s"] * width) + ")"
-    sql = sql_prefix + ",".join(one for _ in rows)
-    params: list[object] = []
-    for row in rows:
-        params.extend(row)
-    conn.execute(sql, params)
+        return []
+    temp = f"_dfip_bulk_{uuid4().hex}"
+    conn.execute(f"CREATE TEMP TABLE {temp} (LIKE {dest_table} INCLUDING DEFAULTS) ON COMMIT DROP")
+    with conn.cursor() as cursor:
+        with cursor.copy(f"COPY {temp} ({columns}) FROM STDIN") as copy:
+            for row in rows:
+                copy.write_row(row)
+    sql = f"INSERT INTO {dest_table} ({columns}) SELECT {columns} FROM {temp}"
+    if on_conflict:
+        sql += f" {on_conflict}"
+    if returning:
+        sql += f" RETURNING {returning}"
+    result = conn.execute(sql)
+    fetched = list(result.fetchall()) if returning else []
+    conn.execute(f"DROP TABLE {temp}")
+    return fetched

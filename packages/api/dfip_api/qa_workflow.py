@@ -6,16 +6,18 @@ Persists qa_finding rows and processing_run.qa_verdict. Does not publish.
 from __future__ import annotations
 
 import logging
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from contextlib import contextmanager
 
 from dfip_analytics.qa import (
+    QA_RULES,
     QA_VERDICT_UNAVAILABLE,
     QaContext,
     RejectedEvidence,
     evaluate_qa,
     verdict_from_findings,
 )
+from dfip_core.ingest.progress import STAGE_VALIDATING, ProcessingCancelled, emit_progress
 from dfip_core.ingest.ports import IngestStore
 from dfip_core.ingest.store import ProcessingRunRecord, RejectedRowRecord
 from dfip_core.transform.labels import packaged_label_for_id
@@ -60,13 +62,16 @@ def evaluate_and_persist_run(
     client_id: str,
     rate_card_version_labels: set[str] | None = None,
     extra_rejected: Sequence[RejectedEvidence] | None = None,
+    on_progress: Callable[[str, int | None, int | None, str | None], None] | None = None,
 ) -> str:
     """Evaluate the complete run-scoped working set and persist findings + verdict.
 
     Returns the stored verdict. Evaluation failure is recorded as
     ``unavailable`` and is never treated as PASS or as zero findings.
     """
+    qa_total = 4
     try:
+        emit_progress(on_progress, STAGE_VALIDATING, 0, qa_total, "Loading facts...")
         facts = fact_store.for_run(run.id)
         rejected = [
             _rejected_evidence(item) for item in ingest_store.rejected_for_batch(run.batch_id)
@@ -76,6 +81,7 @@ def evaluate_and_persist_run(
         reconcile_passed = None
         reconcile_failures: tuple[str, ...] = ()
         rate_label = _rate_card_label(run, facts, rate_card_version_labels)
+        emit_progress(on_progress, STAGE_VALIDATING, 1, qa_total, "Reconciling...")
         if facts and rate_label is not None:
             report = reconcile_run(
                 facts,
@@ -86,6 +92,7 @@ def evaluate_and_persist_run(
             )
             reconcile_passed = report.passed
             reconcile_failures = tuple(report.failures)
+        emit_progress(on_progress, STAGE_VALIDATING, 2, qa_total, "Running QA checks...")
         findings = evaluate_qa(
             QaContext(
                 client_id=client_id,
@@ -99,10 +106,20 @@ def evaluate_and_persist_run(
                 reconcile_failures=reconcile_failures,
             )
         )
+        emit_progress(
+            on_progress,
+            STAGE_VALIDATING,
+            3,
+            qa_total,
+            f"{len(QA_RULES)} / {len(QA_RULES)} checks complete",
+        )
         qa_store.replace_for_run(run.id, findings)
         verdict = verdict_from_findings(findings)
         _persist_verdict(ingest_store, run, verdict)
+        emit_progress(on_progress, STAGE_VALIDATING, 4, qa_total, "QA complete")
         return verdict
+    except ProcessingCancelled:
+        raise
     except Exception:
         log.exception("QA evaluation failed for processing run %s", run.id)
         try:
@@ -116,9 +133,7 @@ def evaluate_and_persist_run(
         return QA_VERDICT_UNAVAILABLE
 
 
-def _persist_verdict(
-    ingest_store: IngestStore, run: ProcessingRunRecord, verdict: str
-) -> None:
+def _persist_verdict(ingest_store: IngestStore, run: ProcessingRunRecord, verdict: str) -> None:
     current = ingest_store.get_processing_run(run.id) or run
     current.qa_verdict = verdict
     ingest_store.save_processing_run(current)

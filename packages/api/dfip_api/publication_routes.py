@@ -2,24 +2,31 @@
 
 from __future__ import annotations
 
-from typing import Annotated
+import threading
+from typing import Annotated, Literal
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
+from dfip_api.audit import write_audit_event
 from dfip_api.deps import (
+    HistoryFactsPaginationDep,
     PaginationDep,
     PrincipalDep,
     PublicationServiceDep,
     SettingsDep,
     get_principal,
 )
+from dfip_api.excel_grant import issue_excel_workbook_token
+from dfip_api.errors import TooManyRequests
 from dfip_api.schemas import (
     ErrorResponse,
     FactPage,
+    FactTablePage,
     PublicationCreateRequest,
     PublicationCurrentResponse,
     PublicationPage,
+    PublicationProgressResponse,
     PublicationStateResponse,
 )
 
@@ -28,6 +35,7 @@ ERROR_RESPONSES = {
     403: {"model": ErrorResponse, "description": "Authorization failed."},
     404: {"model": ErrorResponse, "description": "Resource not found."},
     422: {"model": ErrorResponse, "description": "Validation or pagination error."},
+    429: {"model": ErrorResponse, "description": "Too many requests."},
     503: {"model": ErrorResponse, "description": "Persistence unavailable."},
 }
 
@@ -52,10 +60,11 @@ OptionalUuid = Annotated[UUID | None, Query()]
 )
 def create_publication(
     body: PublicationCreateRequest,
+    request: Request,
     principal: PrincipalDep,
     service: PublicationServiceDep,
 ) -> PublicationStateResponse:
-    return service.create(
+    created = service.create(
         principal=principal,
         client_id=str(body.client_id),
         processing_run_id=str(body.processing_run_id),
@@ -63,6 +72,53 @@ def create_publication(
         period_end=body.period_end,
         notes=body.notes,
         fact_scope=body.fact_scope,
+    )
+    publication = created.publication
+    write_audit_event(
+        getattr(request.app.state, "db_pool", None),
+        actor=principal.subject,
+        action="publication.create",
+        entity_type="publication",
+        entity_id=getattr(publication, "publication_id", None),
+        client_id=str(body.client_id),
+        after={"status": "created", "processing_run_id": str(body.processing_run_id)},
+    )
+    return created
+
+
+@publication_router.get(
+    "/publications/progress",
+    response_model=PublicationProgressResponse,
+    summary="Live publication progress for one processing run",
+    description=(
+        "Truthful stage text for an in-flight or recently finished publish. "
+        "Percentages are returned only when they are honestly measurable. "
+        "JWT client_id scopes the result."
+    ),
+    tags=["Publications"],
+)
+def get_publication_progress(
+    service: PublicationServiceDep,
+    principal: PrincipalDep,
+    processing_run_id: UUID,
+    client_id: OptionalUuid = None,
+) -> PublicationProgressResponse:
+    item = service.progress_for(
+        principal=principal,
+        processing_run_id=str(processing_run_id),
+        requested_client_id=str(client_id) if client_id else None,
+    )
+    return PublicationProgressResponse(
+        processing_run_id=item.processing_run_id,
+        client_id=item.client_id,
+        stage=item.stage,
+        status=item.status,
+        message=item.message,
+        current_count=item.current_count,
+        total_count=item.total_count,
+        progress_percent=item.progress_percent,
+        publication_id=item.publication_id,
+        error_summary=item.error_summary,
     )
 
 
@@ -115,6 +171,68 @@ def list_published_facts(
         requested_client_id=str(client_id) if client_id else None,
         limit=pagination.limit,
         offset=pagination.offset,
+    )
+
+
+@publication_router.get(
+    "/publications/history/facts",
+    response_model=FactPage | FactTablePage,
+    summary="List cumulative published facts for the scoped client",
+    description=(
+        "Paginated FactResponse union of complete publication snapshots for "
+        "the JWT client. Newest publication wins per campaign/variation/day "
+        "grain so republished months are not duplicated. Unpublished "
+        "working-set facts are omitted. Empty history returns items=[] and "
+        "total=0. JWT client_id scopes the result. Excel Refresh All uses "
+        "this route with page size 250000 (HISTORY_FACTS_MAX_PAGE_LIMIT) and "
+        "layout=table so JSON keys are not repeated per row. Other JSON list "
+        "routes remain capped at 200 and keep the object-item contract."
+    ),
+    tags=["Publications"],
+)
+def list_published_history_facts(
+    service: PublicationServiceDep,
+    principal: PrincipalDep,
+    pagination: HistoryFactsPaginationDep,
+    client_id: OptionalUuid = None,
+    layout: Annotated[Literal["objects", "table"], Query()] = "objects",
+) -> FactPage | FactTablePage:
+    return service.list_published_history_facts(
+        principal=principal,
+        requested_client_id=str(client_id) if client_id else None,
+        limit=pagination.limit,
+        offset=pagination.offset,
+        layout=layout,
+    )
+
+
+@publication_router.get(
+    "/publications/history/facts.csv",
+    summary="Download cumulative published facts as CSV",
+    description=(
+        "Returns the newest-wins published history as a UTF-8 CSV attachment. "
+        "Same tenant isolation as GET /publications/history/facts. Header row is "
+        "FACT_VALUE_FIELDS / FACT_TABLE_COLUMNS so Excel HeaderMap still matches. "
+        "Empty history returns a header-only file. JWT client_id scopes the file. "
+        "A development token with client_id=null may pass client_id. Row cap is "
+        "HISTORY_FACTS_MAX_PAGE_LIMIT, not the current-facts download cap."
+    ),
+    tags=["Publications"],
+    response_class=Response,
+)
+def download_published_history_csv(
+    service: PublicationServiceDep,
+    principal: PrincipalDep,
+    client_id: OptionalUuid = None,
+) -> Response:
+    body = service.download_published_history_csv(
+        principal=principal,
+        requested_client_id=str(client_id) if client_id else None,
+    )
+    return Response(
+        content=body,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": 'attachment; filename="published-history-facts.csv"'},
     )
 
 
@@ -213,9 +331,10 @@ def download_published_xlsx(
     summary="Download the current nine-sheet client report",
     description=(
         "Returns the native Client_Report workbook for publication_current. "
-        "Same tenant isolation as GET /publications/current/facts. Empty "
-        "current publication returns the nine-sheet workbook with no fact "
-        "rows. Does not process or publish."
+        "Same tenant isolation as GET /publications/current/facts. "
+        "Filename is DFIP_<client_code>_<YYYY-MM-DD>_Client_Report.xlsx. "
+        "This is the static recovery snapshot. No current publication returns "
+        "404. Does not process or publish."
     ),
     tags=["Publications"],
     response_class=Response,
@@ -226,7 +345,44 @@ def download_current_client_report(
     settings: SettingsDep,
     client_id: OptionalUuid = None,
 ) -> Response:
-    return _client_report_download(service, principal, settings, client_id, None)
+    return _client_report_download(service, principal, settings, client_id, None, artifact="static")
+
+
+@publication_router.get(
+    "/publications/current/refreshable-client-report.xlsx",
+    summary="Download the current refreshable nine-sheet client report",
+    description=(
+        "Returns a refreshable Client_Report for the company. "
+        "Refresh All calls GET /publications/history/facts.csv using the "
+        "short-lived Excel access JWT written into Settings BearerToken. "
+        "Client/reader downloads also register a revocable workbook grant so "
+        "POST /auth/refresh can mint a new short-lived access JWT after "
+        "access exp. Publisher/admin downloads keep the session JWT and do "
+        "not receive a grant. Not a password, not a URL token, not an "
+        "anonymous history endpoint. Filename is "
+        "DFIP_<client_code>_<YYYY-MM-DD>_Client_Report_Refreshable.xlsm. "
+        "JWT client_id remains authoritative. Settings ClientId stays empty. "
+        "No current publication returns 404."
+    ),
+    tags=["Publications"],
+    response_class=Response,
+)
+def download_current_refreshable_client_report(
+    request: Request,
+    service: PublicationServiceDep,
+    principal: PrincipalDep,
+    settings: SettingsDep,
+    client_id: OptionalUuid = None,
+) -> Response:
+    return _client_report_download(
+        service,
+        principal,
+        settings,
+        client_id,
+        None,
+        artifact="refreshable",
+        refresh_bearer_token=_excel_or_session_stamp(request, principal, settings),
+    )
 
 
 @publication_router.get(
@@ -234,9 +390,10 @@ def download_current_client_report(
     summary="Download a publication's nine-sheet client report",
     description=(
         "Returns the native Client_Report workbook bound to that "
-        "publication_id. Complete snapshots stay immutable. Same tenant "
-        "isolation as GET /publications/{publication_id}/facts. Does not "
-        "process or publish."
+        "publication_id. Complete snapshots stay immutable. Filename is "
+        "DFIP_<client_code>_<YYYY-MM-DD>_<publication_short_id>_Client_Report.xlsx. "
+        "Same tenant isolation as GET /publications/{publication_id}/facts. "
+        "Does not process or publish. Not a refreshable workbook."
     ),
     tags=["Publications"],
     response_class=Response,
@@ -258,17 +415,52 @@ def _published_download(
     client_id: UUID | None,
     kind: str,
 ) -> Response:
-    body, filename, media_type = service.download_published(
-        principal=principal,
-        requested_client_id=str(client_id) if client_id else None,
-        kind=kind,
-        max_rows=settings.dfip_download_max_rows,
-    )
-    return Response(
-        content=body,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    def build() -> Response:
+        body, filename, media_type = service.download_published(
+            principal=principal,
+            requested_client_id=str(client_id) if client_id else None,
+            kind=kind,
+            max_rows=settings.dfip_download_max_rows,
+        )
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    return _with_report_generation_limit(build)
+
+
+def _authorization_bearer(request: Request) -> str | None:
+    """Return the request Bearer token. Never log it."""
+    header = request.headers.get("authorization") or ""
+    prefix = "bearer "
+    if not header.lower().startswith(prefix):
+        return None
+    token = header[len(prefix) :].strip()
+    return token or None
+
+
+def _excel_or_session_stamp(request: Request, principal, settings) -> str | None:
+    """Stamp an Excel grant JWT for client/reader downloads; else the session JWT."""
+    grants = getattr(request.app.state, "excel_grant_store", None)
+    issued = issue_excel_workbook_token(settings, principal, grants)
+    if issued:
+        return issued
+    return _refresh_session_jwt(request, principal)
+
+
+def _refresh_session_jwt(request: Request, principal) -> str | None:
+    """Stamp only a short-lived access JWT. Never a dev token. Never log it."""
+    if getattr(principal, "auth_mode", "") != "jwt":
+        return None
+    token = _authorization_bearer(request)
+    if token is None:
+        return None
+    parts = token.split(".")
+    if len(parts) != 3 or not all(parts):
+        return None
+    return token
 
 
 def _client_report_download(
@@ -277,15 +469,37 @@ def _client_report_download(
     settings,
     client_id: UUID | None,
     publication_id: str | None,
+    *,
+    artifact: str = "static",
+    refresh_bearer_token: str | None = None,
 ) -> Response:
-    body, filename, media_type = service.download_client_report(
-        principal=principal,
-        publication_id=publication_id,
-        requested_client_id=str(client_id) if client_id else None,
-        max_rows=settings.dfip_download_max_rows,
-    )
-    return Response(
-        content=body,
-        media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
+    def build() -> Response:
+        body, filename, media_type = service.download_client_report(
+            principal=principal,
+            publication_id=publication_id,
+            requested_client_id=str(client_id) if client_id else None,
+            max_rows=settings.dfip_download_max_rows,
+            artifact=artifact,
+            api_base_url=settings.dfip_api_base_url,
+            refresh_bearer_token=refresh_bearer_token if artifact == "refreshable" else None,
+        )
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    return _with_report_generation_limit(build)
+
+
+_REPORT_GENERATION = threading.Semaphore(1)
+
+
+def _with_report_generation_limit(builder):
+    """Process-local bound on simultaneous Client Report / published-file builds."""
+    if not _REPORT_GENERATION.acquire(blocking=False):
+        raise TooManyRequests()
+    try:
+        return builder()
+    finally:
+        _REPORT_GENERATION.release()

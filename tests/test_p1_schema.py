@@ -130,6 +130,46 @@ def test_publication_fact_snapshot_table_shape() -> None:
     assert "client" in targets
 
 
+def test_publication_history_grain_table_shape() -> None:
+    table = parse_tables(read_migrations())["publication_history_grain"]
+    assert table.primary_key == (
+        "client_id",
+        "campaign_id",
+        "variation_id_key",
+        "day",
+    )
+    assert "sent" in table.columns
+    assert "month_label" in table.columns
+    assert "publication_id" not in table.columns
+    targets = {target for _local, target in table.foreign_keys}
+    assert "client" in targets
+
+
+def test_excel_workbook_grant_table_shape() -> None:
+    table = parse_tables(read_migrations())["excel_workbook_grant"]
+    assert table.primary_key == ("id",)
+    assert "jti" in table.columns
+    assert "user_id" in table.columns
+    assert "client_id" in table.columns
+    assert "expires_at" in table.columns
+    assert "revoked_at" in table.columns
+    targets = {target for _local, target in table.foreign_keys}
+    assert "app_user" in targets
+    assert "client" in targets
+
+
+def test_analytics_saved_analysis_table_shape() -> None:
+    table = parse_tables(read_migrations())["analytics_saved_analysis"]
+    assert table.primary_key == ("id",)
+    assert "owner_subject" in table.columns
+    assert "client_id" in table.columns
+    assert "title" in table.columns
+    assert "state" in table.columns
+    targets = {target for _local, target in table.foreign_keys}
+    assert "client" in targets
+    assert "app_user" not in targets
+
+
 def test_source_column_catalog_seed_matches_contract() -> None:
     rows = parse_insert_tuples(read_migrations(), "we_source_column")
     assert len(rows) == 67

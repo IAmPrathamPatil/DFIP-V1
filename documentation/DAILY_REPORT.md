@@ -4,6 +4,11 @@ The client-facing Daily Report is the FY-2026 workbook's **business report
 specification**, rebuilt so Excel consumes DFIP published facts instead of a
 local Combine-Files folder and a 336k-row pivot cache.
 
+**Client delivery:** static recovery is
+`GET /api/v1/publications/current/client-report.xlsx`. Same-file refresh is
+`GET /api/v1/publications/current/refreshable-client-report.xlsx`. The tracked
+git template is not a client deliverable. See `documentation/V1_EXCEL_REPORTING.md`.
+
 Source inspected (read-only): `Web Engage - Daily Report - FY-2026.xlsx`
 (nine visible sheets, nine PivotTables, one shared cache of 336,434 records /
 86 fields, 35 slicers). Production raw workbooks remain
@@ -33,16 +38,21 @@ delivered report sheets.
 Excel is the reporting + refresh layer. Label resolution, Filter Logic 1_2,
 rate card, Total Cost, QA, and publication stay on the backend.
 
-`PublishedFacts.m` is not modified. Fake `xl/queryMashup/` parts stay forbidden.
+`PublishedFacts.m` on disk is the operator source (canonical 45-column order).
+The tracked workbook keeps the Excel-authored DataMashup package; runtime
+generation does not rewrite it. Fake `xl/queryMashup/` parts stay forbidden.
 The tracked BearerToken stays empty. Isolation is the API / JWT `client_id`
-(application-level, not PostgreSQL RLS).
+(application-level, not PostgreSQL RLS). RUN 009 does not add columns to this
+45-header PublishedFacts sheet.
 
 ## Sheets
 
-Technical (unchanged V2-X):
+Technical (unchanged V2-X architecture; **hidden on generated client downloads**, RUN 008):
 
-1. `PublishedFacts` — query table / Refresh All destination
-2. `Facts` — Settings (`ApiBaseUrl`, `BearerToken`, `ClientId`) + Facts headers
+1. `PublishedFacts` — query table / Refresh All destination and PivotCache source. Must remain in the package. Hidden, not deleted.
+2. `Facts` — Settings (`ApiBaseUrl`, `BearerToken`, `ClientId`) + Facts headers. Power Query reads the Settings table from this sheet. Hidden, not deleted.
+
+The tracked `excel/Client_Report.xlsx` keeps both visible for operator authoring. Hiding is not authorization.
 
 Client-facing (source tab names, including trailing spaces):
 
@@ -70,7 +80,16 @@ re-serialized to Excel's native child order (`rowItems` immediately after
 `rowFields`) so desktop Excel opens the workbook as PivotTable objects.
 
 Slicers are independent per report sheet (35 slicer caches, 9 slicer parts),
-matching the reference. A Channel slicer on Overall does not filter Sub-Split.
+matching the reference field set. A Channel slicer on Overall does not filter
+Sub-Split. DFIP binds Filter Logic 1_2 slicers to cache field
+`filter_logic_1_group` (the 45-column contract); the FY-2026 file uses
+sourceName `Filter Logic 1_2` because that is its cache field name. Do not
+rename DFIP cache fields.
+
+Generated downloads seed those caches from the publication snapshot (RUN 007):
+Month defaults to the latest month in that file; Service/AMC/D2C group and
+Service Filter Logic 1 defaults apply only when the value exists, otherwise All.
+Channel, device, and product slicers default to All.
 
 Page fields:
 
@@ -156,10 +175,20 @@ already case-insensitive, so that one row receives the combined total. Native
 PivotTables (P11) use the same case-insensitive field identity; this is not a
 hidden PublishedFacts column.
 
-Total Cost business values stay as published (4 decimal places). Report cells
-use `#,##0.00` (money / cost-per / ROAS) and `0.00%` (rates). Pivot-cache IEEE
-floats that snap to the same 4-decimal amount, then the same 2-decimal display,
-are FORMAT-ONLY. A 0.01 difference after that snap is a real numeric mismatch.
+Total Cost business values stay as published (4 decimal places). P10
+reconstruction display quanta remain `#,##0.00` / `0.00%` for DATA/MATH
+comparators. Native PivotTable **dataField** formats follow the FY-2026
+reference (RUN 006): counts and INR totals as `#,##0`; Failed/Delivery/
+Delivered-to-Imp rates as `0%`; CTR and delivered-thru-conv as `0.00%`; UCT
+conversion rate as `0.0%`; Unique Click Through Conv ROAS as `#,##0.00`;
+Overall ROAS as `0.00`. Pivot-cache IEEE floats that snap to the same
+4-decimal amount are FORMAT-ONLY. A 0.01 difference after that snap is a
+real numeric mismatch. Generated workbooks use Aptos Narrow (11 / title 16).
+The FY-2026 file's 1715 pivot `dxfs` and per-item `<formats>` are **not**
+copied: they reference cache field indexes that do not exist on the DFIP
+57-field cache. Native `PivotStyleLight16` styles subtotals/grand totals.
+DFIP report title/purpose stay as product chrome on column B; column A matches
+the reference gutter. Month/Day stay published text, not Excel date serials.
 
 Hierarchy on the delivered workbook is a native compact PivotTable outline
 (expand/collapse), not separate UNIQUE columns. The P10 reconstruction formulas
@@ -173,13 +202,19 @@ live API. Snapshot `connections.xml` stays well-formed (`keepAlive=0`,
 
 ## Authenticated Client Report download
 
-Clients recover a published nine-sheet `Client_Report.xlsx` from the API
-without reprocessing, republishing, or embedding a Bearer token.
+Clients recover a published nine-sheet company workbook from the API
+(`GET /api/v1/publications/current/client-report.xlsx`). The download is a
+static snapshot named `DFIP_<client_code>_<YYYY-MM-DD>_Client_Report.xlsx`.
+Historical recovery from `GET /api/v1/publications/{publication_id}/client-report.xlsx`
+adds a stable publication short id:
+`DFIP_<client_code>_<YYYY-MM-DD>_<publication_short_id>_Client_Report.xlsx`.
+Later publications do not change an already-downloaded file. Recovery does
+not reprocess, republish, or embed a Bearer token.
 
 | Route | Meaning |
 |---|---|
-| `GET /api/v1/publications/current/client-report.xlsx` | Current publication's workbook |
-| `GET /api/v1/publications/{publication_id}/client-report.xlsx` | That publication's workbook |
+| `GET /api/v1/publications/current/client-report.xlsx` | Current publication's workbook (005B filename) |
+| `GET /api/v1/publications/{publication_id}/client-report.xlsx` | That publication's workbook (historical filename with short id) |
 
 The server clones the tracked native template and writes the authorized
 publication snapshot as static `PublishedFacts` cells. Complete P6 snapshots

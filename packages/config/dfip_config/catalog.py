@@ -155,6 +155,11 @@ class InMemoryCatalogStore:
         self.versions[updated.id] = updated
         return updated
 
+    def purge_client(self, client_id: str) -> None:
+        self.versions = {
+            key: item for key, item in self.versions.items() if item.client_id != client_id
+        }
+
 
 def new_version_label(kind: CatalogKind, when: datetime | None = None) -> str:
     stamp = (when or datetime.now(tz=UTC)).strftime("%Y%m%dT%H%M%SZ")

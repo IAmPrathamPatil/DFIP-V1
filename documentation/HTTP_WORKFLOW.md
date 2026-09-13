@@ -11,8 +11,9 @@ Status of each surface:
 | `POST /api/v1/uploads` | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** (live API 2026-08-26) |
 | `GET /api/v1/publications/current/facts.csv` | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** |
 | `GET /api/v1/publications/current/facts.xlsx` | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** (Excel Desktop opened the files) |
-| `GET /api/v1/publications/current/client-report.xlsx` | **IMPLEMENTED** / **AUTOMATED**. Nine-sheet Client Report for the current publication. |
-| `GET /api/v1/publications/{publication_id}/client-report.xlsx` | **IMPLEMENTED** / **AUTOMATED**. Nine-sheet Client Report bound to that publication snapshot. |
+| `GET /api/v1/publications/current/client-report.xlsx` | **IMPLEMENTED** / **AUTOMATED**. Static recovery workbook. Filename `DFIP_<client_code>_<YYYY-MM-DD>_Client_Report.xlsx`. 404 if none published. |
+| `GET /api/v1/publications/current/refreshable-client-report.xlsx` | **IMPLEMENTED** / **AUTOMATED** / **DESKTOP VERIFIED** (RUN 005C / RUN 010). Same-file Refresh All pages history/facts. Filename `…_Client_Report_Refreshable.xlsm`. Website/API JWT downloads stamp the short-lived session token into Settings BearerToken. History stays authenticated. ClientId stays empty. |
+| `GET /api/v1/publications/{publication_id}/client-report.xlsx` | **IMPLEMENTED** / **AUTOMATED**. Nine-sheet Client Report bound to that publication snapshot. Filename `DFIP_<client_code>_<YYYY-MM-DD>_<publication_short_id>_Client_Report.xlsx`. Not refreshable. |
 | Tenant isolation on those routes | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** (API + Excel-opened downloads) |
 | Explicit `POST /api/v1/publications` | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** |
 | `GET /api/v1/publications` | **IMPLEMENTED** / **AUTOMATED**. Publication history for the scoped client (newest first). |
@@ -26,11 +27,13 @@ Status of each surface:
 | SPA upload form | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** (browser, 2026-08-27). Upload Center now accepts `POST /api/v1/uploads` **202** (poll batch/run) or **200** replay. Banner: published is false. Working set contained `spa-camp-1`; published slice did not, until explicit publish. |
 | SPA published download | **IMPLEMENTED** / **AUTOMATED** / **MANUALLY VERIFIED** (browser, 2026-08-27). `/client/facts` Download CSV / Download XLSX created blobs; live `GET .../facts.csv` and `.xlsx` **200**. Client Report uses `GET .../client-report.xlsx`. |
 | Auto-publish after ingest | **NOT IMPLEMENTED** (by design) |
+| Unapproved extra source column | **IMPLEMENTED** / **AUTOMATED**. Ingest fails; `batch.error_summary` is `UNAPPROVED_SOURCE_COLUMN: Unapproved source column: {header}`. Does not publish. |
 | `GET /api/v1/processing-runs/{id}/qa-findings` | **IMPLEMENTED** / **AUTOMATED**. Inspector Review of persisted `qa_finding` rows plus a run-level summary. Does not publish. |
 | `POST /api/v1/processing-runs/{id}/qa` | **IMPLEMENTED** / **AUTOMATED**. Re-evaluate QA for an existing run without reprocessing facts. Does not publish. |
 | Logic/Labels catalog upload | **IMPLEMENTED** / **AUTOMATED**. `POST /api/v1/catalogs/{logic,labels}` stores a **draft**. |
 | Logic/Labels activation | **IMPLEMENTED** / **AUTOMATED**. Explicit `POST .../activate`. Invalid files never activate. |
-| Existing-batch reprocess | **IMPLEMENTED** / **AUTOMATED**. `POST /api/v1/batches/{batch_id}/process` creates a **new** processing run from staged rows using currently active Logic/Labels. Does not re-upload Raw. Does not publish. |
+| Existing-batch reprocess | **IMPLEMENTED** / **AUTOMATED**. `POST /api/v1/batches/{batch_id}/process` creates a **new** processing run. Staged/processed batches transform existing staged rows. Received or failed-without-staging recover the same batch from the source archive. Does not publish. |
+| Abandoned-run sweep | **IMPLEMENTED** / **AUTOMATED**. API start with `DATABASE_URL` marks leftover `pending`/`running` runs `failed`. Retry is a new run. |
 
 Observed live-API evidence: `documentation/DESKTOP_ACCEPTANCE.md`.
 
@@ -82,7 +85,11 @@ bound client id and is never a platform-wide RLS identity.
 
 Limits:
 
-- Default max size: `DFIP_UPLOAD_MAX_BYTES` (10 MiB)
+- Default max size per file: `DFIP_UPLOAD_MAX_BYTES` (10 MiB production/P13E default; local demo may set 50 MiB / `52428800`)
+- Max files per multipart request: `DFIP_UPLOAD_MAX_FILES` (5)
+- Max total multipart bytes: `DFIP_UPLOAD_MAX_TOTAL_BYTES` (20 MiB production/P13E default; local demo may set 100 MiB / `104857600` so a single 50 MiB workbook is not rejected. 0 means twice the per-file cap)
+- Claimed ZIP uncompressed total: `MAX_UNCOMPRESSED_BYTES` (512 MiB). Over this is 422 `Workbook uncompressed size exceeds the allowed limit.` Member count 1024 and `..`/absolute ZIP names stay rejected.
+- Non-multipart JSON/body: `DFIP_JSON_MAX_BODY_BYTES` (256 KiB)
 - Temp files use a sanitized basename; path traversal filenames are rejected
 - Responses never include filesystem paths or `storage_uri`
 
@@ -94,13 +101,18 @@ by the API. A local temp copy is used only for processing and is deleted
 afterwards. Processing failure does not delete the archive. Same-client SHA
 replay does not create a duplicate object; a missing object is backfilled from
 the uploaded bytes. Empty `DFIP_STORAGE_ENDPOINT` uses an in-memory adapter
-(tests / process-local). A local directory path is the durable private backend.
-HTTP(S) endpoints are not implemented. Workbook blobs are not stored in
-PostgreSQL.
+(development/test only; not durable across restart). Production-grade
+environments require a private local directory. HTTP(S) endpoints are not
+implemented. Workbook blobs are not stored in PostgreSQL.
+
+Same-client SHA replay (`replayed=true`, HTTP 200) is only for a **processed**
+batch. A `staged` batch after a crash is not terminal success: the same SHA
+retries that batch. A `received` batch is recovered from the archive using the
+same batch id. In-process in-flight SHA still returns 202.
 
 The handler validates ZIP/size/name on the request path, archives the original, creates a `received`
 batch, and runs `ingest_workbook` then `run_transformation` on a dedicated
-upload thread so `/health`, `/session`, catalogs, and status routes stay
+upload thread so `/health`, `/api/v1/ops/ready`, `/session`, catalogs, and status routes stay
 responsive. After a new transform it runs `evaluate_qa` (with `reconcile_run`
 when a single rate-card label is known) and replaces `qa_finding` rows for that
 processing run and writes `processing_run.qa_verdict`. It does not write
@@ -158,19 +170,37 @@ succeeded `processing_run`. Transform rejections keep `INVALID_NUMERIC`,
 | Oversize | 413 | `PAYLOAD_TOO_LARGE` |
 | Not `.xlsx`, empty, bad ZIP, path traversal, missing `client_id`, no workbook | 422 | `VALIDATION_ERROR` |
 
-## Existing-batch reprocess
+## Existing-batch reprocess / recovery
 
 `POST /api/v1/batches/{batch_id}/process?client_id=`
 
-Admin/publisher only. Creates a **new** `processing_run` for an already
-`processed` batch and transforms the existing staged rows with the currently
-active Logic and Labels. The previous run is unchanged. Does not re-read the
-workbook and does not publish. Unscoped principals must pass `client_id`.
-JWT `client_id` always wins.
+Admin/publisher only. Always a **new** `processing_run` when work starts.
+Does not publish. JWT `client_id` always wins. Unscoped principals must pass
+`client_id`.
+
+| Batch state | Recovery |
+|---|---|
+| `processed` with staged rows | Existing reprocess: new run from staged rows |
+| `staged` with staged rows | New run from durable staged rows |
+| `failed` with staged rows | New run from durable staged rows |
+| `received`, or `failed` without completed staging | Re-ingest the **same** batch from the source archive |
+| Missing archive | 422 `Source archive is missing. Upload the workbook again.` |
+| Active `pending`/`running` run with a live worker | 202 the existing active run |
+| Zombie `pending`/`running` with no worker | Fail the zombie run and start recovery |
 
 202 means the new run is pending/running; poll
 `GET /api/v1/processing-runs/{processing_run_id}` until `succeeded` or
 `failed`. 200 is returned only when the executor is not configured (tests).
+
+On API process start with `DATABASE_URL`, leftover `pending`/`running` runs are
+marked `failed` with
+`Processing abandoned because the API process restarted. Retry is available.`
+The same startup then auto-resumes recoverable `received`/`staged` work and
+those abandoned failures. Manual Retry is only required for genuine validation
+or archive failures.
+
+Active `pending`/`running` runs that still have a local worker return 202.
+Zombie runs with no worker are failed and rescheduled.
 
 ### Reprocess error behavior
 
@@ -181,7 +211,7 @@ JWT `client_id` always wins.
 | Bound JWT vs other client query | 403 | `AUTHORIZATION_FAILED` |
 | Other client's batch | 404 | `NOT_FOUND` |
 | Missing `client_id` (unscoped) | 422 | `VALIDATION_ERROR` |
-| Batch not processed / no staged rows | 422 | `VALIDATION_ERROR` |
+| Not recoverable / missing archive | 422 | `VALIDATION_ERROR` |
 
 ## Download endpoint
 

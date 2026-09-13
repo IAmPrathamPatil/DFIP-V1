@@ -16,21 +16,27 @@ from datetime import date
 from typing import Annotated
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi.responses import JSONResponse
 
+from dfip_api.audit import write_audit_event
 from dfip_api.auth import Principal
+from dfip_api.auth_routes import session_response
 from dfip_api.deps import (
     InspectorDep,
     PaginationDep,
     PrincipalDep,
     QaStoreDep,
+    ReadyInspectorDep,
     ServiceDep,
     UploadServiceDep,
     get_principal,
     require_inspector,
 )
+from dfip_api.ops import build_readiness, readiness_payload
 from dfip_api.publication_service import inspector_read_scope
 from dfip_api.schemas import (
+    BatchDeleteResponse,
     BatchPage,
     BatchResponse,
     ErrorResponse,
@@ -39,6 +45,7 @@ from dfip_api.schemas import (
     ProcessingRunPage,
     ProcessingRunResponse,
     QaFindingPage,
+    ReadyResponse,
     ReprocessResponse,
     SessionResponse,
     SourceFilePage,
@@ -51,6 +58,7 @@ ERROR_RESPONSES = {
     401: {"model": ErrorResponse, "description": "Authentication failed."},
     403: {"model": ErrorResponse, "description": "Authorization failed."},
     404: {"model": ErrorResponse, "description": "Resource not found."},
+    409: {"model": ErrorResponse, "description": "Conflict."},
     422: {"model": ErrorResponse, "description": "Validation or pagination error."},
     503: {"model": ErrorResponse, "description": "Persistence unavailable."},
 }
@@ -60,6 +68,7 @@ router = APIRouter(
     responses=ERROR_RESPONSES,
 )
 inspector_router = APIRouter(dependencies=[Depends(require_inspector)])
+ops_router = APIRouter()
 OptionalUuid = Annotated[UUID | None, Query()]
 OptionalStatus = Annotated[str | None, Query(min_length=1, max_length=64)]
 OptionalText = Annotated[str | None, Query()]
@@ -84,13 +93,11 @@ def _inspector_scope(
     ),
     tags=["Session"],
 )
-def get_session(principal: PrincipalDep) -> SessionResponse:
-    return SessionResponse(
-        subject=principal.subject,
-        auth_mode=principal.auth_mode,
-        role=principal.role,
-        client_id=principal.client_id,
-    )
+def get_session(request: Request, principal: PrincipalDep) -> SessionResponse:
+    store = getattr(request.app.state, "identity_store", None)
+    identity = store.get_by_subject(principal.subject) if store is not None else None
+    directory = getattr(request.app.state, "client_directory", None)
+    return session_response(principal, identity, directory)
 
 
 @inspector_router.get(
@@ -141,6 +148,7 @@ def get_source_file(
 )
 def list_batches(
     service: ServiceDep,
+    uploads: UploadServiceDep,
     principal: InspectorDep,
     pagination: PaginationDep,
     source_file_id: OptionalUuid = None,
@@ -148,7 +156,7 @@ def list_batches(
     status: OptionalStatus = None,
 ) -> BatchPage:
     scoped_client_id, client_ids = _inspector_scope(principal, client_id)
-    return service.list_batches(
+    page = service.list_batches(
         source_file_id=str(source_file_id) if source_file_id else None,
         client_id=scoped_client_id,
         client_ids=client_ids,
@@ -156,6 +164,8 @@ def list_batches(
         limit=pagination.limit,
         offset=pagination.offset,
     )
+    page.items = [uploads.enrich_batch(item) for item in page.items]
+    return page
 
 
 @inspector_router.get(
@@ -167,10 +177,13 @@ def list_batches(
 def get_batch(
     batch_id: UUID,
     service: ServiceDep,
+    uploads: UploadServiceDep,
     principal: InspectorDep,
 ) -> BatchResponse:
     _ignored, client_ids = _inspector_scope(principal)
-    return service.get_batch(str(batch_id), client_ids=client_ids)
+    return uploads.enrich_batch(
+        service.get_batch(str(batch_id), client_ids=client_ids), resume=True
+    )
 
 
 @inspector_router.post(
@@ -179,10 +192,11 @@ def get_batch(
     status_code=202,
     summary="Re-process staged rows of an existing batch",
     description=(
-        "Creates a new processing_run for an already-staged batch and transforms "
-        "those rows with the currently active Logic and Labels versions. The "
-        "previous run is kept. Does not re-read the workbook and does not publish. "
-        "JWT client_id always wins. Admin/publisher only."
+        "Creates a new processing_run for a recoverable batch. Staged rows "
+        "are transformed with the currently active Logic and Labels versions. "
+        "Received or failed batches without completed staging are recovered "
+        "from the source archive using the same batch id. The previous run is "
+        "kept. Does not publish. JWT client_id always wins. Admin/publisher only."
     ),
     tags=["Batches"],
 )
@@ -199,6 +213,76 @@ def reprocess_batch(
         requested_client_id=str(client_id) if client_id else None,
     )
     response.status_code = status
+    return body
+
+
+@inspector_router.post(
+    "/batches/{batch_id}/cancel",
+    response_model=BatchResponse,
+    summary="Cancel in-flight processing for a batch",
+    description=(
+        "Requests a cooperative stop. Temporary staging and this run's facts "
+        "are discarded. No publication is created. Admin/publisher only. "
+        "JWT client_id always wins."
+    ),
+    tags=["Batches"],
+)
+def cancel_batch(
+    batch_id: UUID,
+    request: Request,
+    principal: InspectorDep,
+    uploads: UploadServiceDep,
+    client_id: OptionalUuid = None,
+) -> BatchResponse:
+    body = uploads.cancel(
+        principal=principal,
+        batch_id=str(batch_id),
+        requested_client_id=str(client_id) if client_id else None,
+    )
+    write_audit_event(
+        getattr(request.app.state, "db_pool", None),
+        actor=principal.subject,
+        action="batch.cancel",
+        entity_type="batch",
+        entity_id=str(batch_id),
+        client_id=body.client_id,
+        after={"status": body.status},
+    )
+    return body
+
+
+@inspector_router.delete(
+    "/batches/{batch_id}",
+    response_model=BatchDeleteResponse,
+    summary="Delete a non-authoritative upload",
+    description=(
+        "Removes a failed, cancelled, or unpublished batch and its temporary "
+        "artifacts. Published publications cannot be deleted here. "
+        "Admin/publisher only. JWT client_id always wins."
+    ),
+    tags=["Batches"],
+)
+def delete_batch(
+    batch_id: UUID,
+    request: Request,
+    principal: InspectorDep,
+    uploads: UploadServiceDep,
+    client_id: OptionalUuid = None,
+) -> BatchDeleteResponse:
+    body = uploads.delete_batch(
+        principal=principal,
+        batch_id=str(batch_id),
+        requested_client_id=str(client_id) if client_id else None,
+    )
+    write_audit_event(
+        getattr(request.app.state, "db_pool", None),
+        actor=principal.subject,
+        action="batch.delete",
+        entity_type="batch",
+        entity_id=str(batch_id),
+        client_id=str(client_id) if client_id else principal.client_id,
+        after={"status": "deleted"},
+    )
     return body
 
 
@@ -236,6 +320,35 @@ def list_staged_rows(
     )
 
 
+@ops_router.get(
+    "/ops/ready",
+    response_model=ReadyResponse,
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication failed."},
+        403: {"model": ErrorResponse, "description": "Authorization failed."},
+        503: {"model": ReadyResponse, "description": "Not ready."},
+    },
+    summary="Operator readiness",
+    description=(
+        "Authenticated cheap readiness for publishers/admins. Authenticates "
+        "the bearer token locally so a database outage still returns "
+        "structured not_ready. Does not hash the source archive or run backup "
+        "verification. Public /health remains liveness only."
+    ),
+    tags=["Health"],
+)
+def ops_ready(request: Request, principal: ReadyInspectorDep) -> JSONResponse:
+    del principal
+    report = build_readiness(
+        pool=getattr(request.app.state, "db_pool", None),
+        source_store=request.app.state.source_store,
+        upload_service=request.app.state.upload_service,
+        settings=request.app.state.settings,
+    )
+    status_code = 200 if report.status == "ready" else 503
+    return JSONResponse(status_code=status_code, content=readiness_payload(report))
+
+
 @inspector_router.get(
     "/processing-runs",
     response_model=ProcessingRunPage,
@@ -245,19 +358,22 @@ def list_staged_rows(
 )
 def list_processing_runs(
     service: ServiceDep,
+    uploads: UploadServiceDep,
     principal: InspectorDep,
     pagination: PaginationDep,
     batch_id: OptionalUuid = None,
     status: OptionalStatus = None,
 ) -> ProcessingRunPage:
     _ignored, client_ids = _inspector_scope(principal)
-    return service.list_processing_runs(
+    page = service.list_processing_runs(
         batch_id=str(batch_id) if batch_id else None,
         client_ids=client_ids,
         status=status,
         limit=pagination.limit,
         offset=pagination.offset,
     )
+    page.items = [uploads.enrich_run(item) for item in page.items]
+    return page
 
 
 @inspector_router.get(
@@ -269,10 +385,13 @@ def list_processing_runs(
 def get_processing_run(
     processing_run_id: UUID,
     service: ServiceDep,
+    uploads: UploadServiceDep,
     principal: InspectorDep,
 ) -> ProcessingRunResponse:
     _ignored, client_ids = _inspector_scope(principal)
-    return service.get_processing_run(str(processing_run_id), client_ids=client_ids)
+    return uploads.enrich_run(
+        service.get_processing_run(str(processing_run_id), client_ids=client_ids)
+    )
 
 
 @inspector_router.get(
@@ -325,7 +444,7 @@ def evaluate_processing_run_qa(
         processing_run_id=str(processing_run_id),
         requested_client_id=str(client_id) if client_id else None,
     )
-    return processing_run_to_response(run)
+    return uploads.enrich_run(processing_run_to_response(run))
 
 
 @inspector_router.get(

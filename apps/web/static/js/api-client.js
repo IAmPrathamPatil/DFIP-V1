@@ -19,6 +19,10 @@ export class DfipApiClient {
     return this.request("GET", "/health", { auth: false });
   }
 
+  ready() {
+    return this.request("GET", `${this.prefix}/ops/ready`, { acceptStatuses: [503] });
+  }
+
   session() {
     return this.request("GET", `${this.prefix}/session`);
   }
@@ -27,6 +31,60 @@ export class DfipApiClient {
     const body = { username, password };
     if (clientId) body.client_id = clientId;
     return this.request("POST", `${this.prefix}/auth/login`, { auth: false, body });
+  }
+
+  setupStatus() {
+    return this.request("GET", `${this.prefix}/auth/setup-status`, { auth: false });
+  }
+
+  setupPublisher(username, password, confirmPassword) {
+    return this.request("POST", `${this.prefix}/auth/setup-publisher`, {
+      auth: false,
+      body: { username, password, confirm_password: confirmPassword },
+    });
+  }
+
+  selectClient(clientId) {
+    return this.request("POST", `${this.prefix}/auth/select-client`, {
+      body: { client_id: clientId },
+    });
+  }
+
+  listClients(params = {}) {
+    const query = new URLSearchParams();
+    if (params.include_inactive) query.set("include_inactive", "true");
+    const suffix = query.toString() ? `?${query.toString()}` : "";
+    return this.request("GET", `${this.prefix}/clients${suffix}`);
+  }
+
+  renameClient(clientId, name) {
+    return this.request("POST", `${this.prefix}/clients/${clientId}/rename`, {
+      body: { name },
+    });
+  }
+
+  createClient(name) {
+    return this.request("POST", `${this.prefix}/clients`, {
+      body: { name },
+    });
+  }
+
+  createClientUser(clientId, username, password, confirmPassword) {
+    return this.request("POST", `${this.prefix}/clients/${clientId}/users`, {
+      body: { username, password, confirm_password: confirmPassword, role: "client" },
+    });
+  }
+
+  deactivateClient(clientId) {
+    return this.request("POST", `${this.prefix}/clients/${clientId}/deactivate`);
+  }
+
+  reactivateClient(clientId) {
+    return this.request("POST", `${this.prefix}/clients/${clientId}/reactivate`);
+  }
+
+  deleteClient(clientId) {
+    return this.request("DELETE", `${this.prefix}/clients/${clientId}`);
   }
 
   logout() {
@@ -55,6 +113,14 @@ export class DfipApiClient {
 
   processBatch(id, params) {
     return this.request("POST", `${this.prefix}/batches/${id}/process`, { params });
+  }
+
+  cancelBatch(id, params) {
+    return this.request("POST", `${this.prefix}/batches/${id}/cancel`, { params });
+  }
+
+  deleteBatch(id, params) {
+    return this.request("DELETE", `${this.prefix}/batches/${id}`, { params });
   }
 
   listStagedRows(batchId, params) {
@@ -89,12 +155,72 @@ export class DfipApiClient {
     return this.request("POST", `${this.prefix}/publications`, { body });
   }
 
+  getPublicationProgress(params) {
+    return this.request("GET", `${this.prefix}/publications/progress`, { params });
+  }
+
   listPublications(params) {
     return this.request("GET", `${this.prefix}/publications`, { params });
   }
 
   getCurrentPublication(params) {
     return this.request("GET", `${this.prefix}/publications/current`, { params });
+  }
+
+  getOverviewKpis(params) {
+    return this.request("GET", `${this.prefix}/analytics/overview`, { params });
+  }
+
+  getOverviewTrends(params) {
+    return this.request("GET", `${this.prefix}/analytics/trends`, { params });
+  }
+
+  getOverviewKpiSparklines(params) {
+    return this.getOverviewTrends(params);
+  }
+
+  getOverviewDrilldown(params) {
+    return this.request("GET", `${this.prefix}/analytics/drilldown`, { params });
+  }
+
+  getOverviewExplorer(params) {
+    return this.request("GET", `${this.prefix}/analytics/explorer`, { params });
+  }
+
+  getOverviewInsights(params) {
+    return this.request("GET", `${this.prefix}/analytics/insights`, { params });
+  }
+
+  getOverviewAnomalies(params) {
+    return this.request("GET", `${this.prefix}/analytics/anomalies`, { params });
+  }
+
+  postOverviewAsk(body) {
+    return this.request("POST", `${this.prefix}/analytics/ask`, { body });
+  }
+
+  listSavedAnalyses() {
+    return this.request("GET", `${this.prefix}/analytics/saved`);
+  }
+
+  createSavedAnalysis(body) {
+    return this.request("POST", `${this.prefix}/analytics/saved`, { body });
+  }
+
+  getSavedAnalysis(id) {
+    return this.request("GET", `${this.prefix}/analytics/saved/${id}`);
+  }
+
+  updateSavedAnalysis(id, body) {
+    return this.request("POST", `${this.prefix}/analytics/saved/${id}`, { body });
+  }
+
+  deleteSavedAnalysis(id) {
+    return this.request("DELETE", `${this.prefix}/analytics/saved/${id}`);
+  }
+
+  downloadOverviewExport(params) {
+    return this.request("GET", `${this.prefix}/analytics/export.csv`, { params, blob: true });
   }
 
   listPublishedFacts(params) {
@@ -167,11 +293,26 @@ export class DfipApiClient {
     return this.request("GET", path, { params, blob: true });
   }
 
-  async request(method, path, { params, auth = true, body, multipart = false, blob = false } = {}) {
+  async downloadRefreshableClientReport(params) {
+    return this.request("GET", `${this.prefix}/publications/current/refreshable-client-report.xlsx`, {
+      params,
+      blob: true,
+    });
+  }
+
+  async request(method, path, { params, auth = true, body, multipart = false, blob = false, acceptStatuses = [] } = {}) {
     const url = new URL(path, `${this.baseUrl}/`);
     if (params) {
       for (const [key, value] of Object.entries(params)) {
-        if (value === undefined || value === null || value === "") continue;
+        if (value === undefined || value === null) continue;
+        if (Array.isArray(value)) {
+          for (const item of value) {
+            if (item === undefined || item === null) continue;
+            url.searchParams.append(key, String(item));
+          }
+          continue;
+        }
+        if (value === "") continue;
         url.searchParams.set(key, String(value));
       }
     }
@@ -198,7 +339,7 @@ export class DfipApiClient {
     } catch (error) {
       throw new ApiError(0, "NETWORK_FAILURE", "Network failure contacting the API.");
     }
-    if (!response.ok) {
+    if (!response.ok && !acceptStatuses.includes(response.status)) {
       let payload = null;
       const text = await response.text();
       if (text) {

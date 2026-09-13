@@ -162,3 +162,42 @@ def test_upsert_many_uses_one_transaction_per_chunk(pg_conn, pg_stores) -> None:
     stored = [item for item in facts.list_current() if str(item.campaign_id).startswith("bulk-")]
     assert len(stored) == 8
     assert len({item.key for item in stored}) == 8
+
+
+def test_upsert_many_conflict_restates_without_duplicates(pg_conn, pg_stores) -> None:
+    _ingest, facts, _pubs, _read = pg_stores
+    seed_working_set(pg_conn)
+    first = [sample_fact(campaign_id=f"copy-{index}", sent=1, total_cost=Decimal("1.00")) for index in range(6)]
+    assert facts.upsert_many(first) == ["inserted"] * 6
+    restated = [
+        sample_fact(campaign_id=f"copy-{index}", sent=2, total_cost=Decimal("2.00"))
+        for index in range(6)
+    ]
+    assert facts.upsert_many(restated) == ["restated"] * 6
+    current = [item for item in facts.list_current() if str(item.campaign_id).startswith("copy-")]
+    assert len(current) == 6
+    assert len({item.key for item in current}) == 6
+    assert all(item.sent == 2 for item in current)
+    assert len(facts.list_history()) == 6
+
+
+def test_upsert_many_mixed_insert_and_restate(pg_conn, pg_stores) -> None:
+    _ingest, facts, _pubs, _read = pg_stores
+    seed_working_set(pg_conn)
+    existing = [
+        sample_fact(campaign_id=f"mix-{index}", sent=1, total_cost=Decimal("1.00"))
+        for index in range(3)
+    ]
+    assert facts.upsert_many(existing) == ["inserted"] * 3
+    mixed = [
+        sample_fact(campaign_id=f"mix-{index}", sent=2, total_cost=Decimal("2.00"))
+        for index in range(3)
+    ] + [
+        sample_fact(campaign_id=f"mix-new-{index}", sent=3, total_cost=Decimal("3.00"))
+        for index in range(3)
+    ]
+    assert facts.upsert_many(mixed) == ["restated"] * 3 + ["inserted"] * 3
+    current = [item for item in facts.list_current() if str(item.campaign_id).startswith("mix-")]
+    assert len(current) == 6
+    assert len({item.key for item in current}) == 6
+    assert len(facts.list_history()) == 3

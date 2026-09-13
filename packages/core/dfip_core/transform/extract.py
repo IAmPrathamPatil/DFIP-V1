@@ -164,7 +164,11 @@ def parse_start_date(value: Any) -> datetime | None:
 
 
 def extract_source_fields(raw: dict[str, Any]) -> SourceFields:
-    """Pull the fields P4 needs out of the preserved 57-column payload."""
+    """Pull the fields P4 needs out of the preserved 57-column payload.
+
+    Approved extra keys on ``raw`` (RUN 009) are ignored. They are not
+    business metrics and are not copied onto ``FactRecord``.
+    """
     campaign_id = _require_nonblank(_text(raw, "Campaign ID"), "MISSING_CAMPAIGN_ID", "Campaign ID")
     day = parse_day(raw.get("Day"))
     variation_id = _text(raw, "Variation ID")

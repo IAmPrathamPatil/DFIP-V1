@@ -3,19 +3,28 @@
 from __future__ import annotations
 
 import atexit
+import logging
+import os
 from collections.abc import AsyncIterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from dfip_config.catalog import CatalogStore, InMemoryCatalogStore
-from dfip_config.settings import Settings, load_settings
+from dfip_config.settings import BOOTSTRAP_TOKEN_HEADER, Settings, load_settings
 from dfip_core.ingest.ports import IngestStore
 from dfip_core.ingest.store import InMemoryIngestStore
 from dfip_core.transform.ports import FactStore
 from dfip_core.transform.store import InMemoryFactStore
 from dfip_db.analytics_repository import PostgresAnalyticsRepository
 from dfip_db.catalog_store import PostgresCatalogStore
-from dfip_db.connection import DatabaseUnavailableError, close_pool, create_pool
+from dfip_db.connection import (
+    ALLOWED_SSL_MODES,
+    DatabaseUnavailableError,
+    close_pool,
+    create_pool,
+    dsn_is_local_host,
+    dsn_sslmode,
+)
 from dfip_db.fact_store import PostgresFactStore
 from dfip_db.ingest_store import PostgresIngestStore
 from dfip_db.publication_store import PostgresPublicationStore
@@ -26,48 +35,106 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
+from dfip_api.analytics_routes import analytics_router
+from dfip_api.ask_llm import build_ask_llm
 from dfip_api.auth import validate_auth_settings
 from dfip_api.auth_routes import auth_public_router, auth_session_router
 from dfip_api.catalog_routes import catalog_router
 from dfip_api.catalog_service import CatalogService
+from dfip_api.client_directory import (
+    ClientDirectory,
+    InMemoryClientDirectory,
+    PostgresClientDirectory,
+    seed_from_identity,
+)
+from dfip_api.client_routes import client_router
 from dfip_api.errors import (
     PERSISTENCE_UNAVAILABLE,
     ApiError,
+    AuthConfigurationError,
     PersistenceConfigurationError,
     api_error_handler,
     error_response,
     http_exception_handler,
+    safe_route,
     unexpected_error_handler,
     validation_error_handler,
 )
+from dfip_api.excel_grant import InMemoryExcelGrantStore, PostgresExcelGrantStore
 from dfip_api.identity_store import (
     IdentityStore,
     InMemoryIdentityStore,
     PostgresIdentityStore,
 )
+from dfip_api.limits import AttemptLimiter, JsonBodyLimitMiddleware
 from dfip_api.ports import PublicationStore, ReadRepository
 from dfip_api.publication_routes import publication_router
 from dfip_api.publication_service import PublicationService
 from dfip_api.publication_store import InMemoryPublicationStore
 from dfip_api.qa_store import InMemoryQaFindingStore, QaFindingStore
+from dfip_api.recovery import fail_abandoned_processing_runs
 from dfip_api.repository import InMemoryReadRepository
-from dfip_api.routes import router
+from dfip_api.routes import ops_router, router
+from dfip_api.saved_analysis import InMemorySavedAnalysisStore, PostgresSavedAnalysisStore
 from dfip_api.schemas import ErrorResponse, HealthDatabase, HealthResponse
 from dfip_api.service import ReadService
 from dfip_api.source_storage import SourceObjectStore, build_source_object_store
 from dfip_api.upload_routes import upload_router
 from dfip_api.upload_service import UploadService
 
+log = logging.getLogger(__name__)
+
 
 def validate_persistence_settings(settings: Settings) -> None:
-    """Production must have DATABASE_URL. Development/test may use in-memory stores."""
-    if settings.dfip_env.strip().lower() == "production" and not settings.database_url.strip():
+    """Production-grade environments must have DATABASE_URL and remote TLS."""
+    if not settings.is_production_grade:
+        return
+    dsn = settings.database_url.strip()
+    if not dsn:
         raise PersistenceConfigurationError("Production requires DATABASE_URL.")
+    if dsn_is_local_host(dsn):
+        return
+    mode = dsn_sslmode(dsn)
+    if mode not in ALLOWED_SSL_MODES:
+        raise PersistenceConfigurationError(
+            "Production DATABASE_URL must use TLS for remote database hosts."
+        )
+
+
+def validate_storage_settings(settings: Settings) -> None:
+    """Production-grade environments must use a local filesystem source archive."""
+    if not settings.is_production_grade:
+        return
+    endpoint = settings.dfip_storage_endpoint.strip()
+    if not endpoint:
+        raise PersistenceConfigurationError("Production requires DFIP_STORAGE_ENDPOINT.")
+    lowered = endpoint.lower()
+    if lowered.startswith("http://") or lowered.startswith("https://"):
+        raise PersistenceConfigurationError(
+            "Production DFIP_STORAGE_ENDPOINT must be a private local directory."
+        )
+
+
+def validate_origin_settings(settings: Settings) -> None:
+    """Production-grade environments require HTTPS web and API origins."""
+    if not settings.is_production_grade:
+        return
+    origin = settings.dfip_web_origin.strip()
+    api_base = settings.dfip_api_base_url.strip()
+    if not origin or not origin.lower().startswith("https://"):
+        raise AuthConfigurationError("Production requires HTTPS DFIP_WEB_ORIGIN.")
+    if not api_base or not api_base.lower().startswith("https://"):
+        raise AuthConfigurationError("Production requires HTTPS DFIP_API_BASE_URL.")
 
 
 async def database_unavailable_handler(
-    _request: Request, _exc: DatabaseUnavailableError
+    request: Request, exc: DatabaseUnavailableError
 ) -> JSONResponse:
+    log.error(
+        "persistence-unavailable type=%s route=%s",
+        type(exc).__name__,
+        safe_route(request),
+    )
     return error_response(503, PERSISTENCE_UNAVAILABLE, "Persistence is unavailable.")
 
 
@@ -81,6 +148,7 @@ def create_app(
     qa_store: QaFindingStore | None = None,
     source_store: SourceObjectStore | None = None,
     identity_store: IdentityStore | None = None,
+    client_directory: ClientDirectory | None = None,
 ) -> FastAPI:
     """Build the API. Empty DATABASE_URL keeps the V1 in-memory stores.
 
@@ -91,6 +159,8 @@ def create_app(
     resolved_settings = settings if settings is not None else load_settings()
     validate_auth_settings(resolved_settings)
     validate_persistence_settings(resolved_settings)
+    validate_storage_settings(resolved_settings)
+    validate_origin_settings(resolved_settings)
 
     injected = any(
         item is not None
@@ -116,7 +186,10 @@ def create_app(
         db_pool = create_pool(resolved_settings.database_url)
         resolved_ingest = PostgresIngestStore(db_pool)
         resolved_facts = PostgresFactStore(db_pool)
-        resolved_publications = PostgresPublicationStore(db_pool)
+        resolved_publications = PostgresPublicationStore(
+            db_pool,
+            use_history_serving_table=resolved_settings.dfip_history_serving_table,
+        )
         resolved_repository = PostgresReadRepository(db_pool)
         resolved_catalog = PostgresCatalogStore(db_pool)
         resolved_qa = qa_store if qa_store is not None else PostgresAnalyticsRepository(db_pool)
@@ -129,22 +202,12 @@ def create_app(
         resolved_qa = qa_store if qa_store is not None else InMemoryQaFindingStore()
 
     service = ReadService(resolved_repository)
-    publication_service = PublicationService(resolved_ingest, resolved_facts, resolved_publications)
-    upload_executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dfip-upload")
+    worker_count = max(1, min(int(resolved_settings.dfip_worker_concurrency or 1), 4))
+    upload_executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="dfip-upload")
     atexit.register(upload_executor.shutdown, wait=False, cancel_futures=True)
     resolved_source = (
         source_store if source_store is not None else build_source_object_store(resolved_settings)
     )
-    upload_service = UploadService(
-        resolved_ingest,
-        resolved_facts,
-        resolved_settings,
-        resolved_catalog,
-        resolved_qa,
-        executor=upload_executor,
-        source_store=resolved_source,
-    )
-    catalog_service = CatalogService(resolved_catalog, resolved_settings)
 
     if identity_store is not None:
         resolved_identity = identity_store
@@ -153,6 +216,49 @@ def create_app(
     else:
         resolved_identity = InMemoryIdentityStore()
 
+    if db_pool is not None:
+        resolved_excel_grants = PostgresExcelGrantStore(db_pool)
+        resolved_saved_analyses = PostgresSavedAnalysisStore(db_pool)
+    else:
+        resolved_excel_grants = InMemoryExcelGrantStore()
+        resolved_saved_analyses = InMemorySavedAnalysisStore()
+
+    if client_directory is not None:
+        resolved_clients = client_directory
+    elif db_pool is not None:
+        resolved_clients = PostgresClientDirectory(db_pool)
+    else:
+        resolved_clients = InMemoryClientDirectory()
+    if isinstance(resolved_identity, InMemoryIdentityStore) and isinstance(
+        resolved_clients, InMemoryClientDirectory
+    ):
+        seed_from_identity(resolved_clients, resolved_identity)
+
+    upload_service = UploadService(
+        resolved_ingest,
+        resolved_facts,
+        resolved_settings,
+        resolved_catalog,
+        resolved_qa,
+        executor=upload_executor,
+        source_store=resolved_source,
+        client_directory=resolved_clients,
+        publication_store=resolved_publications,
+    )
+    catalog_service = CatalogService(
+        resolved_catalog, resolved_settings, client_directory=resolved_clients
+    )
+
+    if db_pool is not None:
+        fail_abandoned_processing_runs(resolved_ingest)
+
+    publication_service = PublicationService(
+        resolved_ingest,
+        resolved_facts,
+        resolved_publications,
+        resolved_clients,
+    )
+
     prefix = resolved_settings.dfip_api_prefix.strip() or "/api/v1"
     if not prefix.startswith("/"):
         prefix = f"/{prefix}"
@@ -160,11 +266,15 @@ def create_app(
 
     @asynccontextmanager
     async def lifespan(_application: FastAPI) -> AsyncIterator[None]:
+        if db_pool is not None:
+            fail_abandoned_processing_runs(resolved_ingest)
+            if os.environ.get("PYTEST_CURRENT_TEST") is None:
+                upload_service.resume_orphaned_work()
         yield
         upload_executor.shutdown(wait=True, cancel_futures=False)
         close_pool(db_pool)
 
-    production = resolved_settings.dfip_env.strip().lower() == "production"
+    production_grade = resolved_settings.is_production_grade
     application = FastAPI(
         title="DFIP API",
         version="0.5.0",
@@ -176,9 +286,9 @@ def create_app(
             "in-memory unless a database connection string is configured. "
             "Authorization is application-level; PostgreSQL RLS is defense in depth."
         ),
-        docs_url=None if production else "/docs",
-        redoc_url=None if production else "/redoc",
-        openapi_url=None if production else "/openapi.json",
+        docs_url=None if production_grade else "/docs",
+        redoc_url=None if production_grade else "/redoc",
+        openapi_url=None if production_grade else "/openapi.json",
         lifespan=lifespan,
     )
     application.state.settings = resolved_settings
@@ -196,15 +306,24 @@ def create_app(
     application.state.qa_store = resolved_qa
     application.state.db_pool = db_pool
     application.state.identity_store = resolved_identity
+    application.state.excel_grant_store = resolved_excel_grants
+    application.state.saved_analysis_store = resolved_saved_analyses
+    application.state.client_directory = resolved_clients
+    application.state.attempt_limiter = AttemptLimiter()
+    application.state.ask_llm = build_ask_llm(resolved_settings)
 
+    application.add_middleware(
+        JsonBodyLimitMiddleware,
+        max_bytes=resolved_settings.dfip_json_max_body_bytes,
+    )
     origin = resolved_settings.dfip_web_origin.strip()
     if origin:
         application.add_middleware(
             CORSMiddleware,
             allow_origins=[origin],
             allow_credentials=False,
-            allow_methods=["GET", "HEAD", "OPTIONS", "POST"],
-            allow_headers=["Authorization", "Content-Type"],
+            allow_methods=["GET", "HEAD", "OPTIONS", "POST", "DELETE"],
+            allow_headers=["Authorization", "Content-Type", BOOTSTRAP_TOKEN_HEADER],
             expose_headers=["Content-Disposition"],
         )
 
@@ -237,8 +356,11 @@ def create_app(
 
     application.include_router(auth_public_router, prefix=prefix)
     application.include_router(auth_session_router, prefix=prefix)
+    application.include_router(ops_router, prefix=prefix)
     application.include_router(router, prefix=prefix)
+    application.include_router(client_router, prefix=prefix)
     application.include_router(publication_router, prefix=prefix)
+    application.include_router(analytics_router, prefix=prefix)
     application.include_router(upload_router, prefix=prefix)
     application.include_router(catalog_router, prefix=prefix)
     return application

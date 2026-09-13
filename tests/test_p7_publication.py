@@ -434,10 +434,12 @@ def test_python_api_client_covers_publication_routes() -> None:
         created = api.create_publication({"client_id": CLIENT_ID, "processing_run_id": RUN_A})
         current = api.get_current_publication(client_id=CLIENT_ID)
         facts = api.list_published_facts(client_id=CLIENT_ID, limit=200)
+        history = api.list_published_history_facts(client_id=CLIENT_ID, limit=200)
         working = api.list_facts()
     assert created["publication"]["processing_run_id"] == RUN_A
     assert current["publication"]["publication_id"] == created["publication"]["publication_id"]
     assert facts["pagination"]["total"] == 3
+    assert history["pagination"]["total"] == 3
     assert working["pagination"]["total"] == 3
 
 
@@ -448,6 +450,8 @@ def test_publication_routes_require_auth() -> None:
     assert client.get("/api/v1/publications").status_code == 401
     assert client.get("/api/v1/publications/current").status_code == 401
     assert client.get("/api/v1/publications/current/facts").status_code == 401
+    assert client.get("/api/v1/publications/history/facts").status_code == 401
+    assert client.get("/api/v1/publications/history/facts.csv").status_code == 401
 
 
 def test_frontend_publish_control_is_enabled() -> None:
@@ -468,10 +472,12 @@ def test_power_query_pages_published_facts_and_avoids_staging() -> None:
     mashup = mashup_text()
     disk = M_PATH.read_text(encoding="utf-8")
     assert mashup == disk
-    assert PUBLISHED_FACTS_PATH in mashup
+    assert "/api/v1/publications/history/facts.csv" in mashup
+    assert PUBLISHED_FACTS_PATH not in mashup
     assert _omits_working_set_facts_url(mashup)
-    assert "200" in mashup
-    assert "offset" in mashup
+    assert "Csv.Document" in mashup
+    assert "PageLimit" not in mashup
+    assert "layout = \"table\"" not in mashup
     assert "Authorization" in mashup
     assert "Bearer" in mashup
     assert "stg_source_row" not in mashup

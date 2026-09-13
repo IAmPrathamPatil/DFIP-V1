@@ -1,4 +1,4 @@
-"""PublishedFacts.m paging contract (page size 200 until total is consumed).
+"""PublishedFacts.m paging contract (page size 250000 until total is consumed).
 
 Mirrors excel/PublishedFacts.m. Power Query Number.RoundDown((Total - 1) / PageLimit)
 is integer division for a non-negative total. This is not an HTTP client.
@@ -6,8 +6,9 @@ is integer division for a non-negative total. This is not an HTTP client.
 
 from __future__ import annotations
 
-PUBLISHED_FACTS_PAGE_LIMIT = 200
-PUBLISHED_FACTS_RELATIVE_PATH = "/api/v1/publications/current/facts"
+PUBLISHED_FACTS_PAGE_LIMIT = 250000
+PUBLISHED_FACTS_RELATIVE_PATH = "/api/v1/publications/history/facts"
+PUBLISHED_FACTS_CSV_RELATIVE_PATH = "/api/v1/publications/history/facts.csv"
 
 
 def published_facts_page_offsets(

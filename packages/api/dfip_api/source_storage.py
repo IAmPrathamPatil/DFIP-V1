@@ -56,6 +56,8 @@ class SourceObjectStore(Protocol):
 
     def object_count(self) -> int: ...
 
+    def delete(self, *, client_id: str, source_file_id: str, sha256: str) -> None: ...
+
 
 class InMemorySourceObjectStore:
     """Process-local store for tests and empty DFIP_STORAGE_ENDPOINT."""
@@ -90,6 +92,15 @@ class InMemorySourceObjectStore:
 
     def object_count(self) -> int:
         return len(self._objects)
+
+    def delete(self, *, client_id: str, source_file_id: str, sha256: str) -> None:
+        self._objects.pop(source_object_key(client_id, source_file_id, sha256), None)
+
+    def purge_client(self, client_id: str) -> None:
+        prefix = f"{client_id}/"
+        self._objects = {
+            key: payload for key, payload in self._objects.items() if not key.startswith(prefix)
+        }
 
 
 class FilesystemSourceObjectStore:
@@ -126,9 +137,7 @@ class FilesystemSourceObjectStore:
         tmp = path.with_suffix(path.suffix + ".tmp")
         tmp.write_bytes(payload)
         tmp.replace(path)
-        return source_object_uri(
-            self.bucket, source_object_key(client_id, source_file_id, sha256)
-        )
+        return source_object_uri(self.bucket, source_object_key(client_id, source_file_id, sha256))
 
     def exists(self, *, client_id: str, source_file_id: str, sha256: str) -> bool:
         return self._path(client_id, source_file_id, sha256).is_file()
@@ -144,6 +153,17 @@ class FilesystemSourceObjectStore:
         if not bucket_root.is_dir():
             return 0
         return sum(1 for item in bucket_root.rglob("*.xlsx") if item.is_file())
+
+    def delete(self, *, client_id: str, source_file_id: str, sha256: str) -> None:
+        path = self._path(client_id, source_file_id, sha256)
+        if path.is_file():
+            path.unlink()
+
+    def purge_client(self, client_id: str) -> None:
+        from dfip_api.purge import remove_tenant_archive, tenant_archive_dir
+
+        folder = tenant_archive_dir(self.root, client_id, self.bucket)
+        remove_tenant_archive(folder)
 
 
 def build_source_object_store(settings: Settings) -> SourceObjectStore:

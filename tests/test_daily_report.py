@@ -266,8 +266,11 @@ def test_tracked_workbook_has_nine_report_sheets_and_native_v2x() -> None:
     assert b"xl/queryMashup/" not in raw
     mashup = mashup_text()
     assert mashup == M_PATH.read_text(encoding="utf-8")
-    assert PUBLISHED_FACTS_PATH in mashup
-    assert WORKING_SET_FACTS_PATH not in mashup.replace(PUBLISHED_FACTS_PATH, "")
+    assert "/api/v1/publications/history/facts.csv" in mashup
+    assert PUBLISHED_FACTS_PATH not in mashup
+    assert WORKING_SET_FACTS_PATH not in mashup.replace(
+        "/api/v1/publications/history/facts.csv", ""
+    )
 
 
 def test_attach_rewrites_existing_report_formulas(tmp_path: Path) -> None:
@@ -615,7 +618,8 @@ def test_presentation_hides_unused_columns_and_keeps_formulas() -> None:
     assert 'hidden="1"' in xml
     assert 'width="12"' in xml
     assert 'zoomScale="90"' in xml
-    assert 'xSplit="3"' in xml
+    assert "<pane " not in xml
+    assert 'state="frozen"' not in xml
     assert ZERO_VS_BLANK_HINT.split(".")[0] in xml
     assert "UNIQUE(" in xml
     assert "SUMIFS(" in xml
@@ -638,7 +642,8 @@ def test_attach_adds_report_number_formats(tmp_path: Path) -> None:
         rels = archive.read("xl/_rels/workbook.xml.rels").decode("utf-8")
     assert 'numFmtId="164"' in styles
     assert 'formatCode="0.00%"' in styles
-    assert 'cellXfs count="21"' in styles
+    assert 'cellXfs count="22"' in styles
+    assert "DFIP-TITLE-SRC" in styles
     from dfip_web.daily_report import OVERALL, _sheet_part_map
 
     parts = _sheet_part_map(workbook_xml, rels)
@@ -646,5 +651,6 @@ def test_attach_adds_report_number_formats(tmp_path: Path) -> None:
         overall = archive.read(parts[OVERALL]).decode("utf-8")
     assert 'hidden="1"' in overall
     assert "UNIQUE(" not in overall
-    assert "PublishedFacts" in overall
+    assert "No published data available" not in overall
     assert "<drawing " in overall
+    assert 'min="52" max="53"' in overall

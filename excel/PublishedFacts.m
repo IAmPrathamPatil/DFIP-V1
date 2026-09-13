@@ -1,9 +1,13 @@
 // DFIP P7 — published facts for the client workbook.
 // Excel is a reporting + refresh layer, not the processing engine.
-// This query calls GET /api/v1/publications/current/facts with Bearer auth.
-// Page size is the API maximum of 200. Power Query pages until total is consumed.
+// This query calls GET /api/v1/publications/history/facts.csv with Bearer auth.
+// The result is the company's cumulative published snapshots: later months
+// are added on Refresh All; previously published months remain. Newest
+// publication wins per campaign/variation/day grain (republish).
+// One CSV response replaces JSON paging. JSON GET /history/facts stays available.
 // JWT client_id scopes the result. A development token has no client_id; set
 // ClientId in the Settings table only for local testing. That is not RLS.
+// Result columns are HeaderMap order (FACT_HEADERS). Extra CSV fields are dropped.
 
 let
     SettingsTable = Excel.CurrentWorkbook(){[Name="Settings"]}[Content],
@@ -18,48 +22,59 @@ let
     ApiBaseUrl = Text.TrimEnd(SettingValue("ApiBaseUrl"), "/"),
     BearerToken = SettingValue("BearerToken"),
     ClientId = SettingValue("ClientId"),
-    PageLimit = 200,
-    QueryRecord = [
-        limit = Text.From(PageLimit)
-    ],
-    QueryWithClient = if ClientId = "" then QueryRecord else Record.AddField(QueryRecord, "client_id", ClientId),
-
-    FetchPage = (offset as number) as record =>
-        let
-            Query = Record.AddField(QueryWithClient, "offset", Text.From(offset)),
-            Bytes = Web.Contents(
+    RefreshPayload =
+        if BearerToken = "" then null
+        else try Json.Document(
+            Web.Contents(
                 ApiBaseUrl,
                 [
-                    RelativePath = "/api/v1/publications/current/facts",
-                    Query = Query,
+                    RelativePath = "/api/v1/auth/refresh",
                     Headers = [
                         Authorization = "Bearer " & BearerToken,
-                        Accept = "application/json"
-                    ]
+                        Accept = "application/json",
+                        #"Content-Type" = "application/json"
+                    ],
+                    Content = Text.ToBinary("{}"),
+                    ManualStatusHandling = {401, 403},
+                    Timeout = #duration(0, 0, 0, 30)
                 ]
-            ),
-            Document = Json.Document(Bytes)
-        in
-            Document,
-
-    ItemsFrom = (payload as record) as list =>
-        if payload = null then {}
-        else if Record.HasFields(payload, "items") and payload[items] <> null then payload[items]
-        else {},
-
-    TotalFrom = (payload as record) as number =>
-        try Number.From(payload[pagination][total]) otherwise 0,
-
-    FirstPage = FetchPage(0),
-    Total = TotalFrom(FirstPage),
-    PageIndexes =
-        if Total = 0 then {}
-        else {0..Number.RoundDown((Total - 1) / PageLimit)},
-    CombinedItems =
-        if Total = 0 then {}
-        else if Total <= PageLimit then ItemsFrom(FirstPage)
-        else List.Combine(List.Transform(PageIndexes, each ItemsFrom(FetchPage(_ * PageLimit)))),
-
+            )
+        ) otherwise null,
+    AccessToken =
+        if RefreshPayload <> null
+           and Value.Is(RefreshPayload, type record)
+           and Record.HasFields(RefreshPayload, "access_token")
+           and RefreshPayload[access_token] <> null
+           and Text.Trim(Text.From(RefreshPayload[access_token])) <> ""
+        then Text.From(RefreshPayload[access_token])
+        else BearerToken,
+    QueryWithClient = if ClientId = "" then [] else [client_id = ClientId],
+    Bytes = Web.Contents(
+        ApiBaseUrl,
+        [
+            RelativePath = "/api/v1/publications/history/facts.csv",
+            Query = QueryWithClient,
+            Headers = [
+                Authorization = "Bearer " & AccessToken,
+                Accept = "text/csv"
+            ],
+            Timeout = #duration(0, 0, 1, 30),
+            ManualStatusHandling = {401, 403}
+        ]
+    ),
+    JsonProbe = try Json.Document(Bytes) otherwise null,
+    Checked =
+        if JsonProbe <> null
+           and Value.Is(JsonProbe, type record)
+           and Record.HasFields(JsonProbe, "error")
+        then error Error.Record(
+            "AuthenticationFailed",
+            "Session expired. Download a new Refreshable Workbook from the website.",
+            null
+        )
+        else Bytes,
+    Source = Csv.Document(Checked, [Delimiter=",", Encoding=65001, QuoteStyle=QuoteStyle.Csv]),
+    Promoted = Table.PromoteHeaders(Source, [PromoteAllScalars=true]),
     DecimalFields = {
         "total_cost",
         "revenue_inr",
@@ -116,31 +131,42 @@ let
     ParseDecimal = (value as any) as any =>
         if value = null or value = "" then value
         else try Number.FromText(Text.From(value)) otherwise value,
-
+    CanonicalKeys = Record.FieldNames(HeaderMap),
+    DisplayHeaders = Record.FieldValues(HeaderMap),
     Facts =
-        if List.Count(CombinedItems) = 0 then
-            #table(Record.FieldValues(HeaderMap), {})
+        if Table.RowCount(Promoted) = 0 then
+            #table(DisplayHeaders, {})
         else
             let
-                AsTable = Table.FromList(CombinedItems, Splitter.SplitByNothing(), {"Row"}),
-                Expanded = Table.ExpandRecordColumn(AsTable, "Row", Record.FieldNames(AsTable{0}[Row])),
                 Decimals = List.Accumulate(
                     DecimalFields,
-                    Expanded,
+                    Promoted,
                     (state, field) =>
                         if Table.HasColumns(state, {field}) then
                             Table.TransformColumns(state, {{field, ParseDecimal, type any}})
                         else state
                 ),
-                RenamePairs = List.Select(
-                    Record.FieldNames(HeaderMap),
-                    each Table.HasColumns(Decimals, {_})
-                ),
                 Renamed = Table.RenameColumns(
                     Decimals,
-                    List.Transform(RenamePairs, each {_, Record.Field(HeaderMap, _)})
+                    List.Transform(CanonicalKeys, each {_, Record.Field(HeaderMap, _)})
+                ),
+                Ordered = Table.ReorderColumns(Renamed, DisplayHeaders),
+                Chrono = Table.ReorderColumns(
+                    Table.RenameColumns(
+                        Table.RemoveColumns(
+                            Table.AddColumn(
+                                Ordered,
+                                "MD",
+                                each try Date.From([month_start]) otherwise [Month],
+                                type date
+                            ),
+                            {"Month"}
+                        ),
+                        {{"MD", "Month"}}
+                    ),
+                    Table.ColumnNames(Ordered)
                 )
             in
-                Renamed
+                Chrono
 in
     Facts

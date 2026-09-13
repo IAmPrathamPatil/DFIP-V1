@@ -34,8 +34,11 @@ def test_v1_and_phase1_migrations_apply(postgres_url: str) -> None:
         "publication",
         "publication_current",
         "publication_fact",
+        "publication_history_grain",
         "app_user",
         "client_membership",
+        "excel_workbook_grant",
+        "analytics_saved_analysis",
         "audit_log",
     ):
         assert name in tables
@@ -126,6 +129,7 @@ def test_roles_rls_policies_and_view(postgres_url: str) -> None:
             "publication",
             "publication_current",
             "publication_fact",
+            "publication_history_grain",
         ):
             assert name in forced_names
         policies = conn.execute("SELECT COUNT(*) AS n FROM pg_policies").fetchone()
@@ -149,6 +153,7 @@ def test_indexes_for_read_paths_exist(postgres_url: str) -> None:
     assert "fact_campaign_day_published_slice_idx" in indexes
     assert "processing_run_client_idx" in indexes
     assert "source_file_client_idx" in indexes
+    assert "publication_history_grain_page_idx" in indexes
 
 
 def test_apply_migrations_is_idempotent(postgres_url: str) -> None:

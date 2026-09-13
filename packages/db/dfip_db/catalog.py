@@ -201,12 +201,44 @@ SOURCE_COLUMNS: tuple[SourceColumn, ...] = (
     ),
 )
 
-# K:BO. Exact Excel headers. P3 ingests these 57 columns only.
+# K:BO. Exact Excel headers. P3 always ingests these 57 columns.
+# Optional RUN 009 extras live in APPROVED_EXTRA_SOURCE_COLUMNS, not here.
 WEB_ENGAGE_SOURCE_COLUMNS: tuple[SourceColumn, ...] = tuple(
     col for col in SOURCE_COLUMNS if col.source_role == "web_engage_source"
 )
 WEB_ENGAGE_SOURCE_HEADERS: tuple[str, ...] = tuple(
     col.excel_header for col in WEB_ENGAGE_SOURCE_COLUMNS
+)
+
+
+# RUN 009: approved extras are identified by exact Excel header, not letter/position.
+# They are not we_source_column rows (A:BO CHECK 1–67) and not fact/Excel fields.
+class ApprovedExtraSourceColumn(NamedTuple):
+    excel_header: str
+    db_column: str
+    value_kind: str
+    required: bool
+    excel_exposure: str
+    powerbi_exposure: str
+    notes: str
+
+
+APPROVED_EXTRA_SOURCE_COLUMNS: tuple[ApprovedExtraSourceColumn, ...] = (
+    ApprovedExtraSourceColumn(
+        excel_header="Campaign Objective",
+        db_column="campaign_objective",
+        value_kind="text",
+        required=False,
+        excel_exposure="none",
+        powerbi_exposure="none",
+        notes=(
+            "RUN 009 synthetic approved extra. Stored on stg_source_row.raw only. "
+            "Not copied onto fact_campaign_day, FactResponse, FACT_HEADERS, or rpt_*."
+        ),
+    ),
+)
+APPROVED_EXTRA_SOURCE_HEADERS: tuple[str, ...] = tuple(
+    col.excel_header for col in APPROVED_EXTRA_SOURCE_COLUMNS
 )
 
 CAMPAIGN_LABEL_OUTPUTS: tuple[str, ...] = (

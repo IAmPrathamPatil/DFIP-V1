@@ -342,3 +342,5 @@ def test_spa_reprocess_wiring() -> None:
     assert "processBatch" in app_js
     assert "data-batch-reprocess" in views
     assert "Re-process" in views
+    assert "Retry" in views
+    assert "data-batch-retry-kind" in views

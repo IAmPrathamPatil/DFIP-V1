@@ -90,11 +90,34 @@ if errorlevel 1 (
 )
 
 echo.
+echo One-click start (START_DFIP_DEMO.bat) prepares local identities via
+echo scripts\dfip_demo_prepare.py using existing local_demo_seed.
+echo This check does not print passwords.
+
+echo.
 echo Reachability (optional if not running)...
 powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:8000/health' -TimeoutSec 2; if ($r.StatusCode -eq 200) { Write-Host '[PASS] API reachable: http://127.0.0.1:8000/health'; exit 0 } } catch { }; Write-Host '[PASS] API not running (checked, not required)'; exit 0"
 
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $r = Invoke-WebRequest -UseBasicParsing -Uri 'http://127.0.0.1:3000/' -TimeoutSec 2; if ($r.StatusCode -eq 200) { Write-Host '[PASS] Website reachable: http://127.0.0.1:3000'; exit 0 } } catch { }; Write-Host '[PASS] Website not running (checked, not required)'; exit 0"
+powershell -NoProfile -ExecutionPolicy Bypass -File "%ROOT%\scripts\dfip_demo_port.ps1" -Action web-config-check -RepoRoot "%ROOT%"
+set "WEB_CFG_EXIT=%ERRORLEVEL%"
+if "%WEB_CFG_EXIT%"=="3" (
+    echo [FAIL] Website API configuration is stale/incorrect
+    set "FAILED=1"
+    goto after_web_check
+)
+if "%WEB_CFG_EXIT%"=="2" (
+    echo [PASS] Website not running (checked, not required)
+    goto after_web_check
+)
+if not "%WEB_CFG_EXIT%"=="0" (
+    echo [FAIL] Website API configuration check failed
+    set "FAILED=1"
+    goto after_web_check
+)
+echo([PASS] Website reachable: http://127.0.0.1:3000
+echo([PASS] Website API configuration: http://127.0.0.1:8000
 
+:after_web_check
 echo.
 if "%FAILED%"=="1" (
     echo RESULT: FAIL

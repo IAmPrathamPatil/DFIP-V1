@@ -5,7 +5,13 @@ DFIP replaces a manual Excel / Power Query workflow for Web Engage campaign repo
 This repository is **DFIP-V1 COMPLETE**.
 
 P0–P9 are locked. P10 locked published-data / report-layer parity. P11 adds
-native Excel PivotTables on that slice. There is no P12, P13, or P14.
+native Excel PivotTables on that slice. **P12 COMPLETE** (historical reports /
+recovery). **P13A COMPLETE** (production environment + secrets). **P13B
+COMPLETE** (durable processing / recovery). **P13C COMPLETE** (backup +
+restore). **P13D COMPLETE** (monitoring + health). **P13E COMPLETE**
+(upload / request limits). **P13F COMPLETE** (retention + company
+lifecycle). **P13G COMPLETE** (DigitalOcean single-Droplet deployment package
++ runbook). P14 is not started.
 Deferred architecture is V2, not a later V1 phase.
 
 ## Current implementation status
@@ -26,13 +32,21 @@ Deferred architecture is V2, not a later V1 phase.
 | **P9** | Authorization hardening | Complete |
 | **P10** | Report-layer data parity | **Complete** |
 | **P11** | Native Excel PivotTables + slicers | **Complete — presentation objects** |
+| **P12** | Historical reports / recovery | **Complete** |
+| **P13A** | Production environment + secrets | **Complete** |
+| **P13B** | Durable processing / recovery | **Complete** |
+| **P13C** | Backup + restore | **Complete** |
+| **P13D** | Monitoring + health | **Complete** |
+| **P13E** | Upload / request limits | **Complete** |
+| **P13F** | Retention + company lifecycle | **Complete** |
+| **P13G** | Deployment + rollback + production runbook | **Complete** — artifacts + disposable rehearsal; no live Droplet |
 | **V2 Phase 1** | PostgreSQL persistence foundation | Complete |
 | **V2 Phase 2A** | Analytics / published `rpt_*` | Complete |
 | **V2 Phase 2B** | Power BI reporting package | Complete — local Desktop `.pbix` remaining |
 | **V2 HTTP ingest** | Authenticated `.xlsx` upload + published download | Complete — API, SPA, and V2-X Excel pointer Refresh All verified locally. **P9 Power BI Desktop** remaining. See `documentation/DESKTOP_ACCEPTANCE.md` |
 
 
-### Implemented (P0 through P11)
+### Implemented (P0 through P13G)
 
 - Independent Git repository at `DFIP-V1`
 - `.gitignore` that excludes client workbooks, CSV/raw data, secrets, caches, and virtualenvs
@@ -51,6 +65,7 @@ Deferred architecture is V2, not a later V1 phase.
 - Reconciliation module that independently recomputes every derived value
 - Read-only FastAPI application (`dfip_api`) under `/api/v1` with pagination, validated filters, and an authentication boundary
 - Public `GET /health` that never claims database connectivity
+- Authenticated `GET /api/v1/ops/ready` (publisher/inspector) for cheap readiness; web `/health` remains `dfip-web` process liveness
 - Admin/Publisher and Client SPA (`apps/web/static`) served by `python -m dfip_web` on port 3000, consuming `/api/v1` with UI route guards. Upload Center uploads `.xlsx` (does not publish). Publications publishes a succeeded run. Client facts download the published CSV/XLSX slice. See `documentation/WEBSITE.md`.
 - P7 publication pointer (`publication` / `publication_current`) with `POST /api/v1/publications` and published-facts GET
 - Empty client workbook `excel/Client_Report.xlsx` (`PublishedFacts` + `Facts`
@@ -62,7 +77,11 @@ Deferred architecture is V2, not a later V1 phase.
 - P8 client portal `/client/facts` reads the published slice; Admin `/admin/facts` remains the working set
 - P9 application-level authorization: admin/publisher inspect the working set and publish; client/reader may read session plus published data only. Unknown JWT roles are rejected. **This is application-level authorization, not PostgreSQL RLS and not production tenant isolation.**
 - P10 V1 data/report-layer closeout: documentation, UI copy, release metadata, and acceptance tests. Native PivotTables are P11.
-- P11 native Excel PivotTables, independent slicers, page filters, and outline expand/collapse on the nine report sheets. P8 historical downloads rebind the shared cache to that publication's static PublishedFacts cells. P12/P13/P14 are not started.
+- P11 native Excel PivotTables, independent slicers, page filters, and outline expand/collapse on the nine report sheets. P8 historical downloads rebind the shared cache to that publication's static PublishedFacts cells.
+- P12 historical reports / recovery: current vs historical catalog, historical static Client Report bound to `publication_id`, same-day filename disambiguator, no historical refreshable workbook. **P13A COMPLETE**. **P13B COMPLETE**. **P13C COMPLETE**. **P13D COMPLETE**. **P13E COMPLETE**. **P13F COMPLETE**. **P13G COMPLETE**. P14 is not started.
+- P13C coordinated backup/restore: `python -m dfip_api.backup` (`pg_dump -Fc` plus `DFIP_STORAGE_ENDPOINT` copy, secret-free manifest). Restore into a disposable local database (`--confirm-disposable`) or colocated production database name `dfip` (`--confirm-production-local`). Identify extra verified sets with `python -m dfip_api.backup identify-eligible` (never deletes; never selects the only verified set).
+- P13F company lifecycle: publisher deactivate/reactivate (`POST /api/v1/clients/{id}/deactivate|reactivate`). Permanent purge is operator CLI only: `python -m dfip_api.purge dry-run --code CODE --confirm-disposable` then `python -m dfip_api.purge purge --code CODE --confirm-purge --confirm-disposable`. Production colocated `dfip` uses `--confirm-production-local` instead of `--confirm-disposable`. See `documentation/V1_OPERATIONS_RUNBOOK.md` and `documentation/V1_DEPLOYMENT.md`.
+- P13G production package: `deploy/` systemd units, Caddyfile, environment templates, backup timer example, recreate-in-place scripts, smoke/rehearse helpers. Locked topology is one DigitalOcean Droplet (BLR1), colocated PostgreSQL 16, block-volume archive, Caddy HTTPS. No live Droplet is provisioned by this repository.
 - V2 HTTP ingest: `POST /api/v1/uploads` accepts a workbook and runs existing P3/P4 libraries off the API event loop (202 + poll batch/run). It does not publish. The Admin SPA posts that multipart. Published-slice download: `GET /api/v1/publications/current/facts.csv` and `.xlsx`, including Client SPA buttons. See `documentation/HTTP_WORKFLOW.md`.
 
 ### Runtime honesty (V1)
@@ -78,10 +97,12 @@ Deferred architecture is V2, not a later V1 phase.
 
 ### V2 (not implemented)
 
-Later V2 phases remain unimplemented: QA rule engine, production
-identity-provider runtime / Supabase Auth, object-storage HTTP upload,
-signed URLs, KPI engine, RECON-09, OData/PostgREST,
-and worker/queue runtime. These are not additional V1 phases.
+Later V2 *product* items remain unimplemented: production
+identity-provider runtime / Supabase Auth, signed URLs, RECON-09,
+OData/PostgREST, and worker/queue runtime. These are not additional V1 phases.
+(HTTP multipart upload, QA `evaluate_qa`, and the KPI engine **are** in this
+repository — see Phase 2A and `POST /api/v1/uploads` below. Do not use this
+paragraph as an inventory of missing code.)
 
 V2 Phase 1 adds optional PostgreSQL persistence when `DATABASE_URL` is set
 (local PostgreSQL 16 or hosted Supabase Free-tier URI, Direct/Session pooler).
@@ -116,7 +137,8 @@ DFIP-V1/
 ├── powerbi/          # V2 Phase 2B DAX / model / pages (no committed .pbix)
 ├── supabase/         # P1/P2/P3 SQL migrations (P4 adds none)
 ├── excel/            # Native V2-X Client_Report.xlsx + PublishedFacts.m + 9-sheet report
-├── tests/            # P0–P10 tests
+├── deploy/           # P13G systemd/Caddy/env/scripts (no live provision)
+├── tests/            # P0–P13G tests
 ├── documentation/    # status, schema, local testing runbook, publication, daily report
 ├── source/           # local source-data drop folder (gitignored except README)
 ├── .env.example
@@ -208,6 +230,7 @@ docker compose --profile v2-db up -d dfip_db
 2. Never commit `.env`, API keys, service-role keys, or credential files.
 3. Never grant a client or Excel workbook a database credential.
 4. Source / raw / upload directories are gitignored. Generated extracts (`*.csv`, `*.pkl`, `*.parquet`) are gitignored.
+5. Backup dumps and source-archive copies are confidential. Do not commit or publish them. Manifests contain no secrets; dumps contain client data and password hashes.
 
 Details: `documentation/DATA_HANDLING.md`.
 
