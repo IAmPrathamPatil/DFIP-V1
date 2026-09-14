@@ -6,7 +6,7 @@ transaction. Persistent session GUCs are not used for request identity.
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import Iterator, Sequence
 from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
@@ -16,6 +16,14 @@ from psycopg import Connection
 from psycopg.errors import InsufficientPrivilege
 
 IDENTITY_LOOKUP_USER_ID = "dfip-identity-lookup"
+INSPECTOR_ROLES = frozenset({"admin", "publisher"})
+_REGISTRY_MEMBERSHIP_SQL = """
+    SELECT client_id::text AS client_id
+    FROM client_membership
+    WHERE user_id = %s::uuid
+      AND role IN ('admin', 'publisher')
+      AND client_id = ANY(%s::uuid[])
+"""
 
 
 @dataclass(frozen=True)
@@ -103,6 +111,34 @@ def identity_lookup_bind(
             reset_rls()
         else:
             bind_rls(previous)
+
+
+def require_inspector_rls() -> RlsContext:
+    """Fail closed unless the bound HTTP/worker context is an inspector."""
+    ctx = current_rls()
+    if ctx is None or ctx.role not in INSPECTOR_ROLES or not str(ctx.user_id or "").strip():
+        raise PermissionError("Inspector RLS context is required for company registry access.")
+    return ctx
+
+
+def expand_inspector_registry_clients(
+    conn: Connection[Any], target_ids: Sequence[str]
+) -> tuple[str, ...]:
+    """Widen this transaction's dfip.client_ids to membership-authorized targets.
+
+    Does not change the request ContextVar. Does not set platform_admin.
+    Only ids with an inspector membership for ctx.user_id are added, so a
+    selected-company JWT can still SELECT/UPDATE another authorized company.
+    """
+    ctx = require_inspector_rls()
+    wanted = tuple(dict.fromkeys(str(item).strip() for item in target_ids if str(item or "").strip()))
+    if not wanted:
+        return ()
+    rows = conn.execute(_REGISTRY_MEMBERSHIP_SQL, (ctx.user_id, list(wanted))).fetchall()
+    authorized = tuple(str(row["client_id"]) for row in rows)
+    merged = tuple(dict.fromkeys((*ctx.client_ids, *authorized)))
+    conn.execute("SELECT set_config('dfip.client_ids', %s, true)", (",".join(merged),))
+    return authorized
 
 
 def apply_rls_settings(conn: Connection[Any], context: RlsContext | None) -> None:

@@ -13,6 +13,7 @@ from psycopg.errors import RaiseException, UndefinedFunction
 
 from dfip_core.ingest.progress import ACTIVE_STAGES
 from dfip_db.connection import transaction
+from dfip_db.rls import expand_inspector_registry_clients, require_inspector_rls
 
 from dfip_api.auth import Principal
 from dfip_api.client_directory import inspector_directory_ids
@@ -38,11 +39,11 @@ def delete_company(request: Request, principal: Principal, client_id: str) -> Cl
     store = getattr(request.app.state, "identity_store", None)
     identity = store.get_by_subject(principal.subject) if store is not None else None
     allowed = inspector_directory_ids(principal, identity)
+    if client_id not in allowed:
+        raise AuthorizationError("Not authorized to access this client.")
     record = directory.get(client_id)
     if record is None:
         return ClientDeleteResponse(deleted=True, client_id=client_id, already_absent=True)
-    if client_id not in allowed:
-        raise AuthorizationError("Not authorized to access this client.")
     if record.lifecycle_status != LIFECYCLE_INACTIVE:
         raise ConflictError(MUST_DEACTIVATE)
     if is_protected_company(record):
@@ -94,7 +95,9 @@ def _has_in_flight(request: Request, client_id: str) -> bool:
     pool = getattr(request.app.state, "db_pool", None)
     if pool is None:
         return False
-    with transaction(pool, rls=None) as conn:
+    ctx = require_inspector_rls()
+    with transaction(pool, rls=ctx) as conn:
+        expand_inspector_registry_clients(conn, (client_id,))
         active_run = conn.execute(
             """
             SELECT 1 FROM processing_run
@@ -119,11 +122,14 @@ def _has_in_flight(request: Request, client_id: str) -> bool:
 def _delete_postgres(request: Request, client_id: str) -> None:
     pool = request.app.state.db_pool
     settings = request.app.state.settings
+    ctx = require_inspector_rls()
     try:
-        with transaction(pool, rls=None) as conn:
+        with transaction(pool, rls=ctx) as conn:
+            expand_inspector_registry_clients(conn, (client_id,))
             conn.execute("SELECT dfip_delete_company(%s)", (client_id,))
     except UndefinedFunction:
-        with transaction(pool, rls=None) as conn:
+        with transaction(pool, rls=ctx) as conn:
+            expand_inspector_registry_clients(conn, (client_id,))
             record = request.app.state.client_directory.get(client_id)
             archive = None
             endpoint = (settings.dfip_storage_endpoint or "").strip()

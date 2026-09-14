@@ -451,8 +451,8 @@ def test_delete_company_after_deactivate_is_permanent(tmp_path: Path) -> None:
     assert deleted.json()["deleted"] is True
     assert deleted.json()["already_absent"] is False
     again = http.delete(f"/api/v1/clients/{target}", headers=company1)
-    assert again.status_code == 200
-    assert again.json()["already_absent"] is True
+    assert again.status_code == 403
+    assert _error(again)["code"] == "AUTHORIZATION_FAILED"
 
     assert http.app.state.client_directory.get(target) is None
     leftover_facts = [

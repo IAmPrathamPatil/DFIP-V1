@@ -1,9 +1,10 @@
 """client table directory. id and code are immutable after insert.
 
-Directory reads assume ``dfip_api`` via ``identity_lookup_bind``. Writes that
-need INSERT/UPDATE still use ``transaction(..., rls=None)`` because
-``dfip_api`` has SELECT-only grants on ``client``. Application authorization
-remains the primary control.
+Directory reads assume ``dfip_api`` via ``identity_lookup_bind`` when no
+inspector HTTP context is bound. Inspector registry get/list/update copy
+membership-authorized client ids onto the transaction GUC so a selected-company
+JWT can still see other companies the caller belongs to. Create Company uses
+the bound inspector context. Application authorization remains primary.
 """
 
 from __future__ import annotations
@@ -18,7 +19,13 @@ from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import as_uuid_text
-from dfip_db.rls import current_rls, identity_lookup_bind
+from dfip_db.rls import (
+    INSPECTOR_ROLES,
+    current_rls,
+    expand_inspector_registry_clients,
+    identity_lookup_bind,
+    require_inspector_rls,
+)
 
 
 @dataclass(frozen=True)
@@ -143,7 +150,24 @@ def set_client_lifecycle(
     return _from_row(row)
 
 
+def _inspector_registry_tx(pool: ConnectionPool):
+    return transaction(pool, rls=require_inspector_rls())
+
+
+def _has_inspector_registry_ctx() -> bool:
+    ctx = current_rls()
+    return (
+        ctx is not None
+        and ctx.role in INSPECTOR_ROLES
+        and bool(str(ctx.user_id or "").strip())
+    )
+
+
 def fetch_client_from_pool(pool: ConnectionPool, client_id: str) -> ClientRecord | None:
+    if _has_inspector_registry_ctx():
+        with _inspector_registry_tx(pool) as conn:
+            expand_inspector_registry_clients(conn, (client_id,))
+            return fetch_client(conn, client_id)
     with identity_lookup_bind(client_ids=(client_id,)) as rls:
         with transaction(pool, rls=rls) as conn:
             return fetch_client(conn, client_id)
@@ -158,6 +182,10 @@ def fetch_client_by_code_from_pool(pool: ConnectionPool, code: str) -> ClientRec
 def list_clients_from_pool(
     pool: ConnectionPool, client_ids: Sequence[str]
 ) -> tuple[ClientRecord, ...]:
+    if _has_inspector_registry_ctx():
+        with _inspector_registry_tx(pool) as conn:
+            expand_inspector_registry_clients(conn, client_ids)
+            return list_clients(conn, client_ids)
     with identity_lookup_bind(client_ids=tuple(client_ids)) as rls:
         with transaction(pool, rls=rls) as conn:
             return list_clients(conn, client_ids)
@@ -171,7 +199,10 @@ def list_all_clients_from_pool(pool: ConnectionPool) -> tuple[ClientRecord, ...]
 def update_client_name_from_pool(
     pool: ConnectionPool, client_id: str, name: str
 ) -> ClientRecord | None:
-    with transaction(pool, rls=None) as conn:
+    with _inspector_registry_tx(pool) as conn:
+        authorized = expand_inspector_registry_clients(conn, (client_id,))
+        if client_id not in authorized:
+            return None
         return update_client_name(conn, client_id, name)
 
 
@@ -183,7 +214,10 @@ def set_client_lifecycle_from_pool(
     deactivated_at: datetime | None,
     purge_eligible_after: datetime | None,
 ) -> ClientRecord | None:
-    with transaction(pool, rls=None) as conn:
+    with _inspector_registry_tx(pool) as conn:
+        authorized = expand_inspector_registry_clients(conn, (client_id,))
+        if client_id not in authorized:
+            return None
         return set_client_lifecycle(
             conn,
             client_id,

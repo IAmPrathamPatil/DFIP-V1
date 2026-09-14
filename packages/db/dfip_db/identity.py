@@ -1,9 +1,9 @@
 """app_user / client_membership lookup and operator client-user insert.
 
 Identity reads assume ``dfip_api`` via ``identity_lookup_bind`` because the
-production API LOGIN has no table grants. Writes that need INSERT still use
-``transaction(..., rls=None)`` (``dfip_api`` is SELECT-only on identity
-tables). Application authorization remains the primary control.
+production API LOGIN has no table grants. Client-user inserts use the bound
+inspector RLS context (SET LOCAL ROLE dfip_api). Application authorization
+remains the primary control.
 """
 
 from __future__ import annotations
@@ -20,7 +20,13 @@ from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import as_uuid_text
-from dfip_db.rls import apply_rls_settings, identity_lookup_bind, identity_lookup_rls
+from dfip_db.rls import (
+    apply_rls_settings,
+    expand_inspector_registry_clients,
+    identity_lookup_bind,
+    identity_lookup_rls,
+    require_inspector_rls,
+)
 
 
 @dataclass(frozen=True)
@@ -308,7 +314,11 @@ def insert_client_password_user_from_pool(
     password_hash: str,
     client_id: str,
 ) -> IdentityRecord:
-    with transaction(pool, rls=None) as conn:
+    ctx = require_inspector_rls()
+    with transaction(pool, rls=ctx) as conn:
+        authorized = expand_inspector_registry_clients(conn, (client_id,))
+        if client_id not in authorized:
+            raise PermissionError("Inspector membership is required to provision a client user.")
         return insert_client_password_user(
             conn, subject=subject, password_hash=password_hash, client_id=client_id
         )
