@@ -17,6 +17,7 @@ from dfip_db.sql_inspect import (
     parse_indexes,
     parse_insert_tuples,
     parse_tables,
+    strip_sql_comments,
     unquote_sql_string,
     validate_sql_shape,
 )
@@ -267,3 +268,13 @@ def test_no_kpi_generated_columns_on_fact() -> None:
     assert "ctr" not in body
     assert "roas" not in body
     assert "delivered_rate" not in body
+
+
+def test_login_role_must_not_keep_table_grants() -> None:
+    files = {path.name: path.read_text(encoding="utf-8") for path in migration_files()}
+    name = "20260914000029_revoke_dfip_app_table_grants.sql"
+    assert name in files
+    sql = files[name]
+    assert "REVOKE ALL ON ALL TABLES IN SCHEMA public FROM dfip_app" in sql
+    assert "GRANT " not in strip_sql_comments(sql)
+    assert "BYPASSRLS" not in sql.upper()

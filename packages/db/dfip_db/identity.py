@@ -2,8 +2,8 @@
 
 Identity reads assume ``dfip_api`` via ``identity_lookup_bind`` because the
 production API LOGIN has no table grants. Client-user inserts use the bound
-inspector RLS context (SET LOCAL ROLE dfip_api). Application authorization
-remains the primary control.
+inspector RLS context (SET LOCAL ROLE dfip_api). Publisher setup inserts use
+identity-lookup RLS. Application authorization remains the primary control.
 """
 
 from __future__ import annotations
@@ -331,7 +331,9 @@ def insert_publisher_password_user_from_pool(
     password_hash: str,
     memberships: Sequence[MembershipRow],
 ) -> IdentityRecord:
-    with transaction(pool, rls=None) as conn:
-        return insert_publisher_password_user(
-            conn, subject=subject, password_hash=password_hash, memberships=memberships
-        )
+    client_ids = tuple(item.client_id for item in memberships)
+    with identity_lookup_bind(role="publisher", client_ids=client_ids) as rls:
+        with transaction(pool, rls=rls) as conn:
+            return insert_publisher_password_user(
+                conn, subject=subject, password_hash=password_hash, memberships=memberships
+            )

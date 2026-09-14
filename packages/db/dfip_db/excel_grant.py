@@ -1,8 +1,8 @@
 """Postgres persistence for Excel workbook grants.
 
-Uses ``transaction(..., rls=None)`` like identity: ``dfip_api`` has table
-grants and this is not published-fact RLS. Application authorization still
-checks JWT client_id and membership.
+Uses ``api_transaction`` so production LOGIN SET LOCAL ROLE dfip_api.
+The table has no FORCE RLS. Application authorization still checks JWT
+client_id and membership.
 """
 
 from __future__ import annotations
@@ -13,7 +13,7 @@ from uuid import uuid4
 
 from psycopg_pool import ConnectionPool
 
-from dfip_db.connection import transaction
+from dfip_db.connection import api_transaction
 from dfip_db.mapping import as_uuid_text
 
 
@@ -54,7 +54,7 @@ def insert_grant(
 ) -> ExcelWorkbookGrant:
     now = datetime.now(tz=UTC)
     grant_id = str(uuid4())
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         row = conn.execute(
             """
             INSERT INTO excel_workbook_grant (
@@ -72,7 +72,7 @@ def insert_grant(
 
 def fetch_active_grant(pool: ConnectionPool, jti: str) -> ExcelWorkbookGrant | None:
     now = datetime.now(tz=UTC)
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         row = conn.execute(
             """
             SELECT id, user_id, client_id, jti, created_at, expires_at,
@@ -91,7 +91,7 @@ def fetch_active_grant(pool: ConnectionPool, jti: str) -> ExcelWorkbookGrant | N
 
 def touch_grant(pool: ConnectionPool, jti: str) -> None:
     now = datetime.now(tz=UTC)
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         conn.execute(
             """
             UPDATE excel_workbook_grant
@@ -104,7 +104,7 @@ def touch_grant(pool: ConnectionPool, jti: str) -> None:
 
 def revoke_grants_for_user(pool: ConnectionPool, user_id: str) -> int:
     now = datetime.now(tz=UTC)
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         result = conn.execute(
             """
             UPDATE excel_workbook_grant

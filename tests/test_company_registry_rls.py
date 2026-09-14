@@ -11,6 +11,7 @@ from uuid import uuid4
 
 import pytest
 from dfip_db.client_directory import (
+    list_all_clients_from_pool,
     update_client_name_from_pool,
 )
 from dfip_db.identity import insert_client_password_user_from_pool
@@ -113,6 +114,27 @@ def test_registry_writes_fail_closed_without_inspector() -> None:
         )
     with pytest.raises(PermissionError, match="Inspector RLS context"):
         update_client_name_from_pool(object(), CLIENT_B, RENAMED)  # type: ignore[arg-type]
+    assert current_rls() is None
+
+
+def test_list_all_clients_from_pool_rejects_bound_http_context() -> None:
+    reset_rls()
+    bind_rls(
+        RlsContext(
+            user_id="11111111-1111-4111-8111-111111111111",
+            role="publisher",
+            client_ids=(CLIENT_A,),
+            platform_admin=False,
+            subject="publisher-user",
+        )
+    )
+    try:
+        with pytest.raises(PermissionError, match="unbound setup RLS"):
+            list_all_clients_from_pool(object())  # type: ignore[arg-type]
+        assert current_rls() is not None
+        assert current_rls().platform_admin is False
+    finally:
+        reset_rls()
     assert current_rls() is None
 
 

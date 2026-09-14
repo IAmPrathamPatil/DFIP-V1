@@ -13,7 +13,8 @@ from uuid import UUID
 from psycopg.types.json import Json
 from psycopg_pool import ConnectionPool
 
-from dfip_db.connection import transaction
+from dfip_db.connection import api_transaction
+from dfip_db.rls import current_rls, identity_lookup_rls
 
 log = logging.getLogger(__name__)
 
@@ -62,8 +63,19 @@ def write_audit_event(
             client_uuid = str(UUID(str(client_id)))
         except (ValueError, TypeError):
             client_uuid = None
+    ctx = current_rls()
+    if ctx is None and client_uuid:
+        ctx = identity_lookup_rls(
+            role="publisher",
+            client_ids=(client_uuid,),
+            platform_admin=False,
+            user_id="dfip-audit",
+            subject=(actor or "dfip-audit")[:200],
+        )
+    if ctx is None:
+        return
     try:
-        with transaction(pool, rls=None) as conn:
+        with api_transaction(pool, rls=ctx) as conn:
             conn.execute(
                 """
                 INSERT INTO audit_log (

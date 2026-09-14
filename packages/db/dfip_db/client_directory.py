@@ -192,8 +192,16 @@ def list_clients_from_pool(
 
 
 def list_all_clients_from_pool(pool: ConnectionPool) -> tuple[ClientRecord, ...]:
-    with transaction(pool, rls=None) as conn:
-        return list_all_clients(conn)
+    """Bootstrap-only directory listing. Sees every company via lookup RLS.
+
+    Refuses a bound HTTP/worker context so this cannot widen an authenticated
+    caller to platform-admin. Publisher setup runs before get_principal binds.
+    """
+    if current_rls() is not None:
+        raise PermissionError("Listing every company requires unbound setup RLS.")
+    with identity_lookup_bind(platform_admin=True, role="admin") as rls:
+        with transaction(pool, rls=rls) as conn:
+            return list_all_clients(conn)
 
 
 def update_client_name_from_pool(

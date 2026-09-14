@@ -1,8 +1,8 @@
 """Postgres persistence for D9 saved analytical state.
 
 Stores configuration JSON, not published fact rows. Application authorization
-still binds owner_subject + JWT client_id. Uses ``transaction(..., rls=None)``
-like excel grants: this is identity metadata, not published-fact RLS.
+still binds owner_subject + JWT client_id. Uses ``api_transaction`` so
+production LOGIN SET LOCAL ROLE dfip_api. The table has no FORCE RLS.
 """
 
 from __future__ import annotations
@@ -15,7 +15,7 @@ from uuid import uuid4
 from psycopg.types.json import Json
 from psycopg_pool import ConnectionPool
 
-from dfip_db.connection import transaction
+from dfip_db.connection import api_transaction
 from dfip_db.mapping import as_uuid_text
 
 
@@ -63,7 +63,7 @@ def insert_saved_analysis(
 ) -> SavedAnalysisRecord:
     now = datetime.now(tz=UTC)
     analysis_id = str(uuid4())
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         row = conn.execute(
             f"""
             INSERT INTO analytics_saved_analysis (
@@ -84,7 +84,7 @@ def list_saved_analyses(
     owner_subject: str,
     client_id: str,
 ) -> tuple[SavedAnalysisRecord, ...]:
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         rows = conn.execute(
             _SELECT
             + """
@@ -102,7 +102,7 @@ def count_saved_analyses(
     owner_subject: str,
     client_id: str,
 ) -> int:
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         row = conn.execute(
             """
             SELECT COUNT(*) AS n
@@ -121,7 +121,7 @@ def fetch_saved_analysis(
     owner_subject: str,
     client_id: str,
 ) -> SavedAnalysisRecord | None:
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         row = conn.execute(
             _SELECT + " WHERE id = %s AND owner_subject = %s AND client_id = %s",
             (analysis_id, owner_subject, client_id),
@@ -141,7 +141,7 @@ def update_saved_analysis(
     state: dict[str, Any] | None,
 ) -> SavedAnalysisRecord | None:
     now = datetime.now(tz=UTC)
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         current = conn.execute(
             _SELECT + " WHERE id = %s AND owner_subject = %s AND client_id = %s",
             (analysis_id, owner_subject, client_id),
@@ -171,7 +171,7 @@ def delete_saved_analysis(
     owner_subject: str,
     client_id: str,
 ) -> bool:
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         row = conn.execute(
             """
             DELETE FROM analytics_saved_analysis
@@ -184,5 +184,5 @@ def delete_saved_analysis(
 
 
 def purge_saved_analyses_for_client(pool: ConnectionPool, client_id: str) -> None:
-    with transaction(pool, rls=None) as conn:
+    with api_transaction(pool) as conn:
         conn.execute("DELETE FROM analytics_saved_analysis WHERE client_id = %s", (client_id,))

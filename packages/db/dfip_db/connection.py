@@ -16,7 +16,7 @@ from psycopg.rows import dict_row
 from psycopg_pool import ConnectionPool
 
 from dfip_db.local_demo_guard import ALLOWED_LOCAL_HOSTS, hostname_of
-from dfip_db.rls import RlsContext, apply_rls_settings
+from dfip_db.rls import RlsContext, apply_rls_settings, current_rls, identity_lookup_bind
 
 ALLOWED_SSL_MODES = frozenset({"require", "verify-ca", "verify-full"})
 _POSTGRES_SCHEMES = frozenset({"postgres", "postgresql"})
@@ -153,3 +153,24 @@ def transaction(pool: ConnectionPool, rls: RlsContext | None = None) -> Iterator
         if _is_unavailable(exc):
             raise DatabaseUnavailableError("Persistence is unavailable.") from exc
         raise
+
+
+@contextmanager
+def api_transaction(
+    pool: ConnectionPool, rls: RlsContext | None = None
+) -> Iterator[Connection[Any]]:
+    """SET LOCAL ROLE dfip_api using bound RLS, else identity-lookup RLS.
+
+    Production LOGIN ``dfip_app`` has no table grants. ``transaction(..., rls=None)``
+    skips SET ROLE and fails. Prefer this helper for identity-metadata DML
+    (excel grants, saved analyses, publisher setup, audit). Does not set
+    platform_admin unless the caller passes that context.
+    """
+    ctx = rls if rls is not None else current_rls()
+    if ctx is not None:
+        with transaction(pool, rls=ctx) as conn:
+            yield conn
+        return
+    with identity_lookup_bind() as bound:
+        with transaction(pool, rls=bound) as conn:
+            yield conn

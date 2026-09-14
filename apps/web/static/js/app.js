@@ -3372,13 +3372,15 @@ root.addEventListener("submit", async (event) => {
     });
     if (!confirmed) return;
     try {
-      await api.createClient(name);
+      const created = await api.createClient(name);
+      const selected = await api.selectClient(created.client_id);
+      storeToken(selected.access_token);
       const refreshed = await api.session();
       session = refreshed;
       showToast({
         tone: "success",
         title: "Company added.",
-        message: "A new company id was created. Select it from the company list to operate it.",
+        message: "This company is now selected. You can create a client account or upload without switching first.",
       });
       window.dispatchEvent(new Event("dfip:navigate"));
     } catch (error) {
