@@ -1,8 +1,9 @@
 """client table directory. id and code are immutable after insert.
 
-Lookups and writes use ``transaction(..., rls=None)`` like identity, because
-``dfip_api`` has SELECT-only grants on ``client`` and ``client_membership``.
-Application authorization remains the primary control.
+Directory reads assume ``dfip_api`` via ``identity_lookup_bind``. Writes that
+need INSERT/UPDATE still use ``transaction(..., rls=None)`` because
+``dfip_api`` has SELECT-only grants on ``client``. Application authorization
+remains the primary control.
 """
 
 from __future__ import annotations
@@ -17,6 +18,7 @@ from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import as_uuid_text
+from dfip_db.rls import identity_lookup_bind
 
 
 @dataclass(frozen=True)
@@ -142,20 +144,23 @@ def set_client_lifecycle(
 
 
 def fetch_client_from_pool(pool: ConnectionPool, client_id: str) -> ClientRecord | None:
-    with transaction(pool, rls=None) as conn:
-        return fetch_client(conn, client_id)
+    with identity_lookup_bind(client_ids=(client_id,)) as rls:
+        with transaction(pool, rls=rls) as conn:
+            return fetch_client(conn, client_id)
 
 
 def fetch_client_by_code_from_pool(pool: ConnectionPool, code: str) -> ClientRecord | None:
-    with transaction(pool, rls=None) as conn:
-        return fetch_client_by_code(conn, code)
+    with identity_lookup_bind() as rls:
+        with transaction(pool, rls=rls) as conn:
+            return fetch_client_by_code(conn, code)
 
 
 def list_clients_from_pool(
     pool: ConnectionPool, client_ids: Sequence[str]
 ) -> tuple[ClientRecord, ...]:
-    with transaction(pool, rls=None) as conn:
-        return list_clients(conn, client_ids)
+    with identity_lookup_bind(client_ids=tuple(client_ids)) as rls:
+        with transaction(pool, rls=rls) as conn:
+            return list_clients(conn, client_ids)
 
 
 def list_all_clients_from_pool(pool: ConnectionPool) -> tuple[ClientRecord, ...]:

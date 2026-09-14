@@ -1,7 +1,9 @@
 """app_user / client_membership lookup and operator client-user insert.
 
-Identity writes use ``transaction(..., rls=None)`` because ``dfip_api`` has
-SELECT-only grants. Application authorization remains the primary control.
+Identity reads assume ``dfip_api`` via ``identity_lookup_bind`` because the
+production API LOGIN has no table grants. Writes that need INSERT still use
+``transaction(..., rls=None)`` (``dfip_api`` is SELECT-only on identity
+tables). Application authorization remains the primary control.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import as_uuid_text
+from dfip_db.rls import apply_rls_settings, identity_lookup_bind, identity_lookup_rls
 
 
 @dataclass(frozen=True)
@@ -246,24 +249,56 @@ def insert_publisher_password_user(
     return identity
 
 
+def _scope_identity_client_join(conn: Connection[object], identity: IdentityRecord) -> None:
+    """Restrict FORCE RLS on ``client`` to this subject's memberships.
+
+    The first lookup only needs SET ROLE for ``app_user``. The join onto
+    ``client`` uses ``dfip_member_client``, so empty GUCs hide company
+    names. Membership ids come from the already-loaded identity row, not
+    from platform-admin recovery.
+    """
+    apply_rls_settings(
+        conn,
+        identity_lookup_rls(
+            client_ids=tuple(item.client_id for item in identity.memberships),
+            platform_admin=identity.is_platform_admin,
+            role="admin" if identity.is_platform_admin else "client",
+            user_id=identity.user_id,
+            subject=identity.subject,
+        ),
+    )
+
+
 def fetch_identity_from_pool(pool: ConnectionPool, subject: str) -> IdentityRecord | None:
-    with transaction(pool, rls=None) as conn:
-        return fetch_identity(conn, subject)
+    with identity_lookup_bind() as rls:
+        with transaction(pool, rls=rls) as conn:
+            identity = fetch_identity(conn, subject)
+            if identity is None:
+                return None
+            _scope_identity_client_join(conn, identity)
+            return fetch_identity(conn, subject) or identity
 
 
 def fetch_credential_from_pool(pool: ConnectionPool, subject: str) -> CredentialRecord | None:
-    with transaction(pool, rls=None) as conn:
-        return fetch_credential(conn, subject)
+    with identity_lookup_bind() as rls:
+        with transaction(pool, rls=rls) as conn:
+            record = fetch_credential(conn, subject)
+            if record is None:
+                return None
+            _scope_identity_client_join(conn, record.identity)
+            return fetch_credential(conn, subject) or record
 
 
 def increment_token_version_from_pool(pool: ConnectionPool, user_id: str) -> int | None:
-    with transaction(pool, rls=None) as conn:
-        return increment_token_version(conn, user_id)
+    with identity_lookup_bind() as rls:
+        with transaction(pool, rls=rls) as conn:
+            return increment_token_version(conn, user_id)
 
 
 def inspector_exists_from_pool(pool: ConnectionPool) -> bool:
-    with transaction(pool, rls=None) as conn:
-        return inspector_exists(conn)
+    with identity_lookup_bind() as rls:
+        with transaction(pool, rls=rls) as conn:
+            return inspector_exists(conn)
 
 
 def insert_client_password_user_from_pool(

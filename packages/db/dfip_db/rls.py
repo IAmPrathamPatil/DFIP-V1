@@ -6,12 +6,16 @@ transaction. Persistent session GUCs are not used for request identity.
 
 from __future__ import annotations
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from typing import Any
 
 from psycopg import Connection
 from psycopg.errors import InsufficientPrivilege
+
+IDENTITY_LOOKUP_USER_ID = "dfip-identity-lookup"
 
 
 @dataclass(frozen=True)
@@ -36,6 +40,69 @@ def bind_rls(context: RlsContext | None) -> None:
 
 def reset_rls() -> None:
     _rls_context.set(None)
+
+
+def identity_lookup_rls(
+    *,
+    client_ids: tuple[str, ...] = (),
+    platform_admin: bool = False,
+    role: str = "client",
+    user_id: str = IDENTITY_LOOKUP_USER_ID,
+    subject: str = IDENTITY_LOOKUP_USER_ID,
+) -> RlsContext:
+    """SET LOCAL ROLE dfip_api for identity/directory pool reads.
+
+    Production API LOGIN (``dfip_app``) has no table grants. ``rls=None``
+    skips SET ROLE and fails with InsufficientPrivilege on ``client``.
+    This is not platform-admin recovery and not HTTP tenant isolation:
+    callers pass membership ``client_ids`` when the ``client`` join must
+    succeed. ``app_user`` / ``client_membership`` have no RLS.
+    """
+    return RlsContext(
+        user_id=user_id,
+        role=role,
+        client_ids=client_ids,
+        platform_admin=platform_admin,
+        subject=subject,
+    )
+
+
+@contextmanager
+def identity_lookup_bind(
+    *,
+    client_ids: tuple[str, ...] = (),
+    platform_admin: bool = False,
+    role: str = "client",
+    user_id: str = IDENTITY_LOOKUP_USER_ID,
+    subject: str = IDENTITY_LOOKUP_USER_ID,
+) -> Iterator[RlsContext]:
+    """Bind lookup RLS only when no HTTP/worker/recovery context is set.
+
+    Login and ``enrich_principal`` run before ``get_principal`` binds.
+    Authenticated handlers keep the existing principal context. Always
+    restores the previous ContextVar, including on exception.
+    """
+    previous = current_rls()
+    if previous is None:
+        bind_rls(
+            identity_lookup_rls(
+                client_ids=client_ids,
+                platform_admin=platform_admin,
+                role=role,
+                user_id=user_id,
+                subject=subject,
+            )
+        )
+    try:
+        bound = current_rls()
+        if bound is None:
+            raise RuntimeError("identity lookup RLS was not bound.")
+        yield bound
+    finally:
+        if previous is None:
+            reset_rls()
+        else:
+            bind_rls(previous)
 
 
 def apply_rls_settings(conn: Connection[Any], context: RlsContext | None) -> None:
