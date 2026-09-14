@@ -17,7 +17,9 @@ import tempfile
 import threading
 import time
 import zipfile
+from collections.abc import Iterator
 from concurrent.futures import ThreadPoolExecutor
+from contextlib import contextmanager
 from datetime import UTC, datetime
 from io import BytesIO
 from pathlib import Path
@@ -43,6 +45,7 @@ from dfip_core.ingest.store import BatchRecord, ProcessingRunRecord
 from dfip_core.transform.engine import ENGINE_VERSION, run_transformation
 from dfip_core.transform.labels import packaged_label_for_id
 from dfip_core.transform.ports import FactStore
+from dfip_db.rls import current_rls
 
 from dfip_api.auth import Principal
 from dfip_api.client_directory import ClientDirectory
@@ -462,7 +465,9 @@ class UploadService:
             force,
         )
         future.add_done_callback(
-            lambda item, batch_id=batch.id: self._upload_future_done(batch_id, item)
+            lambda item, batch_id=batch.id, client_id=client_id: self._upload_future_done(
+                batch_id, item, client_id
+            )
         )
         return accepted, 202
 
@@ -605,6 +610,19 @@ class UploadService:
             if self._in_flight.get((client_id, digest)) == batch_id:
                 self._in_flight.pop((client_id, digest), None)
 
+    @contextmanager
+    def _with_processing_rls(self, client_id: str | None) -> Iterator[None]:
+        """Bind tenant worker RLS when this thread has no RLS context.
+
+        Reuses processing_rls(client_id). Does not nest on HTTP, worker, or
+        startup-recovery contexts and does not use platform_admin.
+        """
+        if current_rls() is not None or not client_id:
+            yield
+            return
+        with processing_rls(client_id):
+            yield
+
     def _inflight_batch(self, client_id: str, digest: str, source) -> BatchRecord | None:
         with self._in_flight_lock:
             batch_id = self._in_flight.get((client_id, digest))
@@ -685,7 +703,9 @@ class UploadService:
             self._run_archive_job, dest, folder, batch.id, client_id, digest
         )
         future.add_done_callback(
-            lambda item, batch_id=batch.id: self._upload_future_done(batch_id, item)
+            lambda item, batch_id=batch.id, client_id=client_id: self._upload_future_done(
+                batch_id, item, client_id
+            )
         )
         return accepted, 202
 
@@ -727,7 +747,9 @@ class UploadService:
             return accepted, 202
         future = self._executor.submit(self._run_reprocess, batch.id, run.id, client_id)
         future.add_done_callback(
-            lambda item, run_id=run.id: self._reprocess_future_done(run_id, item)
+            lambda item, run_id=run.id, client_id=client_id: self._reprocess_future_done(
+                run_id, item, client_id
+            )
         )
         return accepted, 202
 
@@ -739,9 +761,9 @@ class UploadService:
         client_id: str,
         digest: str,
     ) -> None:
-        reserved = self._ingest.get_batch(batch_id)
         try:
             with processing_rls(client_id), self._serialize:
+                reserved = self._ingest.get_batch(batch_id)
                 if reserved is None:
                     raise KeyError(f"unknown batch {batch_id}")
                 self._ingest.reset_staging_for_batch(batch_id)
@@ -754,14 +776,20 @@ class UploadService:
                 )
                 self._completed[batch_id] = body
         except ProcessingCancelled:
-            self._finalize_cancel(batch_id)
+            self._finalize_cancel(batch_id, client_id=client_id)
         except Exception as exc:
-            self._fail_batch(batch_id, _public_text(str(exc)) or "Workbook could not be read.")
+            self._fail_batch(
+                batch_id,
+                _public_text(str(exc)) or "Workbook could not be read.",
+                client_id=client_id,
+            )
         finally:
-            self._finalize_incomplete_job(batch_id)
-            self._forget_inflight(client_id, digest, batch_id)
-            self._forget_reprocess(batch_id)
-            _remove_upload_dir(folder)
+            try:
+                self._finalize_incomplete_job(batch_id, client_id=client_id)
+            finally:
+                self._forget_inflight(client_id, digest, batch_id)
+                self._forget_reprocess(batch_id)
+                _remove_upload_dir(folder)
 
     def _run_job(
         self,
@@ -772,9 +800,9 @@ class UploadService:
         digest: str,
         force: bool,
     ) -> None:
-        reserved = self._ingest.get_batch(batch_id)
         try:
             with processing_rls(client_id), self._serialize:
+                reserved = self._ingest.get_batch(batch_id)
                 if reserved is None:
                     raise KeyError(f"unknown batch {batch_id}")
                 body = self._ingest_and_transform(
@@ -785,49 +813,65 @@ class UploadService:
                 )
                 self._completed[batch_id] = body
         except ProcessingCancelled:
-            self._finalize_cancel(batch_id)
+            self._finalize_cancel(batch_id, client_id=client_id)
         except Exception as exc:
-            self._fail_batch(batch_id, _public_text(str(exc)) or "Workbook could not be read.")
+            self._fail_batch(
+                batch_id,
+                _public_text(str(exc)) or "Workbook could not be read.",
+                client_id=client_id,
+            )
         finally:
-            self._finalize_incomplete_job(batch_id)
-            self._forget_inflight(client_id, digest, batch_id)
-            _remove_upload_dir(folder)
+            try:
+                self._finalize_incomplete_job(batch_id, client_id=client_id)
+            finally:
+                self._forget_inflight(client_id, digest, batch_id)
+                _remove_upload_dir(folder)
 
-    def _finalize_incomplete_job(self, batch_id: str) -> None:
-        batch = self._ingest.get_batch(batch_id)
-        if batch is not None and (batch.status == "cancelled" or batch.cancel_requested):
-            if batch.status != "cancelled":
-                self._finalize_cancel(batch_id)
-            return
-        run = self._ingest.active_processing_run_for_batch(batch_id)
-        if run is not None and run.status in {"pending", "running"}:
-            now = datetime.now(tz=UTC)
-            run.status = "failed"
-            run.finished_at = now
-            if not run.error_summary:
-                run.error_summary = WORKER_INCOMPLETE_REASON
-            self._ingest.save_processing_run(run)
-        batch = self._ingest.get_batch(batch_id)
-        if batch is not None and batch.status not in {
-            "processed",
-            "failed",
-            "staged",
-            "cancelled",
-        }:
-            self._fail_batch(batch_id, WORKER_INCOMPLETE_REASON)
+    def _finalize_incomplete_job(self, batch_id: str, *, client_id: str | None = None) -> None:
+        with self._with_processing_rls(client_id):
+            batch = self._ingest.get_batch(batch_id)
+            if batch is not None and (batch.status == "cancelled" or batch.cancel_requested):
+                if batch.status != "cancelled":
+                    self._finalize_cancel(batch_id, client_id=client_id or batch.client_id)
+                return
+            run = self._ingest.active_processing_run_for_batch(batch_id)
+            if run is not None and run.status in {"pending", "running"}:
+                now = datetime.now(tz=UTC)
+                run.status = "failed"
+                run.finished_at = now
+                if not run.error_summary:
+                    run.error_summary = WORKER_INCOMPLETE_REASON
+                self._ingest.save_processing_run(run)
+            batch = self._ingest.get_batch(batch_id)
+            if batch is not None and batch.status not in {
+                "processed",
+                "failed",
+                "staged",
+                "cancelled",
+            }:
+                self._fail_batch(
+                    batch_id,
+                    WORKER_INCOMPLETE_REASON,
+                    client_id=client_id or batch.client_id,
+                )
 
-    def _upload_future_done(self, batch_id: str, future) -> None:
-        try:
-            error = future.exception()
-        except Exception:
-            self._finalize_incomplete_job(batch_id)
-            return
-        if error is not None:
-            if isinstance(error, ProcessingCancelled):
-                self._finalize_cancel(batch_id)
-            else:
-                self._fail_batch(batch_id, _public_text(str(error)) or WORKER_INCOMPLETE_REASON)
-        self._finalize_incomplete_job(batch_id)
+    def _upload_future_done(self, batch_id: str, future, client_id: str) -> None:
+        with self._with_processing_rls(client_id):
+            try:
+                error = future.exception()
+            except Exception:
+                self._finalize_incomplete_job(batch_id, client_id=client_id)
+                return
+            if error is not None:
+                if isinstance(error, ProcessingCancelled):
+                    self._finalize_cancel(batch_id, client_id=client_id)
+                else:
+                    self._fail_batch(
+                        batch_id,
+                        _public_text(str(error)) or WORKER_INCOMPLETE_REASON,
+                        client_id=client_id,
+                    )
+            self._finalize_incomplete_job(batch_id, client_id=client_id)
 
     def _progress_callback(
         self,
@@ -876,11 +920,12 @@ class UploadService:
                         if last_stage.get("name") != STAGE_INGESTING:
                             return
                         try:
-                            self._persist_progress(
-                                reserved_batch.id,
-                                STAGE_INGESTING,
-                                message="Reading workbook...",
-                            )
+                            with processing_rls(client_id):
+                                self._persist_progress(
+                                    reserved_batch.id,
+                                    STAGE_INGESTING,
+                                    message="Reading workbook...",
+                                )
                         except ProcessingCancelled:
                             heartbeat_stop.set()
                             return
@@ -909,7 +954,7 @@ class UploadService:
                 self._persist_source_bytes(stored, dest.read_bytes())
         except ProcessingDurationError as exc:
             if batch_id is not None:
-                self._fail_batch(batch_id, str(exc))
+                self._fail_batch(batch_id, str(exc), client_id=client_id)
                 failed = self._ingest.get_batch(batch_id)
                 source = (
                     self._ingest.get_source_file(reserved_batch.source_file_id)
@@ -924,6 +969,7 @@ class UploadService:
                 self._fail_batch(
                     reserved_batch.id,
                     _public_text(str(exc)) or "Workbook could not be read.",
+                    client_id=client_id,
                 )
                 failed = self._ingest.get_batch(reserved_batch.id)
                 source = self._ingest.get_source_file(reserved_batch.source_file_id)
@@ -1087,7 +1133,11 @@ class UploadService:
             if self._qa is not None:
                 self._qa.replace_for_run(run_id, [])
 
-    def _finalize_cancel(self, batch_id: str) -> None:
+    def _finalize_cancel(self, batch_id: str, *, client_id: str | None = None) -> None:
+        with self._with_processing_rls(client_id):
+            self._finalize_cancel_locked(batch_id)
+
+    def _finalize_cancel_locked(self, batch_id: str) -> None:
         batch = self._ingest.get_batch(batch_id)
         if batch is None:
             return
@@ -1167,8 +1217,7 @@ class UploadService:
         requester(batch.id)
         self._set_stage(batch.id, STAGE_CANCELLING)
         if not running:
-            with processing_rls(client_id):
-                self._finalize_cancel(batch.id)
+            self._finalize_cancel(batch.id, client_id=client_id)
         refreshed = self._ingest.get_batch(batch.id) or batch
         run = self._ingest.processing_run_for_batch(batch.id)
         return self.enrich_batch(batch_to_response(refreshed, run), resume=False)
@@ -1320,65 +1369,78 @@ class UploadService:
                 self._set_stage(batch_id, "succeeded" if run.status == "succeeded" else "failed")
                 self._stash_batch_completion(batch, run, summary)
         except ProcessingCancelled:
-            self._finalize_cancel(batch_id)
+            self._finalize_cancel(batch_id, client_id=client_id)
         except Exception as exc:
             log.exception("Reprocess failed for batch %s run %s", batch_id, run_id)
             reason = _public_text(str(exc)) or f"{type(exc).__name__} during reprocess"
-            self._fail_reprocess_run(run_id, reason)
+            self._fail_reprocess_run(run_id, reason, client_id=client_id)
         finally:
-            still = self._ingest.get_processing_run(run_id)
-            batch = self._ingest.get_batch(batch_id)
-            if batch is not None and (batch.status == "cancelled" or batch.cancel_requested):
-                if batch.status != "cancelled":
-                    self._finalize_cancel(batch_id)
-            elif still is not None and still.status in {"pending", "running"}:
-                self._fail_reprocess_run(run_id, WORKER_INCOMPLETE_REASON)
-            with self._in_flight_lock:
-                if self._reprocess_in_flight.get(batch_id) == run_id:
-                    self._reprocess_in_flight.pop(batch_id, None)
+            try:
+                with self._with_processing_rls(client_id):
+                    still = self._ingest.get_processing_run(run_id)
+                    batch = self._ingest.get_batch(batch_id)
+                    if batch is not None and (
+                        batch.status == "cancelled" or batch.cancel_requested
+                    ):
+                        if batch.status != "cancelled":
+                            self._finalize_cancel(batch_id, client_id=client_id)
+                    elif still is not None and still.status in {"pending", "running"}:
+                        self._fail_reprocess_run(
+                            run_id, WORKER_INCOMPLETE_REASON, client_id=client_id
+                        )
+            finally:
+                with self._in_flight_lock:
+                    if self._reprocess_in_flight.get(batch_id) == run_id:
+                        self._reprocess_in_flight.pop(batch_id, None)
 
-    def _reprocess_future_done(self, run_id: str, future) -> None:
-        try:
-            error = future.exception()
-        except Exception:
-            self._fail_reprocess_run(run_id, "worker cancelled")
-            return
-        if error is not None:
-            if isinstance(error, ProcessingCancelled):
-                run = self._ingest.get_processing_run(run_id)
-                if run is not None:
-                    self._finalize_cancel(run.batch_id)
-            else:
-                reason = _public_text(str(error)) or f"{type(error).__name__} during reprocess"
-                self._fail_reprocess_run(run_id, reason)
-        run = self._ingest.get_processing_run(run_id)
-        if run is not None and run.status in {"pending", "running"}:
-            batch = self._ingest.get_batch(run.batch_id)
-            if batch is not None and (batch.status == "cancelled" or batch.cancel_requested):
-                self._finalize_cancel(run.batch_id)
-            else:
-                self._fail_reprocess_run(run_id, "worker finished while run still running")
+    def _reprocess_future_done(self, run_id: str, future, client_id: str) -> None:
+        with self._with_processing_rls(client_id):
+            try:
+                error = future.exception()
+            except Exception:
+                self._fail_reprocess_run(run_id, "worker cancelled", client_id=client_id)
+                return
+            if error is not None:
+                if isinstance(error, ProcessingCancelled):
+                    run = self._ingest.get_processing_run(run_id)
+                    if run is not None:
+                        self._finalize_cancel(run.batch_id, client_id=client_id)
+                else:
+                    reason = _public_text(str(error)) or f"{type(error).__name__} during reprocess"
+                    self._fail_reprocess_run(run_id, reason, client_id=client_id)
+            run = self._ingest.get_processing_run(run_id)
+            if run is not None and run.status in {"pending", "running"}:
+                batch = self._ingest.get_batch(run.batch_id)
+                if batch is not None and (batch.status == "cancelled" or batch.cancel_requested):
+                    self._finalize_cancel(run.batch_id, client_id=client_id)
+                else:
+                    self._fail_reprocess_run(
+                        run_id, "worker finished while run still running", client_id=client_id
+                    )
 
-    def _fail_reprocess_run(self, run_id: str, reason: str | None = None) -> None:
-        run = self._ingest.get_processing_run(run_id)
-        if run is None:
-            return
-        now = datetime.now(tz=UTC)
-        if run.status not in {"succeeded", "failed", "cancelled"}:
-            run.status = "failed"
-            run.finished_at = now
-            if reason:
+    def _fail_reprocess_run(
+        self, run_id: str, reason: str | None = None, *, client_id: str | None = None
+    ) -> None:
+        with self._with_processing_rls(client_id):
+            run = self._ingest.get_processing_run(run_id)
+            if run is None:
+                return
+            now = datetime.now(tz=UTC)
+            if run.status not in {"succeeded", "failed", "cancelled"}:
+                run.status = "failed"
+                run.finished_at = now
+                if reason:
+                    run.error_summary = reason
+                elif not run.error_summary:
+                    run.error_summary = WORKER_STALL_REASON
+                self._ingest.save_processing_run(run)
+            elif run.status == "failed" and reason and not run.error_summary:
                 run.error_summary = reason
-            elif not run.error_summary:
-                run.error_summary = WORKER_STALL_REASON
-            self._ingest.save_processing_run(run)
-        elif run.status == "failed" and reason and not run.error_summary:
-            run.error_summary = reason
-            self._ingest.save_processing_run(run)
-        batch = self._ingest.get_batch(run.batch_id)
-        if batch is not None:
-            self._reprocess_completed[run_id] = self._reprocess_response(batch, run, None)
-            self._stash_batch_completion(batch, run, None)
+                self._ingest.save_processing_run(run)
+            batch = self._ingest.get_batch(run.batch_id)
+            if batch is not None:
+                self._reprocess_completed[run_id] = self._reprocess_response(batch, run, None)
+                self._stash_batch_completion(batch, run, None)
 
     def _stash_batch_completion(
         self,
@@ -1426,27 +1488,30 @@ class UploadService:
                     labels = overlay.version_label
         return logic, labels
 
-    def _fail_batch(self, batch_id: str, summary: str) -> None:
-        batch = self._ingest.get_batch(batch_id)
-        if batch is None:
-            return
-        if batch.status == "cancelled" or batch.cancel_requested:
-            self._finalize_cancel(batch_id)
-            return
-        now = datetime.now(tz=UTC)
-        batch.status = "failed"
-        batch.error_summary = summary
-        batch.completed_at = now
-        self._ingest.save_batch(batch)
-        self._set_stage(batch_id, "failed")
-        run = self._ingest.processing_run_for_batch(batch_id)
-        if run is not None and run.status not in {"succeeded", "failed", "cancelled"}:
-            run.status = "failed"
-            run.finished_at = now
-            self._ingest.save_processing_run(run)
-        source = self._ingest.get_source_file(batch.source_file_id)
-        if source is not None:
-            self._completed[batch_id] = self._response_from_records(source, batch, run, None, False)
+    def _fail_batch(self, batch_id: str, summary: str, *, client_id: str | None = None) -> None:
+        with self._with_processing_rls(client_id):
+            batch = self._ingest.get_batch(batch_id)
+            if batch is None:
+                return
+            if batch.status == "cancelled" or batch.cancel_requested:
+                self._finalize_cancel(batch_id, client_id=client_id or batch.client_id)
+                return
+            now = datetime.now(tz=UTC)
+            batch.status = "failed"
+            batch.error_summary = summary
+            batch.completed_at = now
+            self._ingest.save_batch(batch)
+            self._set_stage(batch_id, "failed")
+            run = self._ingest.processing_run_for_batch(batch_id)
+            if run is not None and run.status not in {"succeeded", "failed", "cancelled"}:
+                run.status = "failed"
+                run.finished_at = now
+                self._ingest.save_processing_run(run)
+            source = self._ingest.get_source_file(batch.source_file_id)
+            if source is not None:
+                self._completed[batch_id] = self._response_from_records(
+                    source, batch, run, None, False
+                )
 
     def _replay_response(self, source, batch: BatchRecord) -> UploadResponse:
         run = self._ingest.processing_run_for_batch(batch.id)
