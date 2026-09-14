@@ -2,7 +2,7 @@
 
 P6 Python origin server (`dfip_web`) for the Admin/Client SPA in `apps/web/static`.
 
-- Serves static HTML/CSS/JS and `/config.json` (`apiBaseUrl`, `apiPrefix`, `adminRoles`)
+- Serves static HTML/CSS/JS and `/config.json` (`apiBaseUrl`, `apiPrefix`, `adminRoles`, `uploadMaxBytes`, `uploadMaxFiles`, `uploadMaxTotalBytes`)
 - Does not proxy `/api/v1`
 - Does not import `dfip_core`
 - Includes `DfipApiClient` for tests (the browser uses `apps/web/static/js/api-client.js`)

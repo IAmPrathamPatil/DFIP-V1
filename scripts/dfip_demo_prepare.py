@@ -44,10 +44,11 @@ _OVERLAY_NAMES = frozenset(
 
 _COMPOSE_CMD = ("docker", "compose", "--profile", "v2-db", "up", "-d", "dfip_db")
 
-# Local/demo workbook ingest only. Production P13E defaults stay 10 MiB / 20 MiB.
-LOCAL_DEMO_UPLOAD_MAX_BYTES = "52428800"
+# Local/demo workbook ingest. Matches product defaults (64 MiB / 128 MiB).
+# 50 MiB is below the FY-2026 Raw workbook (51.34 MiB) and must not be restored.
+LOCAL_DEMO_UPLOAD_MAX_BYTES = "67108864"
 LOCAL_DEMO_UPLOAD_MAX_FILES = "5"
-LOCAL_DEMO_UPLOAD_MAX_TOTAL_BYTES = "104857600"
+LOCAL_DEMO_UPLOAD_MAX_TOTAL_BYTES = "134217728"
 _UPLOAD_LIMIT_NAMES = (
     "DFIP_UPLOAD_MAX_BYTES",
     "DFIP_UPLOAD_MAX_FILES",
@@ -110,7 +111,7 @@ def ensure_local_demo_upload_limits(env_path: Path) -> list[str]:
     ]
     if not missing:
         return []
-    lines = ["", "# Local demo workbook ingest (not production P13E defaults)."]
+    lines = ["", "# Local demo workbook ingest (matches product 64 MiB / 128 MiB defaults)."]
     for name in missing:
         lines.append(f"{name}={values[name]}")
     with env_path.open("a", encoding="utf-8", newline="\n") as handle:

@@ -5,6 +5,7 @@ In-memory only. Does not open hosted databases or August files.
 
 from __future__ import annotations
 
+import asyncio
 import inspect
 import json
 import struct
@@ -13,7 +14,9 @@ from io import BytesIO
 from pathlib import Path
 from zipfile import ZIP_STORED, ZipFile
 
+import pytest
 from dfip_api.app import create_app
+from dfip_api.errors import PayloadTooLarge
 from dfip_api.identity_store import InMemoryIdentityStore
 from dfip_api.limits import JSON_BODY_TOO_LARGE, AttemptLimiter
 from dfip_api.publication_routes import _REPORT_GENERATION
@@ -147,8 +150,13 @@ def _claimed_uncompressed_zip(claimed: int) -> bytes:
     return bytes(payload)
 
 
-LOCAL_DEMO_PER_FILE = 50 * 1024 * 1024
-LOCAL_DEMO_TOTAL = 100 * 1024 * 1024
+# Byte size of repo-root `Web Engage - Daily Report - FY-2026.xlsx`.
+# Tests compare integers; they do not load that workbook.
+FY2026_RAW_BYTES = 53_832_336
+PRODUCT_PER_FILE = 64 * 1024 * 1024
+PRODUCT_TOTAL = 128 * 1024 * 1024
+OPERATOR_OVERRIDE_PER_FILE = 50 * 1024 * 1024
+OPERATOR_OVERRIDE_TOTAL = 100 * 1024 * 1024
 
 
 def test_settings_p13e_defaults(monkeypatch) -> None:
@@ -158,10 +166,10 @@ def test_settings_p13e_defaults(monkeypatch) -> None:
     monkeypatch.delenv("DFIP_UPLOAD_MAX_FACTS", raising=False)
     monkeypatch.delenv("DFIP_UPLOAD_MAX_PROCESSING_SECONDS", raising=False)
     settings = Settings(_env_file=None)
-    assert settings.dfip_upload_max_bytes == 10 * 1024 * 1024
+    assert settings.dfip_upload_max_bytes == PRODUCT_PER_FILE
     assert settings.dfip_upload_max_files == 5
-    assert settings.dfip_upload_max_total_bytes == 20 * 1024 * 1024
-    assert settings.upload_max_total_bytes == 20 * 1024 * 1024
+    assert settings.dfip_upload_max_total_bytes == PRODUCT_TOTAL
+    assert settings.upload_max_total_bytes == PRODUCT_TOTAL
     assert settings.dfip_json_max_body_bytes == 256 * 1024
     assert settings.dfip_download_max_rows == 75_000
     assert settings.dfip_upload_max_facts == 750_000
@@ -173,15 +181,27 @@ def test_settings_p13e_defaults(monkeypatch) -> None:
     assert MAX_UNCOMPRESSED_BYTES == 512 * 1024 * 1024
 
 
-def test_local_demo_fifty_mib_caps_are_env_configurable(monkeypatch) -> None:
-    """50/100 MiB are operator env values, not a new production default."""
+def test_fy2026_raw_size_is_allowed_by_product_per_file_limit() -> None:
+    settings = Settings(_env_file=None)
+    assert PRODUCT_PER_FILE == 67_108_864
+    assert PRODUCT_TOTAL == 134_217_728
+    assert FY2026_RAW_BYTES == 53_832_336
+    assert FY2026_RAW_BYTES > OPERATOR_OVERRIDE_PER_FILE
+    assert FY2026_RAW_BYTES <= settings.dfip_upload_max_bytes
+    assert FY2026_RAW_BYTES <= settings.dfip_upload_max_total_bytes
+    assert settings.dfip_upload_max_bytes == PRODUCT_PER_FILE
+    assert settings.dfip_upload_max_total_bytes == PRODUCT_TOTAL
+
+
+def test_operator_override_caps_remain_env_configurable(monkeypatch) -> None:
+    """50/100 MiB remain valid operator env overrides, not the product default."""
     monkeypatch.delenv("DFIP_UPLOAD_MAX_BYTES", raising=False)
     monkeypatch.delenv("DFIP_UPLOAD_MAX_FILES", raising=False)
     monkeypatch.delenv("DFIP_UPLOAD_MAX_TOTAL_BYTES", raising=False)
     settings = inspector_settings(
-        dfip_upload_max_bytes=LOCAL_DEMO_PER_FILE,
+        dfip_upload_max_bytes=OPERATOR_OVERRIDE_PER_FILE,
         dfip_upload_max_files=5,
-        dfip_upload_max_total_bytes=LOCAL_DEMO_TOTAL,
+        dfip_upload_max_total_bytes=OPERATOR_OVERRIDE_TOTAL,
     )
     assert settings.dfip_upload_max_bytes == 52_428_800
     assert settings.upload_max_total_bytes == 104_857_600
@@ -191,8 +211,8 @@ def test_local_demo_fifty_mib_caps_are_env_configurable(monkeypatch) -> None:
     assert MAX_ZIP_MEMBERS == 1024
     assert MAX_UNCOMPRESSED_BYTES == 512 * 1024 * 1024
     defaults = Settings(_env_file=None)
-    assert defaults.dfip_upload_max_bytes == 10 * 1024 * 1024
-    assert defaults.dfip_upload_max_total_bytes == 20 * 1024 * 1024
+    assert defaults.dfip_upload_max_bytes == PRODUCT_PER_FILE
+    assert defaults.dfip_upload_max_total_bytes == PRODUCT_TOTAL
 
 
 def test_zero_total_bytes_means_twice_per_file() -> None:
@@ -356,6 +376,63 @@ def test_oversized_single_file_remains_413() -> None:
     assert "64" in _error_message(response)
 
 
+class _ReportedSize:
+    """Chunk whose len() is independent of allocated bytes. Avoids 64 MiB fixtures."""
+
+    def __init__(self, size: int) -> None:
+        self._size = size
+
+    def __bool__(self) -> bool:
+        return self._size > 0
+
+    def __len__(self) -> int:
+        return self._size
+
+
+class _ReportedUpload:
+    def __init__(self, size: int, name: str = "reported.xlsx") -> None:
+        self.filename = name
+        self._size = size
+        self._sent = False
+
+    async def read(self, _n: int = 65536):
+        if self._sent:
+            return b""
+        self._sent = True
+        return _ReportedSize(self._size)
+
+
+def test_product_per_file_limit_rejects_over_sixty_four_mib() -> None:
+    service = _publisher_app().state.upload_service
+
+    async def _run() -> bytes:
+        return await service.read_upload(_ReportedUpload(PRODUCT_PER_FILE + 1))
+
+    with pytest.raises(PayloadTooLarge) as caught:
+        asyncio.run(_run())
+    assert caught.value.message == (
+        f"Workbook exceeds the maximum allowed size of {PRODUCT_PER_FILE} bytes."
+    )
+
+
+def test_product_total_limit_rejects_over_remaining_budget() -> None:
+    """A part can be under 64 MiB and still exceed leftover budget of the 128 MiB total."""
+    service = _publisher_app().state.upload_service
+    leftover = 32 * 1024 * 1024
+    assert leftover < PRODUCT_PER_FILE
+    assert leftover + 1 <= PRODUCT_PER_FILE
+
+    async def _run() -> bytes:
+        return await service.read_upload(
+            _ReportedUpload(leftover + 1),
+            remaining_total_bytes=leftover,
+        )
+
+    with pytest.raises(PayloadTooLarge) as caught:
+        asyncio.run(_run())
+    assert caught.value.message == "Upload request exceeds the maximum allowed size."
+
+
 def test_exactly_max_size_succeeds(tmp_path: Path) -> None:
     content = workbook_bytes(tmp_path / "exact.xlsx", [source_row()])
     app = _publisher_app(dfip_upload_max_bytes=len(content))
@@ -366,13 +443,13 @@ def test_exactly_max_size_succeeds(tmp_path: Path) -> None:
     assert response.json()["processing_run"]["status"] == "succeeded"
 
 
-def test_small_workbook_accepted_under_fifty_mib_config(tmp_path: Path) -> None:
+def test_small_workbook_accepted_under_product_caps(tmp_path: Path) -> None:
     content = workbook_bytes(tmp_path / "under.xlsx", [source_row()])
-    assert len(content) < LOCAL_DEMO_PER_FILE
+    assert len(content) < PRODUCT_PER_FILE
     app = _publisher_app(
-        dfip_upload_max_bytes=LOCAL_DEMO_PER_FILE,
+        dfip_upload_max_bytes=PRODUCT_PER_FILE,
         dfip_upload_max_files=5,
-        dfip_upload_max_total_bytes=LOCAL_DEMO_TOTAL,
+        dfip_upload_max_total_bytes=PRODUCT_TOTAL,
     )
     response = upload_workbook(
         TestClient(app), content, "under.xlsx", headers=AUTH, client_id=CLIENT_ID
@@ -380,12 +457,12 @@ def test_small_workbook_accepted_under_fifty_mib_config(tmp_path: Path) -> None:
     assert response.status_code == 201, response.text
 
 
-def test_exactly_configured_cap_succeeds_without_fifty_mib_fixture(tmp_path: Path) -> None:
-    """Exact-size acceptance is the configured integer, not a 50 MiB disk fixture."""
+def test_exactly_configured_cap_succeeds_without_large_disk_fixture(tmp_path: Path) -> None:
+    """Exact-size acceptance is the configured integer, not a 64 MiB disk fixture."""
     content = workbook_bytes(tmp_path / "exact-cap.xlsx", [source_row()])
     app = _publisher_app(
         dfip_upload_max_bytes=len(content),
-        dfip_upload_max_total_bytes=LOCAL_DEMO_TOTAL,
+        dfip_upload_max_total_bytes=PRODUCT_TOTAL,
     )
     response = upload_workbook(
         TestClient(app), content, "exact-cap.xlsx", headers=AUTH, client_id=CLIENT_ID

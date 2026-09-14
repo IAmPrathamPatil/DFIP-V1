@@ -67,7 +67,14 @@ import {
 } from "./views.js";
 
 const root = document.getElementById("app");
-let config = { apiBaseUrl: "http://127.0.0.1:8000", apiPrefix: "/api/v1", adminRoles: ["admin", "publisher"] };
+let config = {
+  apiBaseUrl: "http://127.0.0.1:8000",
+  apiPrefix: "/api/v1",
+  adminRoles: ["admin", "publisher"],
+  uploadMaxBytes: 67108864,
+  uploadMaxFiles: 5,
+  uploadMaxTotalBytes: 134217728,
+};
 let api;
 let session = null;
 let publisherSetupDone = false;
@@ -119,6 +126,53 @@ const routes = [
   { pattern: /^\/client\/facts$/, name: "client-facts", access: "client" },
   { pattern: /^\/client\/facts\/detail$/, name: "client-fact-detail", access: "client" },
 ];
+
+function uploadCaps() {
+  const perFile = Number(config.uploadMaxBytes) || 64 * 1024 * 1024;
+  const total = Number(config.uploadMaxTotalBytes) || 2 * perFile;
+  const maxFiles = Number(config.uploadMaxFiles) || 5;
+  return { perFile, total, maxFiles };
+}
+
+function collectFormFiles(data, name) {
+  return data.getAll(name).filter((item) => item instanceof File && item.name);
+}
+
+function rejectIfOversize(files) {
+  const caps = uploadCaps();
+  const list = [...files].filter((item) => item instanceof File);
+  if (!list.length) return false;
+  if (list.length > caps.maxFiles) {
+    showToast({
+      tone: "error",
+      title: "Too many files.",
+      message: `At most ${caps.maxFiles} workbooks per request.`,
+    });
+    return true;
+  }
+  if (list.some((item) => item.size > caps.perFile)) {
+    showToast({
+      tone: "error",
+      title: "Workbook is too large.",
+      message: `Workbook exceeds the maximum allowed size of ${caps.perFile} bytes.`,
+    });
+    return true;
+  }
+  const sum = list.reduce((total, item) => total + item.size, 0);
+  if (sum > caps.total) {
+    showToast({
+      tone: "error",
+      title: "Upload is too large.",
+      message: "Upload request exceeds the maximum allowed size.",
+    });
+    return true;
+  }
+  return false;
+}
+
+function withUploadLimit(viewArgs) {
+  return { ...viewArgs, uploadMaxBytes: uploadCaps().perFile };
+}
 
 function render(body, path) {
   root.innerHTML = toHtml(layout({ path, session, body }));
@@ -1759,7 +1813,9 @@ async function viewFor(name, ctx) {
         if (isAuthError(error)) throw error;
       }
     }
-    return uploadCenterView({ session, query, logicPage, labelsPage, uploadResult, loading: false });
+    return uploadCenterView(
+      withUploadLimit({ session, query, logicPage, labelsPage, uploadResult, loading: false }),
+    );
   }
   if (name === "admin-source-files") {
     const page = await api.listSourceFiles(filters);
@@ -2208,17 +2264,19 @@ async function loadCatalogView(kind, extras = {}) {
       }
     }
     render(
-      uploadCenterView({
-        session,
-        query: currentLocation().query,
-        logicPage,
-        labelsPage,
-        uploadResult,
-        catalogResult: extras.uploadResult,
-        catalogKind: kind,
-        error: extras.error,
-        loading: false,
-      }),
+      uploadCenterView(
+        withUploadLimit({
+          session,
+          query: currentLocation().query,
+          logicPage,
+          labelsPage,
+          uploadResult,
+          catalogResult: extras.uploadResult,
+          catalogKind: kind,
+          error: extras.error,
+          loading: false,
+        }),
+      ),
       path,
     );
     if (pending && pending.batchId && !isTerminalUpload(uploadResult)) {
@@ -2510,15 +2568,17 @@ async function reloadUpload({ uploadResult, error, clientId } = {}) {
   const logicPage = await safeRead(() => api.listCatalogs("logic", scoped));
   const labelsPage = await safeRead(() => api.listCatalogs("labels", scoped));
   render(
-    uploadCenterView({
-      session,
-      query: currentLocation().query,
-      logicPage,
-      labelsPage,
-      uploadResult,
-      error,
-      loading: false,
-    }),
+    uploadCenterView(
+      withUploadLimit({
+        session,
+        query: currentLocation().query,
+        logicPage,
+        labelsPage,
+        uploadResult,
+        error,
+        loading: false,
+      }),
+    ),
     "/admin/upload",
   );
 }
@@ -3482,6 +3542,10 @@ root.addEventListener("submit", async (event) => {
     const clientId = String(data.get("client_id") || "").trim();
     const force = data.get("force") === "on";
     const submit = form.querySelector("button[type=submit]");
+    const sized = picked.length ? picked : collectFormFiles(data, "files");
+    if (rejectIfOversize(sized.length ? sized : file instanceof File ? [file] : [])) {
+      return;
+    }
     if (submit) submit.disabled = true;
     try {
       const uploadResult = await api.uploadWorkbook(file, { clientId, force });
@@ -3590,6 +3654,9 @@ root.addEventListener("submit", async (event) => {
     const kind = String(data.get("kind") || "logic");
     const clientId = String(data.get("client_id") || "").trim();
     const path = catalogPath(kind);
+    if (file instanceof File && rejectIfOversize([file])) {
+      return;
+    }
     try {
       const uploadResult = await api.uploadCatalog(kind, file, { clientId });
       showToast({
@@ -3622,7 +3689,8 @@ async function boot() {
   try {
     const response = await fetch("/config.json", { credentials: "omit" });
     if (response.ok) {
-      config = await response.json();
+      const loaded = await response.json();
+      config = { ...config, ...loaded };
     }
   } catch (error) {
     root.innerHTML = toHtml(

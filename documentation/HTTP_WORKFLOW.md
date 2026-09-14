@@ -85,9 +85,9 @@ bound client id and is never a platform-wide RLS identity.
 
 Limits:
 
-- Default max size per file: `DFIP_UPLOAD_MAX_BYTES` (10 MiB production/P13E default; local demo may set 50 MiB / `52428800`)
+- Default max size per file: `DFIP_UPLOAD_MAX_BYTES` (64 MiB / `67108864`; fits FY-2026 Raw at 53,832,336 bytes)
 - Max files per multipart request: `DFIP_UPLOAD_MAX_FILES` (5)
-- Max total multipart bytes: `DFIP_UPLOAD_MAX_TOTAL_BYTES` (20 MiB production/P13E default; local demo may set 100 MiB / `104857600` so a single 50 MiB workbook is not rejected. 0 means twice the per-file cap)
+- Max total multipart bytes: `DFIP_UPLOAD_MAX_TOTAL_BYTES` (128 MiB / `134217728`. 0 means twice the per-file cap)
 - Claimed ZIP uncompressed total: `MAX_UNCOMPRESSED_BYTES` (512 MiB). Over this is 422 `Workbook uncompressed size exceeds the allowed limit.` Member count 1024 and `..`/absolute ZIP names stay rejected.
 - Non-multipart JSON/body: `DFIP_JSON_MAX_BODY_BYTES` (256 KiB)
 - Temp files use a sanitized basename; path traversal filenames are rejected

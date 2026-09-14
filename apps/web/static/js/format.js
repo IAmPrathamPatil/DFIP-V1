@@ -23,6 +23,14 @@ export function toHtml(value) {
 
 export const MIN_PASSWORD_LENGTH = 12;
 
+export function formatByteLimit(bytes) {
+  const n = Number(bytes);
+  if (!Number.isFinite(n) || n <= 0) return "";
+  if (n % (1024 * 1024) === 0) return `${n / (1024 * 1024)} MiB`;
+  if (n >= 1024 * 1024) return `${(n / (1024 * 1024)).toFixed(1)} MiB`;
+  return `${n} bytes`;
+}
+
 export function html(strings, ...values) {
   const markup = strings.reduce((acc, part, index) => {
     if (index >= values.length) return acc + part;

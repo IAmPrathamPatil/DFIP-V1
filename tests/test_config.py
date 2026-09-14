@@ -41,9 +41,9 @@ def test_settings_load_with_defaults(monkeypatch) -> None:
     assert settings.dfip_excel_grant_ttl_seconds == 2_592_000
     assert settings.dfip_client_report_template == ""
     assert settings.dfip_password_pbkdf2_iterations == 210_000
-    assert settings.dfip_upload_max_bytes == 10 * 1024 * 1024
+    assert settings.dfip_upload_max_bytes == 64 * 1024 * 1024
     assert settings.dfip_upload_max_files == 5
-    assert settings.dfip_upload_max_total_bytes == 20 * 1024 * 1024
+    assert settings.dfip_upload_max_total_bytes == 128 * 1024 * 1024
     assert settings.dfip_json_max_body_bytes == 256 * 1024
     assert settings.dfip_download_max_rows == 75_000
     assert settings.dfip_upload_max_facts == 750_000
@@ -83,6 +83,16 @@ def test_upload_limits_read_environment(monkeypatch) -> None:
     assert settings.dfip_upload_max_files == 5
     assert settings.upload_max_total_bytes == 104_857_600
     assert settings.dfip_json_max_body_bytes == 256 * 1024
+
+
+def test_upload_limits_read_product_environment(monkeypatch) -> None:
+    monkeypatch.setenv("DFIP_UPLOAD_MAX_BYTES", "67108864")
+    monkeypatch.setenv("DFIP_UPLOAD_MAX_FILES", "5")
+    monkeypatch.setenv("DFIP_UPLOAD_MAX_TOTAL_BYTES", "134217728")
+    settings = Settings(_env_file=None)
+    assert settings.dfip_upload_max_bytes == 67_108_864
+    assert settings.dfip_upload_max_files == 5
+    assert settings.upload_max_total_bytes == 134_217_728
 
 
 def test_auth_token_ttl_reads_environment_without_changing_default(monkeypatch) -> None:

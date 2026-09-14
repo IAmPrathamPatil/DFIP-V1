@@ -22,8 +22,7 @@ application-level authorization. P10 is documentation/release closeout only.
   empty. When `DATABASE_URL` is set, PostgreSQL adapters are used. API startup
   does not ingest an XLSX.
 - `POST /api/v1/uploads` (admin/publisher) accepts one or more `.xlsx`
-  files (max 5 parts, 10 MiB each, 20 MiB total by default; local demo may
-  raise per-file to 50 MiB and total to 100 MiB via env), returns **202**
+  files (max 5 parts, 64 MiB each, 128 MiB total by default), returns **202**
   with a received batch (or `UploadGroupResponse`
   when several files are sent), and runs `ingest_workbook` then
   `run_transformation` off the API event loop. It does not publish. See

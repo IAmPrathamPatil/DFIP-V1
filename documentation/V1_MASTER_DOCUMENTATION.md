@@ -156,9 +156,9 @@ Loaded by `dfip_config.settings.Settings` from environment and optional `.env`. 
 | DFIP_AUTH_ISSUER / AUDIENCE | str | empty | no | JWT verify if set | iss/aud | low |
 | DFIP_AUTH_TOKEN_TTL_SECONDS | int | 3600 | no | issue_access_token | exp | low |
 | DFIP_PASSWORD_PBKDF2_ITERATIONS | int | 210000 | no | password hashes | | low |
-| DFIP_UPLOAD_MAX_BYTES | int | 10485760 | no | uploads | 413 | low; local demo may set 52428800 |
+| DFIP_UPLOAD_MAX_BYTES | int | 67108864 | no | uploads | 413 | 64 MiB; FY-2026 Raw is 53832336 |
 | DFIP_UPLOAD_MAX_FILES | int | 5 | no | uploads | 413 | keep 5 |
-| DFIP_UPLOAD_MAX_TOTAL_BYTES | int | 20971520 | no | uploads | 413 | low; local demo may set 104857600 |
+| DFIP_UPLOAD_MAX_TOTAL_BYTES | int | 134217728 | no | uploads | 413 | 128 MiB; 0 means 2× per-file |
 | DFIP_DOWNLOAD_MAX_ROWS | int | 75000 | no | downloads | 422 if over | low |
 
 Excel Settings sheet (live): `ApiBaseUrl`, `BearerToken` **SECRET**, `ClientId`.
@@ -410,7 +410,7 @@ Errors: `ApiError` subclasses; `HeaderContractError`; `RowValidationError`; `Con
 | MAX_PAGE_LIMIT | 200 | JSON pages + M PageLimit |
 | DEFAULT_PAGE_LIMIT | 50 | API default |
 | MAX_UNCOMPRESSED_BYTES | 512 MiB | Upload ZIP claimed total |
-| dfip_upload_max_bytes default | 10 MiB (local demo may set 50 MiB) | Multipart |
+| dfip_upload_max_bytes default | 64 MiB | Multipart; FY-2026 Raw is 51.34 MiB |
 | dfip_download_max_rows default | 75000 | Downloads |
 | dfip_auth_token_ttl_seconds | 3600 | JWT |
 | ENGINE_VERSION | 0.4.0 | Transform |

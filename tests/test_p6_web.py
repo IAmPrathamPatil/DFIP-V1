@@ -113,6 +113,9 @@ def test_web_origin_serves_spa_and_config(web_client: TestClient) -> None:
     assert body["apiBaseUrl"] == "http://127.0.0.1:8000"
     assert body["apiPrefix"] == "/api/v1"
     assert body["adminRoles"] == ["admin", "publisher"]
+    assert body["uploadMaxBytes"] == 64 * 1024 * 1024
+    assert body["uploadMaxFiles"] == 5
+    assert body["uploadMaxTotalBytes"] == 128 * 1024 * 1024
     dumped = json.dumps(body)
     assert "DFIP_AUTH_SECRET" not in dumped
     assert "DATABASE_URL" not in dumped
@@ -392,6 +395,12 @@ def test_spa_upload_and_published_download_wiring() -> None:
     assert "facts.xlsx" in client_js
     assert "downloadPublishedFacts" in client_js
     assert "uploadWorkbook" in app_js
+    assert "uploadMaxBytes: 67108864" in app_js
+    assert "uploadMaxFiles: 5" in app_js
+    assert "uploadMaxTotalBytes: 134217728" in app_js
+    assert "|| 64 * 1024 * 1024" in app_js
+    assert "Workbook exceeds the maximum allowed size of ${caps.perFile} bytes." in app_js
+    assert "Upload request exceeds the maximum allowed size." in app_js
     assert "getBatch" in app_js
     assert "listProcessingRuns" in app_js
     assert "dfip.pendingRawUpload" in app_js

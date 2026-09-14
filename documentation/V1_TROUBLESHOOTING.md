@@ -15,7 +15,7 @@ For each failure: symptom → likely cause → verify → safe recovery → what
 ## Workbook too large
 
 **Symptom:** 413 or 422 uncompressed cap.  
-**Cause:** Multipart file > `DFIP_UPLOAD_MAX_BYTES` (default 10 MiB; local demo may be 50 MiB), more than `DFIP_UPLOAD_MAX_FILES` (5) parts, total multipart > `DFIP_UPLOAD_MAX_TOTAL_BYTES` (default 20 MiB; local demo may be 100 MiB), JSON body > `DFIP_JSON_MAX_BODY_BYTES` (256 KiB), ZIP uncompressed > 512 MiB (`Workbook uncompressed size exceeds the allowed limit.`), or more than 1024 ZIP members / traversal names.  
+**Cause:** Multipart file > `DFIP_UPLOAD_MAX_BYTES` (default 64 MiB), more than `DFIP_UPLOAD_MAX_FILES` (5) parts, total multipart > `DFIP_UPLOAD_MAX_TOTAL_BYTES` (default 128 MiB), JSON body > `DFIP_JSON_MAX_BODY_BYTES` (256 KiB), ZIP uncompressed > 512 MiB (`Workbook uncompressed size exceeds the allowed limit.`), or more than 1024 ZIP members / traversal names.  
 **Verify:** File size vs settings; `MAX_UNCOMPRESSED_BYTES` / `MAX_ZIP_MEMBERS` in `upload_service.py`.  
 **Recovery:** Raise env only with operator approval; or split/compress source **without** breaking headers.  
 **Do not:** Disable ZIP checks.

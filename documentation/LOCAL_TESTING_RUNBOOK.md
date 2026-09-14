@@ -443,9 +443,9 @@ Copy template: `copy .env.example .env` (Windows) / `cp .env.example .env`.
 | `DFIP_LOCAL_DEMO_CLIENT_PASSWORD` | Required only for local seed | Password for `demo-client` | Local seed only | **Yes** — [SET LOCALLY — DO NOT COMMIT] |
 | `DFIP_LOCAL_DEMO_PUBLISHER2_PASSWORD` | Required only with `--company-2` | Password for `demo-publisher-2` | Local seed only | **Yes** — [SET LOCALLY — DO NOT COMMIT] |
 | `DFIP_LOCAL_DEMO_CLIENT2_PASSWORD` | Required only with `--company-2` | Password for `demo-client-2` | Local seed only | **Yes** — [SET LOCALLY — DO NOT COMMIT] |
-| `DFIP_UPLOAD_MAX_BYTES` | Default `10485760` (10 MiB). Local demo `52428800` (50 MiB) | Max multipart `.xlsx` size | Production default unchanged; local demo may raise | No |
+| `DFIP_UPLOAD_MAX_BYTES` | Default `67108864` (64 MiB) | Max multipart `.xlsx` size | Fits FY-2026 Raw (51.34 MiB). Operator env may override | No |
 | `DFIP_UPLOAD_MAX_FILES` | Default `5` | Max workbook parts per request | Keep 5 | No |
-| `DFIP_UPLOAD_MAX_TOTAL_BYTES` | Default `20971520` (20 MiB). Local demo `104857600` (100 MiB) | Max total multipart bytes | Local demo may raise so one 50 MiB file is accepted | No |
+| `DFIP_UPLOAD_MAX_TOTAL_BYTES` | Default `134217728` (128 MiB) | Max total multipart bytes | 0 means 2 × per-file | No |
 | `DFIP_DOWNLOAD_MAX_ROWS` | Default `75000` | Cap for published CSV/XLSX / Client Report | Safe default | No |
 
 **Safe configuration values:** hosts, ports, URLs, `DFIP_ENV=development`,

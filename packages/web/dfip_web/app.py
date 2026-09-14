@@ -60,6 +60,9 @@ def create_web_app(settings: Settings | None = None) -> FastAPI:
                 "apiBaseUrl": api_base,
                 "apiPrefix": prefix,
                 "adminRoles": sorted(ADMIN_ROLES),
+                "uploadMaxBytes": int(resolved.dfip_upload_max_bytes),
+                "uploadMaxFiles": int(resolved.dfip_upload_max_files),
+                "uploadMaxTotalBytes": int(resolved.dfip_upload_max_total_bytes),
             }
         )
 

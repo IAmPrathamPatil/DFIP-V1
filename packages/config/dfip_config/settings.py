@@ -112,11 +112,12 @@ class Settings(BaseSettings):
 
     # Multipart workbook ingest and published-slice download caps.
     # These are not persistence or identity settings.
-    dfip_upload_max_bytes: int = 10 * 1024 * 1024
+    # 64 MiB fits the FY-2026 Raw workbook (53_832_336 bytes) with headroom.
+    dfip_upload_max_bytes: int = 64 * 1024 * 1024
     # Maximum workbook parts in one multipart upload. Catalog upload is one file.
     dfip_upload_max_files: int = 5
     # Total multipart payload cap. 0 means twice DFIP_UPLOAD_MAX_BYTES.
-    dfip_upload_max_total_bytes: int = 20 * 1024 * 1024
+    dfip_upload_max_total_bytes: int = 128 * 1024 * 1024
     # Non-multipart JSON/body cap. Multipart workbook uploads are not this limit.
     dfip_json_max_body_bytes: int = 256 * 1024
     dfip_download_max_rows: int = 75_000

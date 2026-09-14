@@ -155,7 +155,7 @@ this endpoint.
 
 **Module:** `upload_routes.upload_workbook` → `UploadService`.
 
-- Caps: `DFIP_UPLOAD_MAX_BYTES` default 10 MiB **per file**; `DFIP_UPLOAD_MAX_FILES` default 5; `DFIP_UPLOAD_MAX_TOTAL_BYTES` default 20 MiB (0 → 2× per-file). Count/total are checked before extra payload accumulation. Local demo may set 50 MiB / 100 MiB via those env vars; production defaults stay 10 / 20 unless the operator raises them.
+- Caps: `DFIP_UPLOAD_MAX_BYTES` default 64 MiB **per file**; `DFIP_UPLOAD_MAX_FILES` default 5; `DFIP_UPLOAD_MAX_TOTAL_BYTES` default 128 MiB (0 → 2× per-file). Count/total are checked before extra payload accumulation. The 64 MiB per-file cap fits the FY-2026 Raw workbook (53,832,336 bytes). Raw, Logic, and Labels share the per-file cap.
 - Uncompressed ZIP payload cap: `MAX_UNCOMPRESSED_BYTES = 512 * 1024 * 1024` in `upload_service.py` (monthly Web-Engage Raw worksheet XML). Member count cap 1024; absolute/`..` ZIP names rejected. Over the uncompressed cap returns 422 `Workbook uncompressed size exceeds the allowed limit.`
 - Non-multipart JSON/body cap: `DFIP_JSON_MAX_BODY_BYTES` default 256 KiB. Login/setup failures: 5 / 10 minutes by IP and username → 429 `Too many requests.`
 - 202 + poll; does **not** call `PublicationService.create`.

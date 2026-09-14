@@ -422,7 +422,10 @@ def test_zip_without_workbook_parts_is_rejected() -> None:
 
 def test_page_limit_constant_is_unchanged() -> None:
     assert MAX_PAGE_LIMIT == 200
-    assert inspector_settings().dfip_upload_max_bytes == 10 * 1024 * 1024
+    settings = inspector_settings()
+    assert settings.dfip_upload_max_bytes == 64 * 1024 * 1024
+    assert settings.dfip_upload_max_files == 5
+    assert settings.dfip_upload_max_total_bytes == 128 * 1024 * 1024
 
 
 def test_dev_token_upload_requires_client_id(tmp_path: Path) -> None:

@@ -150,7 +150,7 @@ This is the implemented path (`HTTP_WORKFLOW.md`, SPA `apps/web/static/js/app.js
    Admin `/admin/logic` `/admin/labels` → `POST /catalogs/{kind}` → activate. Packaged JSON still used if no upload. Does not publish facts.
 
 2. **Prepare source**  
-   Web Engage `.xlsx` with sheet/header contract (`Web-Engage Raw`, K:BO). Size: multipart ≤ `DFIP_UPLOAD_MAX_BYTES` (default 10 MiB; local demo may set 50 MiB); uncompressed ZIP ≤ **512 MiB**.
+   Web Engage `.xlsx` with sheet/header contract (`Web-Engage Raw`, K:BO). Size: multipart ≤ `DFIP_UPLOAD_MAX_BYTES` (default 64 MiB); uncompressed ZIP ≤ **512 MiB**.
 
 3. **Authenticate**  
    SPA `/` credential view: password `POST /auth/login`. Role must be `admin`

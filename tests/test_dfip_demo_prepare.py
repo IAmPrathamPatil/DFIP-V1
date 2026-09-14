@@ -122,9 +122,9 @@ def test_ensure_local_demo_upload_limits_appends_missing(tmp_path) -> None:
         "DFIP_UPLOAD_MAX_TOTAL_BYTES",
     ]
     parsed = prepare._parse_dotenv(env_file)
-    assert parsed["DFIP_UPLOAD_MAX_BYTES"] == "52428800"
+    assert parsed["DFIP_UPLOAD_MAX_BYTES"] == "67108864"
     assert parsed["DFIP_UPLOAD_MAX_FILES"] == "5"
-    assert parsed["DFIP_UPLOAD_MAX_TOTAL_BYTES"] == "104857600"
+    assert parsed["DFIP_UPLOAD_MAX_TOTAL_BYTES"] == "134217728"
     assert parsed["DFIP_ENV"] == "development"
 
 

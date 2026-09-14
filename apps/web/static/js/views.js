@@ -21,6 +21,7 @@ import {
   loadingState,
   paginationControls,
   raw,
+  formatByteLimit,
 } from "./format.js";
 
 function qs(params) {
@@ -1070,6 +1071,7 @@ export function uploadCenterView({
   catalogKind,
   error,
   loading,
+  uploadMaxBytes,
 }) {
   if (loading) return loadingState();
   const life = rawUploadLifecycle(uploadResult);
@@ -1081,6 +1083,10 @@ export function uploadCenterView({
   const logicActive = logicPage && logicPage.processing_active;
   const labelsActive = labelsPage && labelsPage.processing_active;
   const scopeQuery = query || new URLSearchParams();
+  const sizeHint = formatByteLimit(uploadMaxBytes);
+  const sizeLine = sizeHint
+    ? html`<p class="muted">Maximum workbook size: ${sizeHint} (${Number(uploadMaxBytes)} bytes). Raw, Logic, and Labels share this API limit.</p>`
+    : "";
   return html`
     ${errorBanner(error)}
     <div data-upload-status-host="true">${rawUploadBanner(uploadResult)}</div>
@@ -1132,6 +1138,7 @@ export function uploadCenterView({
           Web-Engage Raw. You may upload one file or several files for the same
           period. Publication remains false until you publish a run.
         </p>
+        ${sizeLine}
         <form class="stack" data-upload-form="true">
           ${filePicker({ name: "files", multiple: true, label: "Workbook(s) (.xlsx)" })}
           ${clientField(session, { query: scopeQuery })}

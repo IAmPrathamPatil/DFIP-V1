@@ -426,12 +426,12 @@ Phase 2B canvas). Repo P9 authorization is already locked and is not this work.
 - The same limiter applies to `POST /api/v1/auth/setup-publisher` failures.
   P13A bootstrap token, constant-time compare, production deny-by-default, and
   `inspector_exists()` closure are unchanged.
-- Multipart uploads keep `DFIP_UPLOAD_MAX_BYTES` (default 10 MiB) per file.
+- Multipart uploads keep `DFIP_UPLOAD_MAX_BYTES` (default 64 MiB) per file.
   `DFIP_UPLOAD_MAX_FILES` default 5; `DFIP_UPLOAD_MAX_TOTAL_BYTES` default
-  20 MiB (0 means twice the per-file cap). Count and running total are checked
+  128 MiB (0 means twice the per-file cap). Count and running total are checked
   before accumulating extra payloads. Catalog upload remains a single file.
-  Local/demo may raise per-file to 50 MiB and total to 100 MiB via env; the
-  production template stays 10 / 20 unless the operator approves a raise.
+  The 64 MiB per-file cap fits FY-2026 Raw (51.34 MiB). Raw, Logic, and Labels
+  share that cap. Operator env may still override.
 - Non-multipart JSON/body cap `DFIP_JSON_MAX_BODY_BYTES` default 256 KiB
   (Content-Length and streamed size). Multipart workbook uploads skip this cap.
 - XLSX ZIP: at most 1024 members; absolute names and `..` path components are
