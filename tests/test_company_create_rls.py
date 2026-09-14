@@ -10,7 +10,10 @@ from pathlib import Path
 from uuid import uuid4
 
 import pytest
-from dfip_db.client_directory import insert_client_for_inspector_from_pool
+from dfip_db.client_directory import (
+    insert_client_for_inspector,
+    insert_client_for_inspector_from_pool,
+)
 from dfip_db.rls import RlsContext, bind_rls, current_rls, reset_rls
 from psycopg import connect
 from psycopg.errors import InsufficientPrivilege
@@ -25,6 +28,44 @@ PUBLISHER_A = "pub.create.a"
 PUBLISHER_B = "pub.create.b"
 CLIENT_USER = "client.create.a"
 CREATED_NAME = "DFIP create-company RLS tenant"
+
+
+class _RecordingConn:
+    """Records SQL without fetching. fetchone must not be used after INSERT."""
+
+    def __init__(self) -> None:
+        self.statements: list[tuple[str, tuple[object, ...] | None]] = []
+
+    def execute(self, statement: str, params: tuple[object, ...] | None = None):
+        self.statements.append((statement, params))
+        return self
+
+    def fetchone(self):
+        raise AssertionError("client INSERT must not use RETURNING/fetchone")
+
+
+def test_insert_client_for_inspector_does_not_use_returning() -> None:
+    conn = _RecordingConn()
+    record = insert_client_for_inspector(
+        conn,  # type: ignore[arg-type]
+        name=CREATED_NAME,
+        owner_user_id="owner-1",
+        owner_role="publisher",
+    )
+    assert len(conn.statements) == 2
+    client_sql, client_params = conn.statements[0]
+    membership_sql, membership_params = conn.statements[1]
+    assert "INSERT INTO client" in client_sql
+    assert "RETURNING" not in client_sql.upper()
+    assert client_params == (record.client_id, record.client_id, CREATED_NAME)
+    assert "INSERT INTO client_membership" in membership_sql
+    assert "RETURNING" not in membership_sql.upper()
+    assert membership_params == ("owner-1", record.client_id, "publisher")
+    assert record.code == record.client_id
+    assert record.name == CREATED_NAME
+    assert record.lifecycle_status == "active"
+    assert record.deactivated_at is None
+    assert record.purge_eligible_after is None
 
 
 def test_create_company_from_pool_fails_closed_without_rls() -> None:
@@ -159,6 +200,37 @@ def test_postgres_create_company_uses_inspector_rls_without_table_grants(
             )
         raw.execute("ROLLBACK")
 
+        returning_id = str(uuid4())
+        raw.execute("BEGIN")
+        raw.execute("SET LOCAL ROLE dfip_api")
+        raw.execute("SELECT set_config('dfip.role', 'publisher', true)")
+        raw.execute("SELECT set_config('dfip.platform_admin', 'false', true)")
+        raw.execute("SELECT set_config('dfip.client_ids', %s, true)", (CLIENT_A,))
+        raw.execute("SELECT set_config('dfip.user_id', %s, true)", (publisher_a,))
+        with pytest.raises(InsufficientPrivilege):
+            raw.execute(
+                """
+                INSERT INTO client (id, code, name)
+                VALUES (%s, %s, %s)
+                RETURNING id
+                """,
+                (returning_id, returning_id, "returning-denied"),
+            )
+        raw.execute("ROLLBACK")
+
+        no_returning_id = str(uuid4())
+        raw.execute("BEGIN")
+        raw.execute("SET LOCAL ROLE dfip_api")
+        raw.execute("SELECT set_config('dfip.role', 'publisher', true)")
+        raw.execute("SELECT set_config('dfip.platform_admin', 'false', true)")
+        raw.execute("SELECT set_config('dfip.client_ids', %s, true)", (CLIENT_A,))
+        raw.execute("SELECT set_config('dfip.user_id', %s, true)", (publisher_a,))
+        raw.execute(
+            "INSERT INTO client (id, code, name) VALUES (%s, %s, %s)",
+            (no_returning_id, no_returning_id, "no-returning-ok"),
+        )
+        raw.execute("ROLLBACK")
+
     http = _login_app(api_login_url, tmp_path / "create-company-archive")
     try:
         client_denied = http.post(
@@ -178,11 +250,24 @@ def test_postgres_create_company_uses_inspector_rls_without_table_grants(
         assert created.status_code == 201, created.text
         body = created.json()
         new_id = body["client_id"]
-        assert new_id not in {CLIENT_A, CLIENT_B, denied_id}
+        assert new_id not in {CLIENT_A, CLIENT_B, denied_id, returning_id, no_returning_id}
         assert body["code"] == new_id
         assert body["name"] == CREATED_NAME
+        assert body["lifecycle_status"] == "active"
+        assert body["deactivated_at"] is None
+        assert body["purge_eligible_after"] is None
         assert current_rls() is None
 
+        persisted = pg_conn.execute(
+            """
+            SELECT id::text AS client_id, code, name,
+                   COALESCE(lifecycle_status, 'active') AS lifecycle_status,
+                   deactivated_at, purge_eligible_after
+            FROM client
+            WHERE id = %s
+            """,
+            (new_id,),
+        ).fetchone()
         membership = pg_conn.execute(
             """
             SELECT user_id::text AS user_id, role
@@ -192,6 +277,13 @@ def test_postgres_create_company_uses_inspector_rls_without_table_grants(
             (new_id,),
         ).fetchall()
         pg_conn.commit()
+        assert persisted is not None
+        assert persisted["client_id"] == new_id
+        assert persisted["code"] == new_id
+        assert persisted["name"] == CREATED_NAME
+        assert persisted["lifecycle_status"] == "active"
+        assert persisted["deactivated_at"] is None
+        assert persisted["purge_eligible_after"] is None
         assert len(membership) == 1
         assert membership[0]["user_id"] == publisher_a
         assert membership[0]["role"] == "publisher"

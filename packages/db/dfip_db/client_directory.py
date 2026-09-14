@@ -207,16 +207,17 @@ def insert_client_for_inspector(
     is not unique in the schema. Does not clone catalogs or create client users.
     """
     client_id = str(uuid4())
-    row = conn.execute(
-        f"""
+    # INSERT ... RETURNING applies client_select to the new id. That id is not
+    # in dfip.client_ids yet, so RETURNING fails even when the INSERT policy
+    # passes. Schema defaults match ClientRecord: lifecycle_status='active',
+    # deactivated_at and purge_eligible_after NULL.
+    conn.execute(
+        """
         INSERT INTO client (id, code, name)
         VALUES (%s, %s, %s)
-        RETURNING {_CLIENT_SELECT}
         """,
         (client_id, client_id, name),
-    ).fetchone()
-    if row is None:
-        raise RuntimeError("client insert returned no row.")
+    )
     conn.execute(
         """
         INSERT INTO client_membership (user_id, client_id, role)
@@ -224,7 +225,7 @@ def insert_client_for_inspector(
         """,
         (owner_user_id, client_id, owner_role),
     )
-    return _from_row(row)
+    return ClientRecord(client_id=client_id, code=client_id, name=name)
 
 
 def insert_client_for_inspector_from_pool(
