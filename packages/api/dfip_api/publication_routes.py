@@ -17,8 +17,9 @@ from dfip_api.deps import (
     SettingsDep,
     get_principal,
 )
+from dfip_api.errors import AuthorizationError, TooManyRequests, ValidationFailed
 from dfip_api.excel_grant import issue_excel_workbook_token
-from dfip_api.errors import TooManyRequests
+from dfip_api.publication_service import _resolve_client_id
 from dfip_api.schemas import (
     ErrorResponse,
     FactPage,
@@ -355,10 +356,11 @@ def download_current_client_report(
         "Returns a refreshable Client_Report for the company. "
         "Refresh All calls GET /publications/history/facts.csv using the "
         "short-lived Excel access JWT written into Settings BearerToken. "
-        "Client/reader downloads also register a revocable workbook grant so "
+        "JWT downloads register a revocable client-scoped workbook grant so "
         "POST /auth/refresh can mint a new short-lived access JWT after "
-        "access exp. Publisher/admin downloads keep the session JWT and do "
-        "not receive a grant. Not a password, not a URL token, not an "
+        "access exp. Publisher/admin downloads mint a grant for the selected "
+        "company with role=client; the publisher session JWT is never "
+        "embedded. Not a password, not a URL token, not an "
         "anonymous history endpoint. Filename is "
         "DFIP_<client_code>_<YYYY-MM-DD>_Client_Report_Refreshable.xlsm. "
         "JWT client_id remains authoritative. Settings ClientId stays empty. "
@@ -431,36 +433,25 @@ def _published_download(
     return _with_report_generation_limit(build)
 
 
-def _authorization_bearer(request: Request) -> str | None:
-    """Return the request Bearer token. Never log it."""
-    header = request.headers.get("authorization") or ""
-    prefix = "bearer "
-    if not header.lower().startswith(prefix):
-        return None
-    token = header[len(prefix) :].strip()
-    return token or None
-
-
-def _excel_or_session_stamp(request: Request, principal, settings) -> str | None:
-    """Stamp an Excel grant JWT for client/reader downloads; else the session JWT."""
-    grants = getattr(request.app.state, "excel_grant_store", None)
-    issued = issue_excel_workbook_token(settings, principal, grants)
-    if issued:
-        return issued
-    return _refresh_session_jwt(request, principal)
-
-
-def _refresh_session_jwt(request: Request, principal) -> str | None:
-    """Stamp only a short-lived access JWT. Never a dev token. Never log it."""
+def _refreshable_excel_stamp(
+    request: Request,
+    principal,
+    settings,
+    requested_client_id: str | None,
+) -> str | None:
+    """Stamp a client-scoped Excel grant JWT. Never a session JWT or dev token."""
     if getattr(principal, "auth_mode", "") != "jwt":
         return None
-    token = _authorization_bearer(request)
-    if token is None:
-        return None
-    parts = token.split(".")
-    if len(parts) != 3 or not all(parts):
-        return None
-    return token
+    scoped = _resolve_client_id(principal, requested_client_id)
+    if scoped is None:
+        raise ValidationFailed("client_id is required.")
+    grants = getattr(request.app.state, "excel_grant_store", None)
+    issued = issue_excel_workbook_token(
+        settings, principal, grants, client_id=scoped
+    )
+    if not issued:
+        raise AuthorizationError()
+    return issued
 
 
 def _client_report_download(
@@ -477,7 +468,12 @@ def _client_report_download(
     def build() -> Response:
         token = refresh_bearer_token
         if artifact == "refreshable" and token is None and request is not None:
-            token = _excel_or_session_stamp(request, principal, settings)
+            token = _refreshable_excel_stamp(
+                request,
+                principal,
+                settings,
+                str(client_id) if client_id else None,
+            )
         body, filename, media_type = service.download_client_report(
             principal=principal,
             publication_id=publication_id,

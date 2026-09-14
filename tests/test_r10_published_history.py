@@ -52,7 +52,7 @@ from postgres_support import (
 )
 from test_p5_api import AUTH, CLIENT_ID, DEV_TOKEN, JWT_SECRET, RUN_A, _encode_jwt, make_settings
 from test_p7_publication import _publish, jwt_app, publisher_app
-from test_p8_client_report import _campaign_ids, _session_jwt_stamped, _settings_value
+from test_p8_client_report import _campaign_ids, _settings_value
 from test_p11_pivot_report import _published_fact
 
 CLIENT_B = "a0000000-0000-4000-8000-000000000002"
@@ -447,7 +447,7 @@ def test_refreshable_can_stamp_session_jwt_without_client_id_or_secret() -> None
     assert row3.group(0).index('r="A3"') < row3.group(0).index('r="B3"')
 
 
-def test_refreshable_http_download_stamps_session_jwt() -> None:
+def test_refreshable_http_download_does_not_embed_claim_jwt() -> None:
     app, _store, _facts, headers = jwt_app(role="publisher")
     http = TestClient(app)
     created = _publish(http, headers=headers)
@@ -457,12 +457,8 @@ def test_refreshable_http_download_stamps_session_jwt() -> None:
         headers=headers,
         params={"client_id": CLIENT_ID},
     )
-    assert response.status_code == 200
-    assert _session_jwt_stamped(_settings_value(response.content, "BearerToken"))
-    assert _settings_value(response.content, "ClientId") in {None, ""}
-    assert "DFIP_AUTH_SECRET" not in response.content.decode("latin-1")
-    secret_in_file = JWT_SECRET in response.content.decode("latin-1")
-    assert not secret_in_file, "signing secret must not be written into the workbook"
+    assert response.status_code == 403
+    assert not response.content.startswith(b"PK")
 
 
 def test_refreshable_dev_token_download_does_not_embed_dev_token() -> None:

@@ -12,7 +12,9 @@ from datetime import UTC, datetime
 from pathlib import Path
 from zipfile import ZipFile
 
+import jwt
 from dfip_api.app import create_app
+from dfip_api.excel_grant import EXCEL_TOKEN_TYP
 from dfip_db.local_demo_guard import COMPANY_2_CLIENT_ID, DEFAULT_CLIENT_ID
 from dfip_web.client_report_download import (
     ARTIFACT_REFRESHABLE,
@@ -65,6 +67,13 @@ from test_company_workbook import (
 from test_p5_api import AUTH, CLIENT_ID, JWT_SECRET, _encode_jwt, make_settings
 from test_p7_publication import _error, _publish, publisher_app
 from test_p8_client_report import _campaign_ids, _session_jwt_stamped
+
+
+def _excel_stamp_claims(token: object) -> dict:
+    assert _session_jwt_stamped(token)
+    assert isinstance(token, str)
+    return jwt.decode(token, JWT_SECRET, algorithms=["HS256"], options={"verify_exp": False})
+
 
 REFRESHABLE_FILENAME_RE = re.compile(
     r"^attachment; filename="
@@ -236,8 +245,15 @@ def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
     assert CAMP_A not in _campaign_ids(live_b.content)
     assert query_table_field_names(live_a.content) == FACT_HEADERS
     assert QUERY_TABLE_PART not in _query_names(static_a.content)
-    assert _session_jwt_stamped(_settings_value(live_a.content, "BearerToken"))
-    assert _session_jwt_stamped(_settings_value(live_b.content, "BearerToken"))
+    claims_a = _excel_stamp_claims(_settings_value(live_a.content, "BearerToken"))
+    claims_b = _excel_stamp_claims(_settings_value(live_b.content, "BearerToken"))
+    assert claims_a["typ"] == EXCEL_TOKEN_TYP
+    assert claims_b["typ"] == EXCEL_TOKEN_TYP
+    assert claims_a["role"] == "client"
+    assert claims_b["role"] == "client"
+    assert claims_a["client_id"] == DEFAULT_CLIENT_ID
+    assert claims_b["client_id"] == COMPANY_2_CLIENT_ID
+    assert claims_a.get("jti") != claims_b.get("jti")
     assert _settings_value(live_a.content, "ClientId") in {None, ""}
     assert _settings_value(static_a.content, "BearerToken") in {None, ""}
     text_a = live_a.content.decode("latin-1")
@@ -256,7 +272,10 @@ def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
     )
     assert own.status_code == 200
     assert CAMP_B not in _campaign_ids(own.content)
-    assert _session_jwt_stamped(_settings_value(own.content, "BearerToken"))
+    own_claims = _excel_stamp_claims(_settings_value(own.content, "BearerToken"))
+    assert own_claims["typ"] == EXCEL_TOKEN_TYP
+    assert own_claims["role"] == "client"
+    assert own_claims["client_id"] == DEFAULT_CLIENT_ID
     assert _settings_value(own.content, "ClientId") in {None, ""}
 
 
@@ -401,7 +420,10 @@ def test_postgres_refreshable_workbook_isolation(
         assert "camp-005c-pg-b" in _campaign_ids(live_b.content)
         assert query_table_field_names(live_a.content) == FACT_HEADERS
         assert QUERY_TABLE_PART not in _query_names(recovered.content)
-        assert _session_jwt_stamped(_settings_value(live_a.content, "BearerToken"))
+        pg_claims = _excel_stamp_claims(_settings_value(live_a.content, "BearerToken"))
+        assert pg_claims["typ"] == EXCEL_TOKEN_TYP
+        assert pg_claims["role"] == "client"
+        assert pg_claims["client_id"] == DEFAULT_CLIENT_ID
         assert _session_jwt_stamped(_settings_value(live_b.content, "BearerToken"))
         assert _settings_value(live_a.content, "ClientId") in {None, ""}
         assert _settings_value(recovered.content, "BearerToken") in {None, ""}

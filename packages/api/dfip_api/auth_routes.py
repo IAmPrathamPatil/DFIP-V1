@@ -8,8 +8,6 @@ not a refresh_token grant.
 
 from __future__ import annotations
 
-from dataclasses import replace
-
 from dfip_config.settings import BOOTSTRAP_TOKEN_HEADER
 from dfip_db.identity import (
     DuplicateSubjectError,
@@ -28,10 +26,8 @@ from dfip_api.auth import (
     bearer_scheme,
     decode_jwt_claims,
     issue_access_token,
-    principal_from_access_claims,
     token_matches,
 )
-from dfip_api.excel_grant import EXCEL_GRANT_ROLES, EXCEL_TOKEN_TYP
 from dfip_api.client_directory import overlay_session_clients
 from dfip_api.deps import PrincipalDep, get_principal
 from dfip_api.errors import (
@@ -41,6 +37,7 @@ from dfip_api.errors import (
     TooManyRequests,
     ValidationFailed,
 )
+from dfip_api.excel_grant import EXCEL_TOKEN_TYP, principal_from_excel_grant
 from dfip_api.lifecycle import require_company_active
 from dfip_api.limits import bootstrap_attempt_keys, login_attempt_keys
 from dfip_api.membership import apply_identity, enrich_principal
@@ -199,6 +196,27 @@ def _login_response(settings, principal: Principal, identity=None, directory=Non
     )
 
 
+def _excel_refresh_response(
+    settings, principal: Principal, jti: str, identity=None, directory=None
+) -> LoginResponse:
+    """Mint a short-lived access JWT that remains bound to the workbook grant.
+
+    Keep typ=excel and the grant jti so membership lookup cannot restore
+    publisher/admin privileges on the in-memory refresh token.
+    """
+    token, expires_in = issue_access_token(
+        settings,
+        principal,
+        extra_claims={"jti": jti, "typ": EXCEL_TOKEN_TYP},
+    )
+    return LoginResponse(
+        access_token=token,
+        token_type="bearer",
+        expires_in=expires_in,
+        session=session_response(principal, identity, directory),
+    )
+
+
 def _inspector_memberships(identity) -> tuple:
     return tuple(item for item in identity.memberships if item.role in ADMIN_ROLES)
 
@@ -327,54 +345,6 @@ def logout(request: Request, principal: PrincipalDep) -> Response:
     return Response(status_code=204)
 
 
-def _principal_from_excel_grant(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None,
-) -> Principal:
-    """Accept an Excel access JWT only when its workbook grant is live.
-
-    JWT exp may already have passed. The grant is the remaining credential.
-    Force client/reader scope; never mint publisher/admin/ops from this path.
-    """
-    if credentials is None:
-        raise AuthenticationError(_INVALID)
-    settings = request.app.state.settings
-    store = request.app.state.identity_store
-    grants = getattr(request.app.state, "excel_grant_store", None)
-    if grants is None:
-        raise AuthenticationError(_INVALID)
-    claims = decode_jwt_claims(settings, credentials.credentials, verify_exp=False)
-    if claims.get("typ") != EXCEL_TOKEN_TYP:
-        raise AuthenticationError(_INVALID)
-    jti = claims.get("jti")
-    if not isinstance(jti, str) or not jti:
-        raise AuthenticationError(_INVALID)
-    grant = grants.get_active(jti)
-    if grant is None:
-        raise AuthenticationError(_INVALID)
-    principal = principal_from_access_claims(claims)
-    if principal.role not in EXCEL_GRANT_ROLES:
-        raise AuthenticationError(_INVALID)
-    if principal.client_id != grant.client_id:
-        raise AuthenticationError(_INVALID)
-    identity = store.get_by_subject(principal.subject) if store is not None else None
-    if identity is None:
-        raise AuthenticationError(_INVALID)
-    if principal.token_version is not None and principal.token_version != identity.token_version:
-        raise AuthenticationError(_INVALID)
-    if identity.user_id != grant.user_id:
-        raise AuthenticationError(_INVALID)
-    principal = apply_identity(principal, identity, settings)
-    principal = replace(
-        principal,
-        role="client",
-        platform_admin=False,
-        client_id=grant.client_id,
-    )
-    grants.touch(jti)
-    return principal
-
-
 @auth_public_router.post(
     "/auth/refresh",
     response_model=LoginResponse,
@@ -383,8 +353,8 @@ def _principal_from_excel_grant(
         "Requires a still-valid access JWT, or an Excel workbook JWT whose "
         "server-side grant is still active (access exp may have passed). "
         "Copies the authenticated membership scope onto a new short-lived "
-        "access token. This is not a refresh_token grant and does not extend "
-        "publisher/admin Excel files."
+        "access token. This is not a refresh_token grant. typ=excel grants "
+        "are client-scoped even when a publisher minted the workbook."
     ),
     tags=["Auth"],
 )
@@ -397,8 +367,19 @@ def refresh(
     settings = request.app.state.settings
     store = request.app.state.identity_store
     claims = decode_jwt_claims(settings, credentials.credentials, verify_exp=False)
+    excel_jti = None
     if claims.get("typ") == EXCEL_TOKEN_TYP:
-        principal = _principal_from_excel_grant(request, credentials)
+        principal = principal_from_excel_grant(
+            settings=settings,
+            identity_store=store,
+            grants=getattr(request.app.state, "excel_grant_store", None),
+            token=credentials.credentials,
+            verify_exp=False,
+        )
+        raw_jti = claims.get("jti")
+        if not isinstance(raw_jti, str) or not raw_jti:
+            raise AuthenticationError(_INVALID)
+        excel_jti = raw_jti
     else:
         header = f"{credentials.scheme} {credentials.credentials}"
         principal = authenticate_bearer(settings, header)
@@ -410,9 +391,12 @@ def refresh(
     require_company_active(
         getattr(request.app.state, "client_directory", None), principal.client_id
     )
-    return _login_response(
-        settings, principal, identity, getattr(request.app.state, "client_directory", None)
-    )
+    directory = getattr(request.app.state, "client_directory", None)
+    if excel_jti is not None:
+        return _excel_refresh_response(
+            settings, principal, excel_jti, identity, directory
+        )
+    return _login_response(settings, principal, identity, directory)
 
 
 @auth_session_router.post(

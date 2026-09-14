@@ -8,10 +8,11 @@ Clones the tracked native V2-X template at ZIP level. Two explicit artifacts:
 - ``refreshable`` (RUN 005C / R10): keeps the PublishedFacts query and the
   native DataMashup package, authors the 45 queryTableFields, stamps the
   current snapshot so the file opens populated, and sets ApiBaseUrl.
-  Website/API downloads write the caller's short-lived access JWT into
-  Settings BearerToken so Excel Refresh All can call history/facts.csv. That
-  is the session token, not a permanent secret. ClientId stays empty; JWT
-  ``client_id`` is authoritative. Runtime does not rewrite DataMashup;
+  Website/API downloads write a client-scoped Excel grant JWT into
+  Settings BearerToken so Excel Refresh All can call history/facts.csv.
+  Publisher/admin downloads mint the same client-scoped grant for the
+  selected company; the publisher session JWT is never embedded. ClientId
+  stays empty; JWT ``client_id`` is authoritative. Runtime does not rewrite DataMashup;
   Excel skips a rewritten package. Refresh All calls GET
   /publications/history/facts.csv. Generated downloads hide ``PublishedFacts``
   and ``Facts`` so the client sees only the nine report sheets. Both
@@ -256,7 +257,7 @@ def render_client_report_xlsx(
 
     Static artifacts clear Settings B2–B4. Refreshable artifacts write
     ApiBaseUrl and, when ``refresh_bearer_token`` is provided (website/API
-    download), the caller's short-lived access JWT into BearerToken.
+    download), the client-scoped Excel grant JWT into BearerToken.
     ClientId stays empty. Direct renders without a token still leave
     BearerToken empty. Company identity is inert provenance.
     """

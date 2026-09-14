@@ -10,9 +10,10 @@ from dfip_db.rls import bind_rls, reset_rls
 from fastapi import Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
-from dfip_api.auth import Principal, bearer_scheme, principal_from_credentials
+from dfip_api.auth import Principal, bearer_scheme, decode_jwt_claims, principal_from_credentials
 from dfip_api.catalog_service import CatalogService
 from dfip_api.errors import AuthorizationError
+from dfip_api.excel_grant import EXCEL_TOKEN_TYP, principal_from_excel_grant
 from dfip_api.lifecycle import require_company_active
 from dfip_api.membership import enrich_principal, rls_context_for
 from dfip_api.publication_service import PublicationService
@@ -60,8 +61,18 @@ def get_principal(
     settings = request.app.state.settings
     principal = principal_from_credentials(settings, credentials)
     store = getattr(request.app.state, "identity_store", None)
-    if store is not None and principal.auth_mode == "jwt":
-        principal = enrich_principal(store, principal, settings)
+    if principal.auth_mode == "jwt" and credentials is not None:
+        claims = decode_jwt_claims(settings, credentials.credentials, verify_exp=True)
+        if claims.get("typ") == EXCEL_TOKEN_TYP:
+            principal = principal_from_excel_grant(
+                settings=settings,
+                identity_store=store,
+                grants=getattr(request.app.state, "excel_grant_store", None),
+                token=credentials.credentials,
+                verify_exp=True,
+            )
+        elif store is not None:
+            principal = enrich_principal(store, principal, settings)
     if principal.role in {"client", "reader"}:
         require_company_active(
             getattr(request.app.state, "client_directory", None), principal.client_id
