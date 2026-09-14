@@ -18,7 +18,7 @@ from psycopg_pool import ConnectionPool
 
 from dfip_db.connection import transaction
 from dfip_db.mapping import as_uuid_text
-from dfip_db.rls import identity_lookup_bind
+from dfip_db.rls import current_rls, identity_lookup_bind
 
 
 @dataclass(frozen=True)
@@ -234,7 +234,23 @@ def insert_client_for_inspector_from_pool(
     owner_user_id: str,
     owner_role: str,
 ) -> ClientRecord:
-    with transaction(pool, rls=None) as conn:
+    """Insert a company under the bound HTTP inspector RLS context.
+
+    Production LOGIN has no table grants, so this must SET LOCAL ROLE
+    dfip_api. A new client id is not in dfip.client_ids, so the INSERT
+    policy is inspector-role based. Fail closed if the bound context is
+    missing, is not admin/publisher, or does not match the owner.
+    """
+    ctx = current_rls()
+    if (
+        ctx is None
+        or ctx.role not in {"admin", "publisher"}
+        or not str(ctx.user_id or "").strip()
+        or owner_user_id != ctx.user_id
+        or owner_role != ctx.role
+    ):
+        raise PermissionError("Inspector RLS context is required to create a company.")
+    with transaction(pool, rls=ctx) as conn:
         return insert_client_for_inspector(
             conn, name=name, owner_user_id=owner_user_id, owner_role=owner_role
         )
