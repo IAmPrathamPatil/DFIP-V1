@@ -228,6 +228,7 @@ def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
     assert live_b.status_code == 200, live_b.text
     assert static_a.status_code == 200
     assert REFRESHABLE_FILENAME_RE.match(live_a.headers["content-disposition"])
+    assert live_a.headers.get("cache-control") == "no-store"
     assert FILENAME_RE.match(static_a.headers["content-disposition"])
     assert CAMP_A in _campaign_ids(live_a.content)
     assert CAMP_B not in _campaign_ids(live_a.content)
@@ -311,9 +312,23 @@ def test_spa_exposes_refreshable_download() -> None:
     client_js = (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
     assert "refreshable-client-report.xlsx" in client_js
     assert "downloadRefreshableClientReport" in client_js
+    assert "onHeaders" in client_js
     assert "data-download-refreshable-client-report" in views
     assert "Download Refreshable Workbook" in views
+    assert "data-refreshable-download-error" in views
+    assert "refreshableWorkbookDownloadInFlight" in app_js
+    assert "Generating…" in app_js
+    assert "Downloading…" in app_js
+    assert "showRefreshableDownloadError" in app_js
     assert "Refreshable company workbook downloaded." in app_js
+    start = app_js.index("const refreshableReport = event.target.closest")
+    handler = app_js[start : app_js.index("const catalogDownload = event.target.closest", start)]
+    assert "refreshableWorkbookDownloadInFlight" in handler
+    assert 'setRefreshableDownloadBusy("generating")' in handler
+    assert 'setRefreshableDownloadBusy("downloading")' in handler
+    assert "showRefreshableDownloadError(error)" in handler
+    assert "isAuthError(error)" in handler
+    assert ".catch((error) => handleError(error, path))" not in handler
 
 
 @requires_postgres

@@ -381,7 +381,7 @@ def download_current_refreshable_client_report(
         client_id,
         None,
         artifact="refreshable",
-        refresh_bearer_token=_excel_or_session_stamp(request, principal, settings),
+        request=request,
     )
 
 
@@ -471,9 +471,13 @@ def _client_report_download(
     publication_id: str | None,
     *,
     artifact: str = "static",
+    request: Request | None = None,
     refresh_bearer_token: str | None = None,
 ) -> Response:
     def build() -> Response:
+        token = refresh_bearer_token
+        if artifact == "refreshable" and token is None and request is not None:
+            token = _excel_or_session_stamp(request, principal, settings)
         body, filename, media_type = service.download_client_report(
             principal=principal,
             publication_id=publication_id,
@@ -481,24 +485,30 @@ def _client_report_download(
             max_rows=settings.dfip_download_max_rows,
             artifact=artifact,
             api_base_url=settings.dfip_api_base_url,
-            refresh_bearer_token=refresh_bearer_token if artifact == "refreshable" else None,
+            refresh_bearer_token=token if artifact == "refreshable" else None,
         )
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        if artifact == "refreshable":
+            headers["Cache-Control"] = "no-store"
         return Response(
             content=body,
             media_type=media_type,
-            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+            headers=headers,
         )
 
     return _with_report_generation_limit(build)
 
 
 _REPORT_GENERATION = threading.Semaphore(1)
+REPORT_GENERATION_BUSY_MESSAGE = (
+    "A workbook is already being generated. Wait for it to finish, then try again."
+)
 
 
 def _with_report_generation_limit(builder):
     """Process-local bound on simultaneous Client Report / published-file builds."""
     if not _REPORT_GENERATION.acquire(blocking=False):
-        raise TooManyRequests()
+        raise TooManyRequests(REPORT_GENERATION_BUSY_MESSAGE)
     try:
         return builder()
     finally:

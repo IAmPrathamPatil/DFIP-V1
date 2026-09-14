@@ -293,14 +293,15 @@ export class DfipApiClient {
     return this.request("GET", path, { params, blob: true });
   }
 
-  async downloadRefreshableClientReport(params) {
+  async downloadRefreshableClientReport(params, { onHeaders } = {}) {
     return this.request("GET", `${this.prefix}/publications/current/refreshable-client-report.xlsx`, {
       params,
       blob: true,
+      onHeaders,
     });
   }
 
-  async request(method, path, { params, auth = true, body, multipart = false, blob = false, acceptStatuses = [] } = {}) {
+  async request(method, path, { params, auth = true, body, multipart = false, blob = false, acceptStatuses = [], onHeaders } = {}) {
     const url = new URL(path, `${this.baseUrl}/`);
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -339,6 +340,9 @@ export class DfipApiClient {
     } catch (error) {
       throw new ApiError(0, "NETWORK_FAILURE", "Network failure contacting the API.");
     }
+    if (typeof onHeaders === "function") {
+      onHeaders(response);
+    }
     if (!response.ok && !acceptStatuses.includes(response.status)) {
       let payload = null;
       const text = await response.text();
@@ -358,7 +362,12 @@ export class DfipApiClient {
       );
     }
     if (blob) {
-      const blobBody = await response.blob();
+      let blobBody;
+      try {
+        blobBody = await response.blob();
+      } catch (error) {
+        throw new ApiError(0, "NETWORK_FAILURE", "The download was interrupted before the file finished.");
+      }
       const disposition = response.headers.get("Content-Disposition") || "";
       const matched = /filename=\"([^\"]+)\"/.exec(disposition);
       return { blob: blobBody, filename: matched ? matched[1] : `published-facts.${kindFromPath(path)}` };

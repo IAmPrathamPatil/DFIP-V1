@@ -88,6 +88,8 @@ let overviewRefreshSeq = 0;
 let lastOverviewSearch = "";
 let overviewClientId = "";
 let overviewKpiData = null;
+let refreshableWorkbookDownloadInFlight = false;
+const REFRESHABLE_DOWNLOAD_LABEL = "Download Refreshable Workbook";
 let overviewSparklineData = null;
 let overviewTrendsData = null;
 let overviewDrillMode = "breakdown";
@@ -2228,6 +2230,57 @@ function saveBlob(blob, filename) {
   URL.revokeObjectURL(url);
 }
 
+function refreshableDownloadButtons() {
+  return document.querySelectorAll("[data-download-refreshable-client-report]");
+}
+
+function setRefreshableDownloadBusy(phase) {
+  const busy = phase === "generating" || phase === "downloading";
+  const label =
+    phase === "generating" ? "Generating…" : phase === "downloading" ? "Downloading…" : REFRESHABLE_DOWNLOAD_LABEL;
+  for (const button of refreshableDownloadButtons()) {
+    button.disabled = busy;
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+    button.textContent = label;
+  }
+}
+
+function clearRefreshableDownloadError() {
+  for (const host of document.querySelectorAll("[data-refreshable-download-error]")) {
+    host.hidden = true;
+    host.textContent = "";
+  }
+}
+
+function refreshableDownloadErrorMessage(error) {
+  if (error instanceof ApiError && error.status === 429) {
+    return "A workbook is already being generated. Wait for it to finish, then try again.";
+  }
+  if (error instanceof ApiError && error.status === 404) {
+    return error.message || "This company has no current published report.";
+  }
+  if (error instanceof ApiError && error.status === 422) {
+    return error.message || "The published slice is too large to download as a workbook.";
+  }
+  if (error instanceof ApiError && (error.status === 0 || error.code === "NETWORK_FAILURE")) {
+    return "The download was interrupted. Stay on this page and try again.";
+  }
+  return error && error.message ? error.message : "Refreshable workbook download failed.";
+}
+
+function showRefreshableDownloadError(error) {
+  const message = refreshableDownloadErrorMessage(error);
+  const hosts = document.querySelectorAll("[data-refreshable-download-error]");
+  if (!hosts.length) {
+    showToast({ tone: "warning", title: "Refreshable workbook download failed.", message });
+    return;
+  }
+  for (const host of hosts) {
+    host.hidden = false;
+    host.textContent = message;
+  }
+}
+
 function reloadOverview() {
   navigate(currentLocation().path + (currentLocation().query.toString() ? `?${currentLocation().query}` : ""));
 }
@@ -2898,9 +2951,17 @@ root.addEventListener("click", (event) => {
   const refreshableReport = event.target.closest("[data-download-refreshable-client-report]");
   if (refreshableReport) {
     event.preventDefault();
+    if (refreshableWorkbookDownloadInFlight || refreshableReport.disabled) return;
     const path = currentLocation().path;
+    refreshableWorkbookDownloadInFlight = true;
+    clearRefreshableDownloadError();
+    setRefreshableDownloadBusy("generating");
     api
-      .downloadRefreshableClientReport(publishedParams(queryObject(currentLocation().query)))
+      .downloadRefreshableClientReport(publishedParams(queryObject(currentLocation().query)), {
+        onHeaders(response) {
+          if (response.ok) setRefreshableDownloadBusy("downloading");
+        },
+      })
       .then((payload) => {
         saveBlob(payload.blob, payload.filename || "Client_Report_Refreshable.xlsm");
         showToast({
@@ -2908,7 +2969,17 @@ root.addEventListener("click", (event) => {
           title: "Refreshable company workbook downloaded.",
         });
       })
-      .catch((error) => handleError(error, path));
+      .catch((error) => {
+        if (isAuthError(error)) {
+          handleError(error, path);
+          return;
+        }
+        showRefreshableDownloadError(error);
+      })
+      .finally(() => {
+        refreshableWorkbookDownloadInFlight = false;
+        setRefreshableDownloadBusy(null);
+      });
     return;
   }
   const catalogDownload = event.target.closest("[data-catalog-download]");

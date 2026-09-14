@@ -839,7 +839,9 @@ def test_concurrent_report_generation_is_bounded() -> None:
             params={"client_id": CLIENT_ID},
         )
         assert response.status_code == 429
-        assert _error_message(response) == TOO_MANY
+        assert _error_message(response) == (
+            "A workbook is already being generated. Wait for it to finish, then try again."
+        )
     finally:
         _REPORT_GENERATION.release()
 

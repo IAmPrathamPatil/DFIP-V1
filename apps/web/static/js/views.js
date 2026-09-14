@@ -352,6 +352,10 @@ function companyRefreshableWorkbookButton() {
   return html`<button type="button" class="secondary" data-download-refreshable-client-report="current">Download Refreshable Workbook</button>`;
 }
 
+function refreshableDownloadErrorHost() {
+  return html`<p class="banner warn" data-refreshable-download-error="true" hidden role="alert"></p>`;
+}
+
 function activeCompanyCaption(session) {
   if (!session || !session.client_id) {
     return html`<p class="muted">Select a company before downloading a company workbook.</p>`;
@@ -834,6 +838,7 @@ export function companiesView({ session, companies, error }) {
                             <p class="muted" data-company-active="${item.client_id}">Active company</p>
                             ${companyWorkbookButton()}
                             ${companyRefreshableWorkbookButton()}
+                            ${refreshableDownloadErrorHost()}
                           `
                         : ""
                     }
@@ -1974,6 +1979,7 @@ export function publicationsView({
           : html`
       <p class="muted">Download Company Workbook is current static recovery. Download Refreshable Workbook follows this company's current publication after Excel Refresh All. Neither file is a historical report.</p>
       <p>${companyWorkbookButton()} ${companyRefreshableWorkbookButton()}</p>
+      ${refreshableDownloadErrorHost()}
           `
       }
     </section>
@@ -2077,6 +2083,7 @@ export function downloadsView({ session, query, logicPage, labelsPage, currentPu
         <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
         <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
       </p>
+      ${refreshableDownloadErrorHost()}
     </section>
     <section class="panel">
       <h2>Logic downloads</h2>
@@ -4509,10 +4516,11 @@ export function clientHomeView({ session, currentPublication, publications }) {
       <p>
         <a class="btn" href="/client/facts" style="display:inline-flex;align-items:center;">Open published data</a>
         <button type="button" data-download-client-report="current">Download Client Report</button>
-        <button type="button" class="secondary" data-download-refreshable-client-report="current">Download Refreshable Workbook</button>
+        ${companyRefreshableWorkbookButton()}
         <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
         <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
       </p>
+      ${refreshableDownloadErrorHost()}
       <p class="muted">The Client Report is the nine-sheet static snapshot of the current publication. The refreshable workbook uses the same pivots and follows cumulative published history after Excel Refresh All. It includes the current session token for Refresh All (not a permanent secret). Historical files do not update themselves.</p>
     </section>
     ${
@@ -4543,10 +4551,11 @@ export function clientFactListView(model) {
   return html`
     <p>
       <button type="button" data-download-client-report="current">Download Client Report</button>
-      <button type="button" class="secondary" data-download-refreshable-client-report="current">Download Refreshable Workbook</button>
+      ${companyRefreshableWorkbookButton()}
       <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
       <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
     </p>
+    ${refreshableDownloadErrorHost()}
     ${factListView({
       ...model,
       path: "/client/facts",
