@@ -16,6 +16,10 @@ from dfip_web.client_report_download import (
     client_report_download_filename,
     render_client_report_xlsx,
 )
+from dfip_web.refreshable_xlsm_stamp import (
+    resolve_refreshable_xlsm_template,
+    stamp_refreshable_xlsm_file,
+)
 
 from dfip_api.auth import Principal
 from dfip_api.client_directory import ClientDirectory
@@ -427,14 +431,17 @@ class PublicationService:
         artifact: str = ARTIFACT_STATIC,
         api_base_url: str | None = None,
         refresh_bearer_token: str | None = None,
+        refreshable_xlsm_template: str | None = None,
     ) -> tuple[bytes, str, str]:
         """Return the nine-sheet Client_Report for current or one publication.
 
         Read-only. Uses the same tenant and snapshot rules as published facts.
         Does not process, publish, or move publication_current. Current
         download without a publication returns an explicit error rather than
-        an empty workbook. Refreshable artifacts stamp the current snapshot;
-        Refresh All pages cumulative published history for the company.
+        an empty workbook. Refreshable artifacts copy the Data Model .xlsm
+        and stamp a fresh client-scoped Excel grant. Refresh All pages
+        cumulative published history for the company. Static artifacts still
+        clone excel/Client_Report.xlsx.
         """
         if artifact == ARTIFACT_REFRESHABLE and publication_id is not None:
             raise ValidationFailed("Refreshable workbooks follow publication_current only.")
@@ -449,6 +456,32 @@ class PublicationService:
         else:
             publication = self._scoped_publication(principal, publication_id, requested_client_id)
             client_id = publication.client_id
+        published_at = publication.published_at
+        code, name = self._company_identity(client_id)
+        if artifact == ARTIFACT_REFRESHABLE:
+            try:
+                template = resolve_refreshable_xlsm_template(
+                    refreshable_xlsm_template or ""
+                )
+                body = stamp_refreshable_xlsm_file(
+                    template,
+                    bearer_token=refresh_bearer_token or "",
+                )
+            except ApiError:
+                raise
+            except Exception:
+                raise ApiError(
+                    500,
+                    INTERNAL_ERROR,
+                    "Client report could not be generated.",
+                ) from None
+            filename = client_report_download_filename(
+                code,
+                published_at,
+                artifact=artifact,
+                publication_id=publication_id,
+            )
+            return body, filename, CLIENT_REPORT_MACRO_MEDIA_TYPE
         try:
             items = self._load_published_items(
                 publication=publication,
@@ -459,8 +492,6 @@ class PublicationService:
             if "exceeds the download row limit" in str(exc):
                 raise ValidationFailed(ROW_CAP_WORKBOOK_MESSAGE) from None
             raise
-        published_at = publication.published_at
-        code, name = self._company_identity(client_id)
         payloads = [item.model_dump() for item in items]
         try:
             body = render_client_report_xlsx(
@@ -488,12 +519,7 @@ class PublicationService:
             artifact=artifact,
             publication_id=publication_id,
         )
-        media_type = (
-            CLIENT_REPORT_MACRO_MEDIA_TYPE
-            if artifact == ARTIFACT_REFRESHABLE
-            else CLIENT_REPORT_MEDIA_TYPE
-        )
-        return body, filename, media_type
+        return body, filename, CLIENT_REPORT_MEDIA_TYPE
 
     def _company_identity(self, client_id: str) -> tuple[str, str]:
         record = self._clients.get(client_id) if self._clients is not None else None

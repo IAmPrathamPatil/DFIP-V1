@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     # Excel-authored disposable renewal template. Do not set in the normal
     # DFIP runtime. Never overwrite the tracked master through this path.
     dfip_client_report_template: str = ""
+    # Empty: stamp excel/Client_Report_Refreshable.xlsm (Data Model). Tests may
+    # point this at a disposable fixture. Never overwrite the canonical file.
+    dfip_refreshable_xlsm_template: str = ""
     # PBKDF2 iterations for newly stored password verifiers. Tests may lower this.
     dfip_password_pbkdf2_iterations: int = 210_000
     # Production-grade first-publisher setup. Empty means setup is denied.

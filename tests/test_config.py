@@ -40,6 +40,7 @@ def test_settings_load_with_defaults(monkeypatch) -> None:
     assert settings.dfip_excel_access_ttl_seconds == 3600
     assert settings.dfip_excel_grant_ttl_seconds == 2_592_000
     assert settings.dfip_client_report_template == ""
+    assert settings.dfip_refreshable_xlsm_template == ""
     assert settings.dfip_password_pbkdf2_iterations == 210_000
     assert settings.dfip_upload_max_bytes == 64 * 1024 * 1024
     assert settings.dfip_upload_max_files == 5

@@ -100,9 +100,16 @@ def make_settings(**overrides: Any) -> Settings:
         "dfip_bootstrap_token": "",
         "dfip_ask_provider": "none",
         "dfip_ask_api_key": "",
+        "dfip_refreshable_xlsm_template": str(_mini_refreshable_xlsm()),
     }
     values.update(overrides)
     return Settings(_env_file=None, **values)
+
+
+def _mini_refreshable_xlsm():
+    from refreshable_xlsm_fixture import ensure_mini_refreshable_xlsm
+
+    return ensure_mini_refreshable_xlsm()
 
 
 def production_settings(**overrides: Any) -> Settings:

@@ -482,6 +482,7 @@ def _client_report_download(
             artifact=artifact,
             api_base_url=settings.dfip_api_base_url,
             refresh_bearer_token=token if artifact == "refreshable" else None,
+            refreshable_xlsm_template=settings.dfip_refreshable_xlsm_template,
         )
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
         if artifact == "refreshable":

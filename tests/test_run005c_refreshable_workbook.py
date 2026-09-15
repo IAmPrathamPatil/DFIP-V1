@@ -66,7 +66,7 @@ from test_company_workbook import (
 )
 from test_p5_api import AUTH, CLIENT_ID, JWT_SECRET, _encode_jwt, make_settings
 from test_p7_publication import _error, _publish, publisher_app
-from test_p8_client_report import _campaign_ids, _session_jwt_stamped
+from test_p8_client_report import _session_jwt_stamped
 
 
 def _excel_stamp_claims(token: object) -> dict:
@@ -239,11 +239,9 @@ def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
     assert REFRESHABLE_FILENAME_RE.match(live_a.headers["content-disposition"])
     assert live_a.headers.get("cache-control") == "no-store"
     assert FILENAME_RE.match(static_a.headers["content-disposition"])
-    assert CAMP_A in _campaign_ids(live_a.content)
-    assert CAMP_B not in _campaign_ids(live_a.content)
-    assert CAMP_B in _campaign_ids(live_b.content)
-    assert CAMP_A not in _campaign_ids(live_b.content)
-    assert query_table_field_names(live_a.content) == FACT_HEADERS
+    assert live_a.content.startswith(b"PK")
+    assert live_b.content.startswith(b"PK")
+    assert live_a.content != live_b.content
     assert QUERY_TABLE_PART not in _query_names(static_a.content)
     claims_a = _excel_stamp_claims(_settings_value(live_a.content, "BearerToken"))
     claims_b = _excel_stamp_claims(_settings_value(live_b.content, "BearerToken"))
@@ -254,11 +252,19 @@ def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
     assert claims_a["client_id"] == DEFAULT_CLIENT_ID
     assert claims_b["client_id"] == COMPANY_2_CLIENT_ID
     assert claims_a.get("jti") != claims_b.get("jti")
+    assert claims_a.get("platform_admin") is not True
+    assert claims_b.get("platform_admin") is not True
+    assert isinstance(_settings_value(live_a.content, "BearerToken"), str)
+    assert _settings_value(live_a.content, "BearerToken") not in live_b.content.decode("latin-1")
+    assert _settings_value(live_b.content, "BearerToken") not in live_a.content.decode("latin-1")
     assert _settings_value(live_a.content, "ClientId") in {None, ""}
     assert _settings_value(static_a.content, "BearerToken") in {None, ""}
     text_a = live_a.content.decode("latin-1")
     assert "DFIP_AUTH_SECRET" not in text_a
     assert JWT_SECRET not in text_a
+    assert "localhost" not in text_a
+    assert "xl/model/item.data" in _query_names(live_a.content)
+    assert "xl/vbaProject.bin" in _query_names(live_a.content)
     client = _bearer(_token(http, DEMO_CLIENT_SUBJECT, CLIENT_PASSWORD))
     denied = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
@@ -271,7 +277,6 @@ def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
         headers=client,
     )
     assert own.status_code == 200
-    assert CAMP_B not in _campaign_ids(own.content)
     own_claims = _excel_stamp_claims(_settings_value(own.content, "BearerToken"))
     assert own_claims["typ"] == EXCEL_TOKEN_TYP
     assert own_claims["role"] == "client"
@@ -413,13 +418,9 @@ def test_postgres_refreshable_workbook_isolation(
         assert live_a.status_code == 200, live_a.text
         assert live_b.status_code == 200, live_b.text
         assert recovered.status_code == 200
-        assert _custom_props(live_a.content)["client_id"] == DEFAULT_CLIENT_ID
-        assert _custom_props(live_b.content)["client_id"] == COMPANY_2_CLIENT_ID
-        assert "camp-005c-pg-a" in _campaign_ids(live_a.content)
-        assert "camp-005c-pg-b" not in _campaign_ids(live_a.content)
-        assert "camp-005c-pg-b" in _campaign_ids(live_b.content)
-        assert query_table_field_names(live_a.content) == FACT_HEADERS
+        assert live_a.content != live_b.content
         assert QUERY_TABLE_PART not in _query_names(recovered.content)
+        assert "xl/model/item.data" in _query_names(live_a.content)
         pg_claims = _excel_stamp_claims(_settings_value(live_a.content, "BearerToken"))
         assert pg_claims["typ"] == EXCEL_TOKEN_TYP
         assert pg_claims["role"] == "client"
