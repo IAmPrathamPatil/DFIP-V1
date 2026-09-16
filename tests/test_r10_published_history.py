@@ -112,10 +112,10 @@ def test_disk_and_packaged_mashup_page_history_facts() -> None:
     assert "layout = \"table\"" not in section
     assert "Date.From([month_start])" in section
     assert "Chrono" in section
-    assert "dfip-bearer=" in mashup
-    assert "dfip-bearer=" in section
-    assert 'Authorization = "Bearer "' not in mashup
-    assert 'Authorization = "Bearer "' not in section
+    assert 'Authorization = "Bearer "' in mashup
+    assert 'Authorization = "Bearer "' in section
+    assert "dfip-bearer=" not in mashup
+    assert "dfip-bearer=" not in section
 
 
 def test_month_date_typing_keeps_section1_length() -> None:
@@ -133,28 +133,6 @@ def test_month_date_typing_keeps_section1_length() -> None:
     reverted = _revert_month_date_typing(typed)
     assert reverted == body
     assert _type_month_from_month_start(typed) == typed
-
-
-def test_prefer_header_retarget_keeps_section1_length() -> None:
-    from dfip_web.published_facts_mashup import (
-        AUTHORIZATION_WEB_HEADER_TOKEN,
-        PREFER_WEB_HEADER_TOKEN,
-        _retarget_prefer_header,
-    )
-
-    assert len(AUTHORIZATION_WEB_HEADER_TOKEN) == len(PREFER_WEB_HEADER_TOKEN)
-    sample = (
-        b"let\r\n                        "
-        + AUTHORIZATION_WEB_HEADER_TOKEN
-        + b" BearerToken,\r\n                "
-        + AUTHORIZATION_WEB_HEADER_TOKEN
-        + b" AccessToken,\r\nin Facts;"
-    )
-    updated = _retarget_prefer_header(sample)
-    assert len(updated) == len(sample)
-    assert PREFER_WEB_HEADER_TOKEN in updated
-    assert AUTHORIZATION_WEB_HEADER_TOKEN not in updated
-    assert updated == _retarget_prefer_header(updated)
 
 
 def test_history_unions_months_and_current_stays_latest() -> None:

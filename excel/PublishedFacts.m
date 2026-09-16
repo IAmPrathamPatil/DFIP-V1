@@ -1,6 +1,6 @@
 // DFIP P7 — published facts for the client workbook.
 // Excel is a reporting + refresh layer, not the processing engine.
-// This query calls GET /api/v1/publications/history/facts.csv with Prefer dfip-bearer.
+// This query calls GET /api/v1/publications/history/facts.csv with Bearer auth.
 // The result is the company's cumulative published snapshots: later months
 // are added on Refresh All; previously published months remain. Newest
 // publication wins per campaign/variation/day grain (republish).
@@ -30,7 +30,7 @@ let
                 [
                     RelativePath = "/api/v1/auth/refresh",
                     Headers = [
-                        Prefer = "dfip-bearer=" & BearerToken,
+                        Authorization = "Bearer " & BearerToken,
                         Accept = "application/json",
                         #"Content-Type" = "application/json"
                     ],
@@ -55,7 +55,7 @@ let
             RelativePath = "/api/v1/publications/history/facts.csv",
             Query = QueryWithClient,
             Headers = [
-                Prefer = "dfip-bearer=" & AccessToken,
+                Authorization = "Bearer " & AccessToken,
                 Accept = "text/csv"
             ],
             Timeout = #duration(0, 0, 1, 30),

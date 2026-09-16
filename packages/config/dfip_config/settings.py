@@ -98,8 +98,8 @@ class Settings(BaseSettings):
     # Post-expiry Refresh All uses excel_workbook_grant, not this TTL.
     dfip_excel_access_ttl_seconds: int = 3600
     # How long a client/reader workbook may call POST /auth/refresh after the
-    # stamped access JWT expires. Default 30 days. Not a publisher/admin token.
-    dfip_excel_grant_ttl_seconds: int = 2_592_000
+    # stamped access JWT expires. Default 90 days. Not a publisher/admin token.
+    dfip_excel_grant_ttl_seconds: int = 7_776_000
     # Empty: clone tracked excel/Client_Report.xlsx. Set only to an
     # Excel-authored disposable renewal template. Do not set in the normal
     # DFIP runtime. Never overwrite the tracked master through this path.

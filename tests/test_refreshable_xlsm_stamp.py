@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import io
+import re
 from pathlib import Path
 from zipfile import ZipFile
 
@@ -214,8 +215,47 @@ def test_canonical_workbook_parts_survive_stamping() -> None:
 
     with ZipFile(io.BytesIO(template)) as archive:
         section = extract_published_facts_section_from_package(archive)
-    assert "dfip-bearer=" in section
-    assert 'Authorization = "Bearer "' not in section
+        workbook = archive.read("xl/workbook.xml").decode("utf-8")
+        connections = archive.read("xl/connections.xml").decode("utf-8")
+        pivots = [
+            name
+            for name in archive.namelist()
+            if name.startswith("xl/pivotTables/pivotTable") and name.endswith(".xml")
+        ]
+        slicers = [
+            name
+            for name in archive.namelist()
+            if name.startswith("xl/slicerCaches/") and name.endswith(".xml")
+        ]
+        sheets = [
+            name
+            for name in archive.namelist()
+            if name.startswith("xl/worksheets/sheet") and name.endswith(".xml")
+        ]
+        datafield_counts = []
+        for name in pivots:
+            xml = archive.read(name).decode("utf-8")
+            match = re.search(r'<dataFields count="(\d+)"', xml)
+            if match:
+                datafield_counts.append(int(match.group(1)))
+        for name in sheets:
+            xml = archive.read(name).decode("utf-8")
+            assert "UNIQUE(FILTER(" not in xml
+            assert "_xlfn._xlws.FILTER" not in xml
+            assert 'name="ExternalData_1"' not in xml
+        for name in archive.namelist():
+            if name.startswith("xl/pivotCache/pivotCacheDefinition") and name.endswith(".xml"):
+                cache = archive.read(name).decode("utf-8")
+                assert 'name="ExternalData_1"' not in cache
+                assert "refreshOnLoad=\"1\"" not in cache
+    assert 'Authorization = "Bearer "' in section
+    assert "dfip-bearer=" not in section
+    assert "Prefer = " not in section
+    assert 'name="ExternalData_1"' not in workbook
+    assert "refreshOnLoad=\"1\"" not in connections
+    assert len(slicers) == 35
+    assert len(pivots) >= 9
+    assert 22 in datafield_counts
     stamped = stamp_refreshable_xlsm_file(path, bearer_token="aaa.bbb.ccc")
     changed = zip_uncompressed_diffs(template, stamped)
     assert changed in {

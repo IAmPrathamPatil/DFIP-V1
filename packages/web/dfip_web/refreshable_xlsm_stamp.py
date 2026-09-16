@@ -21,7 +21,7 @@ from zipfile import ZipFile
 from dfip_web.client_workbook import EXCEL_DIR, ROOT
 from dfip_web.daily_report import _clone_zipinfo, _sheet_part_map, _xml_text
 
-CANONICAL_SHA256 = "c6f0e246079835aca5acffed4ca3a28d8ea7f2aafd6619f2ca7c3152b8474ce5"
+CANONICAL_SHA256 = "01dbffcd2293a1bd6286e97a642f2b4e80f1553e7e068ded83605658ce4f9f26"
 PRODUCTION_API_BASE_URL = "https://dfip-by-pratham.duckdns.org"
 MODEL_PART = "xl/model/item.data"
 VBA_PART = "xl/vbaProject.bin"

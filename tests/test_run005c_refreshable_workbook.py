@@ -96,8 +96,7 @@ def test_publishedfacts_m_uses_canonical_header_order() -> None:
     assert "PageLimit" not in mashup
     assert "/api/v1/publications/history/facts.csv" in mashup
     assert "/api/v1/auth/refresh" in mashup
-    assert 'Prefer = "dfip-bearer="' in mashup
-    assert 'Authorization = "Bearer "' not in mashup
+    assert 'Authorization = "Bearer "' in mashup
     assert "List.Skip(PageIndexes, 1)" not in mashup
     assert "/api/v1/publications/current/facts" not in mashup
     assert "Timeout = #duration(0, 0, 0, 30)" in mashup
@@ -185,8 +184,7 @@ def test_refreshable_artifact_authors_query_fields_and_keeps_query() -> None:
     assert "PageLimit" not in mashup
     assert "Date.From([month_start])" in mashup
     assert "Chrono" in mashup
-    assert "dfip-bearer=" in mashup
-    assert 'Authorization = "Bearer "' not in mashup
+    assert 'Authorization = "Bearer "' in mashup
     assert 'name="ExternalData_1"' in cache
     assert "worksheetSource ref=" not in cache
     assert "A1:AS1048576" not in cache

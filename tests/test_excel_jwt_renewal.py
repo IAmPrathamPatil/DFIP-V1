@@ -489,6 +489,44 @@ def test_excel_grant_mint_persists_active_row() -> None:
     assert grant.user_id == record.user_id
 
 
+def test_excel_access_jwt_is_one_hour_and_grant_is_ninety_days() -> None:
+    http, _identity = _excel_app(access_ttl=3600, grant_ttl=7_776_000)
+    stamped, session = _download_excel_stamp(http, ALICE)
+    stamp_claims = _claims(stamped)
+    session_claims = _claims(session)
+    assert int(stamp_claims["exp"]) - int(stamp_claims["iat"]) == 3600
+    assert int(session_claims["exp"]) - int(session_claims["iat"]) == 3600
+    grant = http.app.state.excel_grant_store.get(stamp_claims["jti"])
+    assert grant is not None
+    span = (grant.expires_at - grant.created_at).total_seconds()
+    assert abs(span - 7_776_000) < 5
+    assert http.app.state.settings.dfip_auth_token_ttl_seconds == 3600
+    assert http.app.state.settings.dfip_excel_access_ttl_seconds == 3600
+    assert http.app.state.settings.dfip_excel_grant_ttl_seconds == 7_776_000
+
+
+def test_excel_refresh_does_not_extend_original_grant_expiry() -> None:
+    http, _identity = _excel_app(access_ttl=1, grant_ttl=7_776_000)
+    stamped, _session = _download_excel_stamp(http, ALICE)
+    jti = _claims(stamped)["jti"]
+    grant_before = http.app.state.excel_grant_store.get(jti)
+    assert grant_before is not None
+    expires_before = grant_before.expires_at
+    created_before = grant_before.created_at
+    _wait_until_expired(stamped)
+    refreshed = http.post("/api/v1/auth/refresh", headers=_bearer(stamped))
+    assert refreshed.status_code == 200
+    access = refreshed.json()["access_token"]
+    access_claims = _claims(access)
+    assert access_claims["jti"] == jti
+    assert access_claims["client_id"] == CLIENT_ID
+    grant_after = http.app.state.excel_grant_store.get(jti)
+    assert grant_after is not None
+    assert grant_after.expires_at == expires_before
+    assert grant_after.created_at == created_before
+    assert grant_after.revoked_at is None
+
+
 def test_excel_grant_ignores_website_token_version() -> None:
     http, identity = _excel_app(access_ttl=3600, grant_ttl=3600)
     stamped, _session = _download_excel_stamp(http, ALICE)
@@ -598,96 +636,3 @@ def test_excel_grant_persist_failure_fails_download() -> None:
     )
     assert downloaded.status_code == 503
     assert not downloaded.content.startswith(b"PK")
-
-
-def _prefer(token: str) -> dict[str, str]:
-    return {"Prefer": f"dfip-bearer={token}"}
-
-
-def test_prefer_dfip_bearer_renews_expired_excel_jwt_and_reads_history() -> None:
-    http, _identity = _excel_app()
-    stamped, _session = _download_excel_stamp(http, ALICE)
-    _wait_until_expired(stamped)
-    facts = http.get(
-        "/api/v1/publications/history/facts",
-        headers=_prefer(stamped),
-        params={"limit": 1},
-    )
-    assert facts.status_code == 401
-    csv_expired = http.get(
-        "/api/v1/publications/history/facts.csv",
-        headers=_prefer(stamped),
-    )
-    assert csv_expired.status_code == 401
-    refreshed = http.post("/api/v1/auth/refresh", headers=_prefer(stamped))
-    assert refreshed.status_code == 200
-    access = refreshed.json()["access_token"]
-    access_claims = _claims(access)
-    assert access_claims.get("typ") == EXCEL_TOKEN_TYP
-    assert access_claims["jti"] == _claims(stamped)["jti"]
-    assert access_claims["client_id"] == CLIENT_ID
-    own = http.get(
-        "/api/v1/publications/history/facts.csv",
-        headers=_prefer(access),
-    )
-    assert own.status_code == 200
-    assert "campaign_id" in own.text.splitlines()[0]
-
-
-def test_prefer_dfip_bearer_wins_over_windows_negotiate_authorization() -> None:
-    http, _identity = _excel_app(access_ttl=3600, grant_ttl=3600)
-    stamped, _session = _download_excel_stamp(http, ALICE)
-    mixed = {
-        "Authorization": "Negotiate YIIB",
-        "Prefer": f"dfip-bearer={stamped}",
-    }
-    facts = http.get(
-        "/api/v1/publications/history/facts",
-        headers=mixed,
-        params={"limit": 1},
-    )
-    assert facts.status_code == 200
-    stolen = http.get(
-        "/api/v1/publications/history/facts",
-        headers=mixed,
-        params={"limit": 1, "client_id": CLIENT_B},
-    )
-    assert stolen.status_code == 403
-
-
-def test_prefer_dfip_bearer_survives_publisher_logout() -> None:
-    http, identity = _excel_app(access_ttl=3600, grant_ttl=3600)
-    stamped, session = _download_excel_stamp(http, ALICE)
-    signed_out = http.post("/api/v1/auth/logout", headers=_bearer(session))
-    assert signed_out.status_code == 204
-    after = identity.get_by_subject(ALICE)
-    assert after is not None
-    refreshed = http.post("/api/v1/auth/refresh", headers=_prefer(stamped))
-    assert refreshed.status_code == 200
-    access = refreshed.json()["access_token"]
-    assert _claims(access)["jti"] == _claims(stamped)["jti"]
-    facts = http.get(
-        "/api/v1/publications/history/facts.csv",
-        headers=_prefer(access),
-    )
-    assert facts.status_code == 200
-
-
-def test_http_credentials_from_headers_parse_prefer_and_bearer() -> None:
-    from dfip_api.auth import http_credentials_from_headers
-
-    prefer = http_credentials_from_headers(None, "return=representation, dfip-bearer=abc.def.ghi")
-    assert prefer is not None
-    assert prefer.scheme == "Bearer"
-    assert prefer.credentials == "abc.def.ghi"
-    quoted = http_credentials_from_headers(
-        "Negotiate AAAA",
-        'return=representation, dfip-bearer="abc.def.ghi"',
-    )
-    assert quoted is not None
-    assert quoted.credentials == "abc.def.ghi"
-    bearer = http_credentials_from_headers("Bearer website-token", None)
-    assert bearer is not None
-    assert bearer.credentials == "website-token"
-    assert http_credentials_from_headers("Negotiate AAAA", None) is None
-    assert http_credentials_from_headers(None, "return=minimal") is None

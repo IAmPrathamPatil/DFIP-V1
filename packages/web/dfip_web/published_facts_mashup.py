@@ -26,13 +26,6 @@ _MASHUP_RE = re.compile(r"(<DataMashup[^>]*>)(.*)(</DataMashup>)", re.DOTALL)
 # Same length: Excel DataMashup metadata stays valid if only this token changes.
 CURRENT_FACTS_PATH_TOKEN = b"publications/current/facts"
 HISTORY_FACTS_PATH_TOKEN = b"publications/history/facts"
-# Authorization is only legal in Excel when the PC stored Anonymous for the
-# host. Prefer is legal for Anonymous/Windows/Basic/Web API/Organizational.
-# Pad spaces so Formulas/Section1.m length is unchanged.
-AUTHORIZATION_WEB_HEADER_TOKEN = b'Authorization = "Bearer " &'
-PREFER_WEB_HEADER_TOKEN = b'Prefer = "dfip-bearer="   &'
-if len(AUTHORIZATION_WEB_HEADER_TOKEN) != len(PREFER_WEB_HEADER_TOKEN):
-    raise RuntimeError("Excel Prefer header token length must match Authorization.")
 HISTORY_FACTS_RELATIVE_PATH = "/api/v1/publications/history/facts"
 HISTORY_FACTS_CSV_RELATIVE_PATH = "/api/v1/publications/history/facts.csv"
 # Same-length Section1.m helper for tests. Do not apply to the tracked
@@ -181,28 +174,6 @@ def apply_template_history_page_limit(xlsx_path: Path) -> None:
     _rewrite_template_datamashup(xlsx_path, enlarge_published_facts_page_limit)
 
 
-def retarget_published_facts_prefer_header(item_xml: bytes) -> bytes:
-    """Replace Authorization Bearer with Prefer dfip-bearer inside Section1.m.
-
-    Token lengths match so Excel-authored DataMashup metadata stays valid.
-    Runtime download must not call this; apply it to the tracked template.
-    """
-    text = item_xml.decode("utf-16")
-    match = _MASHUP_RE.search(text)
-    if match is None:
-        raise ValueError("Client report template is invalid.")
-    blob = base64.b64decode(match.group(2).strip())
-    rebuilt = _transform_section1(blob, _retarget_prefer_header)
-    encoded = base64.b64encode(rebuilt).decode("ascii")
-    updated = text[: match.start(2)] + encoded + text[match.end(2) :]
-    return updated.encode("utf-16")
-
-
-def apply_template_excel_prefer_header(xlsx_path: Path) -> None:
-    """Same-length Authorization→Prefer header replace in a native workbook."""
-    _rewrite_template_datamashup(xlsx_path, retarget_published_facts_prefer_header)
-
-
 def datamashup_part_name(archive: ZipFile) -> str:
     """Return the customXml part that actually contains DataMashup Section1.m.
 
@@ -318,23 +289,6 @@ def _parse_parts(blob: bytes) -> tuple[int, list[bytes]]:
 
 def _retarget_history_path(section_bytes: bytes) -> bytes:
     return section_bytes.replace(CURRENT_FACTS_PATH_TOKEN, HISTORY_FACTS_PATH_TOKEN)
-
-
-def _retarget_prefer_header(section_bytes: bytes) -> bytes:
-    already = PREFER_WEB_HEADER_TOKEN in section_bytes
-    leftover = AUTHORIZATION_WEB_HEADER_TOKEN in section_bytes
-    if already and not leftover:
-        return section_bytes
-    if not leftover:
-        raise ValueError("PublishedFacts mashup is missing Authorization Web.Contents headers.")
-    updated = section_bytes.replace(AUTHORIZATION_WEB_HEADER_TOKEN, PREFER_WEB_HEADER_TOKEN)
-    if len(updated) != len(section_bytes):
-        raise ValueError("PublishedFacts mashup Prefer header replace must keep Section1.m length.")
-    if AUTHORIZATION_WEB_HEADER_TOKEN in updated:
-        raise ValueError("PublishedFacts mashup Prefer header did not consume Authorization.")
-    if PREFER_WEB_HEADER_TOKEN not in updated:
-        raise ValueError("PublishedFacts mashup Prefer header replace did not apply.")
-    return updated
 
 
 def _type_month_from_month_start(section_bytes: bytes) -> bytes:

@@ -66,7 +66,10 @@ reader JWT — do not commit):
    `Location=PublishedFacts`.
 4. Query Options equivalent: mashup `FirewallEnabled=false` (Ignore Privacy
    Levels). Combining `Excel.CurrentWorkbook()` with `Web.Contents` requires
-   that, or Excel raises the privacy-level dialog.
+   that, or Excel raises the privacy-level dialog. Excel Web credentials are
+   per Windows profile, not in the workbook. One time per PC: Data Source
+   Settings → Global permissions → the API host → Anonymous, so M can send
+   `Authorization: Bearer <JWT>`.
 5. Data → Refresh All (`Workbook.RefreshAll` +
    `CalculateUntilAsyncQueriesDone`).
 

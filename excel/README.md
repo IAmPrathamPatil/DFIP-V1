@@ -47,14 +47,17 @@ Filenames `DFIP_<client_code>_<YYYY-MM-DD>_Client_Report.xlsx` and
 snapshot and strips query tables. The refreshable copy keeps the native
 PublishedFacts query, authors 45 queryTableFields, sets ApiBaseUrl, and
 stamps the download session JWT into BearerToken. JWT `client_id` scopes the
-result. First-time Excel on each PC: when the Access Web content dialog
-appears for the API base URL, choose **Anonymous** (not Windows, Basic, or
-Organizational). Auth is the M `Authorization` header, not Excel's
-credential store. That choice persists for that URL on that Excel profile;
-later Refresh All should not prompt again while the JWT is valid. Token
-expiry requires a re-download. Never embed a password or a permanent token.
-While the stamped JWT is still valid, Refresh All calls `POST /auth/refresh`
-and reuses the first history page instead of fetching page 0 twice.
+result. Excel stores Web credentials per Windows profile, not in the
+workbook. The M query sends `Authorization: Bearer <JWT>`. Excel allows that
+header only when the host is stored as Anonymous. That credential is not
+packageable in the XLSM: `connections.xml`, DataMashup PermissionList, and
+Section1.m never gain an Anonymous flag after a successful Computer A
+refresh. Credentials live in
+`%LOCALAPPDATA%\Microsoft\Office\16.0\PowerQuery\User.zip`. One time per
+Windows profile, set Data Source Settings → Global permissions → the DFIP
+HTTPS host → Edit Permissions → Anonymous. Then Refresh All. Token expiry is
+handled by `POST /auth/refresh` while the 90-day Excel grant remains valid.
+Website login TTL stays one hour. Never embed a password or a permanent token.
 
 Do not run `build_client_report()` over a Desktop-built native workbook.
 Python must not rewrite the DataMashup package at runtime; Excel skips that
@@ -79,10 +82,15 @@ Bearer token in the tracked xlsx.
 2. Enter the API base URL and a Bearer token in the Settings table. Leave
    ClientId empty when the JWT already has `client_id`, or when the local
    development token is bound with `DFIP_DEV_AUTH_CLIENT_ID`.
-3. If `PublishedFacts` is already in the workbook, Refresh All. Otherwise add
+3. One time per Windows profile: Data → Get Data → Data Source Settings →
+   Global permissions → `https://dfip-by-pratham.duckdns.org` (or the local
+   API base URL) → Edit Permissions → Anonymous. Never Windows, Basic, or
+   Organizational. The JWT stays in Settings B3; Excel must not store a
+   password.
+4. If `PublishedFacts` is already in the workbook, Refresh All. Otherwise add
    query `PublishedFacts` from unchanged `PublishedFacts.m`. Ignore Privacy
    Levels (`Excel.CurrentWorkbook()` + `Web.Contents`).
-4. Against PostgreSQL, `dev_token` requires `DFIP_DEV_AUTH_CLIENT_ID`. Excel
+5. Against PostgreSQL, `dev_token` requires `DFIP_DEV_AUTH_CLIENT_ID`. Excel
    ClientId must match that bound client if set. That is not RLS. `dev_token`
    is development/test only. HS256 JWT is not a production identity provider.
 
