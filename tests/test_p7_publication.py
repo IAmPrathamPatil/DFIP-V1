@@ -478,8 +478,9 @@ def test_power_query_pages_published_facts_and_avoids_staging() -> None:
     assert "Csv.Document" in mashup
     assert "PageLimit" not in mashup
     assert "layout = \"table\"" not in mashup
-    assert "Authorization" in mashup
-    assert "Bearer" in mashup
+    assert 'Prefer = "dfip-bearer="' in mashup
+    assert 'Authorization = "Bearer "' not in mashup
+    assert "BearerToken" in mashup
     assert "stg_source_row" not in mashup
     assert "staged-rows" not in mashup
     for token in FORBIDDEN_TEMPLATE_TOKENS:

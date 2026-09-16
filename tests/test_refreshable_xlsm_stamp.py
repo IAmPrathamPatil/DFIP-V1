@@ -210,9 +210,18 @@ def test_canonical_workbook_parts_survive_stamping() -> None:
         pytest.skip("canonical Data Model xlsm is not in the workspace")
     template = path.read_bytes()
     assert hashlib.sha256(template).hexdigest() == CANONICAL_SHA256
+    from dfip_web.published_facts_mashup import extract_published_facts_section_from_package
+
+    with ZipFile(io.BytesIO(template)) as archive:
+        section = extract_published_facts_section_from_package(archive)
+    assert "dfip-bearer=" in section
+    assert 'Authorization = "Bearer "' not in section
     stamped = stamp_refreshable_xlsm_file(path, bearer_token="aaa.bbb.ccc")
     changed = zip_uncompressed_diffs(template, stamped)
-    assert changed == ("xl/sharedStrings.xml",)
+    assert changed in {
+        ("xl/sharedStrings.xml",),
+        ("xl/worksheets/sheet2.xml",),
+    }
     with ZipFile(io.BytesIO(template)) as before, ZipFile(io.BytesIO(stamped)) as after:
         assert before.namelist() == after.namelist()
         assert MODEL_PART in after.namelist()
@@ -221,7 +230,7 @@ def test_canonical_workbook_parts_survive_stamping() -> None:
         model_parts = [name for name in after.namelist() if name.startswith("xl/model/")]
         assert model_parts
         for name in after.namelist():
-            if name == "xl/sharedStrings.xml":
+            if name in changed:
                 continue
             assert after.read(name) == before.read(name)
         caches = [

@@ -33,13 +33,12 @@ from dfip_web.pivot_report import (
     sum_measure_headers,
 )
 from dfip_web.published_facts_mashup import (
-    DATAMASHUP_PART,
-    HISTORY_FACTS_CSV_RELATIVE_PATH,
-    extract_published_facts_section_m,
-    _type_month_from_month_start,
-    _revert_month_date_typing,
     _RENAMED_RESULT_TAIL,
     _SHRINKABLE_COMMENTS,
+    HISTORY_FACTS_CSV_RELATIVE_PATH,
+    _revert_month_date_typing,
+    _type_month_from_month_start,
+    extract_published_facts_section_from_package,
 )
 from dfip_web.slicer_defaults import selected_slicer_values
 from fastapi.testclient import TestClient
@@ -105,7 +104,7 @@ def test_disk_and_packaged_mashup_page_history_facts() -> None:
     assert "Date.From([month_start])" in mashup
     assert "Csv.Document" in mashup
     with ZipFile(XLSX_PATH) as archive:
-        section = extract_published_facts_section_m(archive.read(DATAMASHUP_PART))
+        section = extract_published_facts_section_from_package(archive)
     assert HISTORY_FACTS_CSV_RELATIVE_PATH in section
     assert CURRENT_PATH not in section
     assert "CanonicalKeys = Record.FieldNames(HeaderMap)" in section
@@ -113,6 +112,10 @@ def test_disk_and_packaged_mashup_page_history_facts() -> None:
     assert "layout = \"table\"" not in section
     assert "Date.From([month_start])" in section
     assert "Chrono" in section
+    assert "dfip-bearer=" in mashup
+    assert "dfip-bearer=" in section
+    assert 'Authorization = "Bearer "' not in mashup
+    assert 'Authorization = "Bearer "' not in section
 
 
 def test_month_date_typing_keeps_section1_length() -> None:
@@ -130,6 +133,28 @@ def test_month_date_typing_keeps_section1_length() -> None:
     reverted = _revert_month_date_typing(typed)
     assert reverted == body
     assert _type_month_from_month_start(typed) == typed
+
+
+def test_prefer_header_retarget_keeps_section1_length() -> None:
+    from dfip_web.published_facts_mashup import (
+        AUTHORIZATION_WEB_HEADER_TOKEN,
+        PREFER_WEB_HEADER_TOKEN,
+        _retarget_prefer_header,
+    )
+
+    assert len(AUTHORIZATION_WEB_HEADER_TOKEN) == len(PREFER_WEB_HEADER_TOKEN)
+    sample = (
+        b"let\r\n                        "
+        + AUTHORIZATION_WEB_HEADER_TOKEN
+        + b" BearerToken,\r\n                "
+        + AUTHORIZATION_WEB_HEADER_TOKEN
+        + b" AccessToken,\r\nin Facts;"
+    )
+    updated = _retarget_prefer_header(sample)
+    assert len(updated) == len(sample)
+    assert PREFER_WEB_HEADER_TOKEN in updated
+    assert AUTHORIZATION_WEB_HEADER_TOKEN not in updated
+    assert updated == _retarget_prefer_header(updated)
 
 
 def test_history_unions_months_and_current_stays_latest() -> None:
@@ -301,7 +326,7 @@ def test_refreshable_stamp_keeps_conversion_metrics_and_growing_cache() -> None:
     with ZipFile(io.BytesIO(body)) as archive:
         published = archive.read("xl/worksheets/sheet1.xml").decode("utf-8")
         cache = archive.read(PIVOT_CACHE_PART).decode("utf-8")
-        mashup = extract_published_facts_section_m(archive.read(DATAMASHUP_PART))
+        mashup = extract_published_facts_section_from_package(archive)
         facts = archive.read("xl/worksheets/sheet2.xml").decode("utf-8")
         overall = archive.read("xl/pivotTables/pivotTable1.xml").decode("utf-8")
         service = archive.read("xl/pivotTables/pivotTable9.xml").decode("utf-8")
@@ -525,6 +550,7 @@ def test_refreshable_month_slicer_selects_all_and_service_filter_needs_data() ->
 @postgres_only
 def test_postgres_history_unions_and_republish(pg_conn, pg_pool) -> None:
     from dfip_db.publication_store import PostgresPublicationStore
+
     from postgres_support import RUN_A as PG_RUN_A
 
     seed_working_set(pg_conn)

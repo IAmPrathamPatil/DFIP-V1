@@ -28,8 +28,7 @@ from dfip_web.client_report_download import (
 from dfip_web.client_workbook import FACT_HEADERS, mashup_text
 from dfip_web.pivot_report import PIVOT_CACHE_PART, assert_native_pivot_package
 from dfip_web.published_facts_mashup import (
-    DATAMASHUP_PART,
-    extract_published_facts_section_m,
+    extract_published_facts_section_from_package,
 )
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
@@ -97,6 +96,8 @@ def test_publishedfacts_m_uses_canonical_header_order() -> None:
     assert "PageLimit" not in mashup
     assert "/api/v1/publications/history/facts.csv" in mashup
     assert "/api/v1/auth/refresh" in mashup
+    assert 'Prefer = "dfip-bearer="' in mashup
+    assert 'Authorization = "Bearer "' not in mashup
     assert "List.Skip(PageIndexes, 1)" not in mashup
     assert "/api/v1/publications/current/facts" not in mashup
     assert "Timeout = #duration(0, 0, 0, 30)" in mashup
@@ -169,7 +170,7 @@ def test_refreshable_artifact_authors_query_fields_and_keeps_query() -> None:
     assert QUERY_TABLE_PART in names
     with ZipFile(io.BytesIO(body)) as archive:
         connections = archive.read("xl/connections.xml").decode("utf-8")
-        mashup = extract_published_facts_section_m(archive.read(DATAMASHUP_PART))
+        mashup = extract_published_facts_section_from_package(archive)
         cache = archive.read(PIVOT_CACHE_PART).decode("utf-8")
     assert 'refreshOnLoad="0"' in connections
     assert "Location=PublishedFacts" in connections
@@ -184,6 +185,8 @@ def test_refreshable_artifact_authors_query_fields_and_keeps_query() -> None:
     assert "PageLimit" not in mashup
     assert "Date.From([month_start])" in mashup
     assert "Chrono" in mashup
+    assert "dfip-bearer=" in mashup
+    assert 'Authorization = "Bearer "' not in mashup
     assert 'name="ExternalData_1"' in cache
     assert "worksheetSource ref=" not in cache
     assert "A1:AS1048576" not in cache

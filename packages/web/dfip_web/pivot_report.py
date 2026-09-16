@@ -22,7 +22,6 @@ from zipfile import ZipFile
 from openpyxl.utils import get_column_letter
 
 from dfip_web.client_workbook import FACT_HEADERS, FAKE_MASHUP_ZIP_PARTS
-from dfip_web.published_facts_mashup import DATAMASHUP_PART, extract_published_facts_section_m
 from dfip_web.daily_report import (
     AMC_DAYWISE,
     AMC_GROUP,
@@ -46,7 +45,6 @@ from dfip_web.daily_report import (
     SERVICE_FILTER_LOGIC_1,
     SUB_SPLIT,
     VERTICAL,
-    SERVICE_FILTER_LOGIC_1,
     XF_GROUP_BANNER,
     XF_HINT,
     XF_PURPOSE,
@@ -62,12 +60,13 @@ from dfip_web.daily_report import (
     _new_sheet_zipinfo,
     _next_relationship_id,
     _rels_with_metadata,
-    mutate_xlsx,
     _sheet_part_map,
     _types_with_metadata,
     _xml_attr,
     _xml_text,
+    mutate_xlsx,
 )
+from dfip_web.published_facts_mashup import extract_published_facts_section_from_package
 from dfip_web.report_format import apply_reference_formatting, datafield_numfmt
 
 PIVOT_CACHE_ID = 1
@@ -1796,15 +1795,13 @@ def assert_published_facts_mashup(body: bytes) -> str:
     """Return DataMashup Section1.m. Raises if the native package is missing."""
     with ZipFile(io.BytesIO(body), "r") as archive:
         names = set(archive.namelist())
-        if DATAMASHUP_PART not in names:
-            raise ValueError("Client report is incomplete.")
         if "xl/connections.xml" not in names:
             raise ValueError("Client report is incomplete.")
         connections = archive.read("xl/connections.xml").decode("utf-8")
         if "Query - PublishedFacts" not in connections:
             raise ValueError("Client report is incomplete.")
         try:
-            section = extract_published_facts_section_m(archive.read(DATAMASHUP_PART))
+            section = extract_published_facts_section_from_package(archive)
         except ValueError as exc:
             raise ValueError("Client report is incomplete.") from exc
     if "shared PublishedFacts" not in section and "PublishedFacts =" not in section:

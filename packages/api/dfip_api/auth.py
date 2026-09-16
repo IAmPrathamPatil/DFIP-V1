@@ -36,6 +36,7 @@ from dfip_config.settings import (
     MIN_JWT_SECRET_LENGTH,
     Settings,
 )
+from fastapi import Request
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from jwt.exceptions import InvalidTokenError
 
@@ -44,8 +45,66 @@ from dfip_api.roles import ALLOWED_ROLES
 
 ALLOWED_AUTH_MODES = frozenset({"dev_token", "jwt"})
 DEFAULT_ROLE = "reader"
+# Excel Web.Contents may only send Authorization when the PC's data-source
+# credential is Anonymous. Prefer is allowed for every Excel auth type.
+# Workbooks send Prefer: dfip-bearer=<jwt> so Computer B (Windows/org) works.
+DFIP_EXCEL_PREFER_KEY = "dfip-bearer"
 
-bearer_scheme = HTTPBearer(auto_error=False)
+
+class ExcelCompatibleHTTPBearer(HTTPBearer):
+    """HTTP Bearer, or Excel Prefer: dfip-bearer= when Authorization is unusable.
+
+    Prefer wins when present so a Windows/Negotiate Authorization header that
+    Excel attaches for the same Web host cannot hide the workbook JWT.
+    Website and curl callers keep sending Authorization and are unchanged.
+    """
+
+    def __call__(self, request: Request) -> HTTPAuthorizationCredentials | None:
+        return http_credentials_from_headers(
+            request.headers.get("authorization"),
+            ",".join(request.headers.getlist("prefer")),
+        )
+
+
+bearer_scheme = ExcelCompatibleHTTPBearer(auto_error=False)
+
+
+def dfip_bearer_from_prefer(prefer: str | None) -> str | None:
+    """Return the workbook JWT from Prefer: dfip-bearer=…, or None."""
+    if prefer is None or not prefer.strip():
+        return None
+    for raw in prefer.split(","):
+        item = raw.strip()
+        if not item:
+            continue
+        key, separator, value = item.partition("=")
+        if separator == "" or key.strip().lower() != DFIP_EXCEL_PREFER_KEY:
+            continue
+        token = value.strip()
+        if len(token) >= 2 and token[0] == token[-1] and token[0] in {'"', "'"}:
+            token = token[1:-1].strip()
+        if token and not any(ch.isspace() for ch in token):
+            return token
+    return None
+
+
+def http_credentials_from_headers(
+    authorization: str | None,
+    prefer: str | None,
+) -> HTTPAuthorizationCredentials | None:
+    """Resolve Excel Prefer or Authorization: Bearer into one credential."""
+    token = dfip_bearer_from_prefer(prefer)
+    if token is not None:
+        return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
+    if authorization is None or not authorization.strip():
+        return None
+    scheme, separator, credential = authorization.partition(" ")
+    if separator == "" or scheme.lower() != "bearer" or not credential.strip():
+        return None
+    token = credential.strip()
+    if any(ch.isspace() for ch in token):
+        return None
+    return HTTPAuthorizationCredentials(scheme="Bearer", credentials=token)
 
 
 @dataclass(frozen=True)
