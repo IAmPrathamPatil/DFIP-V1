@@ -51,8 +51,9 @@ def insert_grant(
     client_id: str,
     jti: str,
     expires_at: datetime,
+    created_at: datetime | None = None,
 ) -> ExcelWorkbookGrant:
-    now = datetime.now(tz=UTC)
+    now = created_at if created_at is not None else datetime.now(tz=UTC)
     grant_id = str(uuid4())
     with api_transaction(pool) as conn:
         row = conn.execute(
@@ -67,6 +68,22 @@ def insert_grant(
             (grant_id, user_id, client_id, jti, now, expires_at),
         ).fetchone()
     assert row is not None
+    return _row(row)
+
+
+def fetch_grant(pool: ConnectionPool, jti: str) -> ExcelWorkbookGrant | None:
+    with api_transaction(pool) as conn:
+        row = conn.execute(
+            """
+            SELECT id, user_id, client_id, jti, created_at, expires_at,
+                   revoked_at, last_used_at
+            FROM excel_workbook_grant
+            WHERE jti = %s
+            """,
+            (jti,),
+        ).fetchone()
+    if row is None:
+        return None
     return _row(row)
 
 

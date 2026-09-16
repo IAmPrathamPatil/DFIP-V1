@@ -323,9 +323,11 @@ def login(body: LoginRequest, request: Request) -> LoginResponse:
     status_code=204,
     summary="Invalidate issued access tokens for this user",
     description=(
-        "Increments app_user.token_version so previously issued access JWTs "
-        "with a matching ver claim are rejected. The caller still discards "
-        "the local credential."
+        "Increments app_user.token_version so previously issued website "
+        "session JWTs with a matching ver claim are rejected. Excel "
+        "workbook grants are independent of website logout and remain "
+        "usable until grant expiry or explicit revocation. The caller "
+        "still discards the local credential."
     ),
     tags=["Auth"],
     response_class=Response,
@@ -339,9 +341,6 @@ def logout(request: Request, principal: PrincipalDep) -> Response:
             user_id = identity.user_id
     if user_id:
         store.increment_token_version(user_id)
-        grants = getattr(request.app.state, "excel_grant_store", None)
-        if grants is not None:
-            grants.revoke_for_user(user_id)
     return Response(status_code=204)
 
 
@@ -375,6 +374,7 @@ def refresh(
             grants=getattr(request.app.state, "excel_grant_store", None),
             token=credentials.credentials,
             verify_exp=False,
+            restore_missing=True,
         )
         raw_jti = claims.get("jti")
         if not isinstance(raw_jti, str) or not raw_jti:
