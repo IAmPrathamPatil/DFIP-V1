@@ -91,6 +91,25 @@ def test_movers_comparison_delta_and_no_comparison() -> None:
     ).json()
     assert [item["key"] for item in down["rows"]] == ["camp-a", "camp-b"]
     assert _row(down, "camp-a")["delta"] == "-30.0000"
+    stale_up = _get(
+        store,
+        {"dimension": "campaign_id", "mode": "movers", "mover": "up", "direction": "asc"},
+    ).json()
+    assert stale_up["selection"]["direction"] == "desc"
+    assert [item["key"] for item in stale_up["rows"]] == ["camp-a", "camp-b"]
+    stale_down = _get(
+        store,
+        {
+            "dimension": "campaign_id",
+            "mode": "movers",
+            "mover": "down",
+            "direction": "desc",
+            "month_start": "2025-06-01",
+            "compare_month_start": "2025-10-01",
+        },
+    ).json()
+    assert stale_down["selection"]["direction"] == "asc"
+    assert [item["key"] for item in stale_down["rows"]] == ["camp-a", "camp-b"]
     none = _get(store, {"dimension": "campaign_id", "mode": "movers", "compare": "none"})
     assert none.status_code == 422
     ranking_none = _get(store, {"dimension": "campaign_id", "compare": "none"}).json()
@@ -138,6 +157,86 @@ def test_contribution_efficiency_and_secondary() -> None:
     assert _row(pairs, "WhatsApp")["parent_key"] == "camp-a"
     assert _row(pairs, "WhatsApp")["value"] == "40.0000"
     assert _row(pairs, "WhatsApp")["drillable"] is True
+
+
+def test_explorer_rows_include_canonical_metric_columns() -> None:
+    store = d2_store()
+    catalog = list(TREND_METRICS_BY_KEY)
+    campaigns = _get(store, {"metric": "total_cost", "dimension": "campaign_id"}).json()
+    camp_a = _row(campaigns, "camp-a")
+    metric_map = {item["key"]: item for item in camp_a["metrics"]}
+    assert [item["key"] for item in camp_a["metrics"]] == catalog
+    assert metric_map["total_cost"]["value"] == camp_a["value"] == "40.0000"
+    assert metric_map["revenue_inr"]["value"] == "80.0000"
+    expected = compute_kpis(
+        {
+            "total_cost": Decimal("40.0000"),
+            "revenue_inr": Decimal("80.0000"),
+            "sent": Decimal(100),
+            "delivered": Decimal(80),
+            "unique_clicks": Decimal(10),
+            "unique_conversions": Decimal(2),
+        },
+        namespace="client",
+    )
+    assert metric_map["overall_roas"]["value"] == format(expected["overall_roas"], "f")
+    assert metric_map["ctr_del_to_clicks"]["value"] == format(expected["ctr_del_to_clicks"], "f")
+    assert metric_map["total_cost"]["prior_value"] == "10.0000"
+    assert metric_map["total_cost"]["delta"] == "30.0000"
+
+    category = _get(store, {"metric": "total_cost", "dimension": "filter_logic_1"}).json()
+    assert [item["key"] for item in category["rows"]] == ["Group A", "Group B"]
+    assert _row(category, "Group A")["metrics"][0]["value"] == "40.0000"
+
+    division = _get(store, {"metric": "total_cost", "dimension": "filter_logic_1_group"}).json()
+    assert {item["key"] for item in division["rows"]} == {"A", "B"}
+
+    days = _get(store, {"metric": "total_cost", "dimension": "day"}).json()
+    assert days["rows"]
+    assert days["rows"][0]["metrics"]
+
+    none = _get(store, {"dimension": "campaign_id", "secondary": ""}).json()
+    assert none["selection"]["secondary"] is None
+
+    pairs = _get(store, {"dimension": "campaign_id", "secondary": "channel"}).json()
+    whatsapp = _row(pairs, "WhatsApp")
+    assert whatsapp["parent_key"] == "camp-a"
+    assert {item["key"] for item in whatsapp["metrics"]} == set(catalog)
+
+    top = _get(store, {"dimension": "campaign_id", "mode": "top", "limit": 1}).json()
+    assert len(top["rows"]) == 1
+    assert top["rows"][0]["metrics"]
+    bottom = _get(store, {"dimension": "campaign_id", "mode": "bottom", "limit": 1}).json()
+    assert bottom["rows"][0]["key"] == "camp-b"
+    movers = _get(store, {"dimension": "campaign_id", "mode": "movers", "mover": "up"}).json()
+    assert movers["rows"][0]["metrics"][0]["delta"] == "30.0000"
+
+    http, *_rest = jwt_app(publication_store=store)
+    exported = http.get(
+        "/api/v1/analytics/export.csv",
+        headers=jwt_headers("client"),
+        params={"dimension": "campaign_id", "metric": "total_cost", "mode": "ranking"},
+    )
+    assert exported.status_code == 200, exported.text
+    text = exported.text
+    assert "explorer_metric" in text
+    assert "camp-a|total_cost" in text
+    assert "camp-a|overall_roas" in text
+    assert "grouping" in text
+
+    grouped = http.get(
+        "/api/v1/analytics/export.csv",
+        headers=jwt_headers("client"),
+        params={
+            "dimension": "campaign_id",
+            "explorer_secondary": "channel",
+            "metric": "total_cost",
+        },
+    )
+    assert grouped.status_code == 200, grouped.text
+    grouped_text = grouped.text.replace("\r", "")
+    assert "WhatsApp|total_cost" in grouped_text
+    assert "explorer,grouping,campaign_id,channel" in grouped_text
 
 
 def test_filters_invalid_inputs_empty_and_errors() -> None:
@@ -308,10 +407,19 @@ def test_d5_explorer_presentation_layer() -> None:
     assert 'campaign${campaigns === 1 ? "" : "s"}' in helper
 
     # Sortable headers announce state; every header is scoped.
-    assert "explorerSortHead({ query, sort, direction, column: \"value\", label: \"Value\" })" in section
+    assert "explorerMetricHead(" in section
+    helpers = views[
+        views.index("function explorerSortState") : views.index(
+            "export function overviewExplorerSection"
+        )
+    ]
+    assert 'column: "value"' in helpers
     assert "explorerSortHead({ query, sort, direction, column: \"delta\", label: \"Delta\" })" in section
     assert "explorerSortHead({ query, sort, direction, column: \"contribution\", label: \"Share\" })" in section
-    assert section.count("<th scope=\"col\"") == 3
+    assert 'data-explorer-metric-col="' in helpers
+    assert "data-explorer-metric=" in helpers
+    assert "explorerMetricCell(" in section
+    assert section.count("<th scope=\"col\"") >= 3
     heads = views[views.index("function explorerSortState") : views.index("function explorerSortHref")]
     assert 'aria-sort="${state}"' in heads
     assert '"ascending"' in heads and '"descending"' in heads and '"none"' in heads
@@ -330,6 +438,9 @@ def test_d5_explorer_presentation_layer() -> None:
     assert ".explorer-sort:focus-visible {" in css
     assert '.explorer-table th[data-explorer-sort-active="true"]' in css
     assert ".explorer-affordance {\n  color: var(--accent);" in css
+    assert "position: sticky" in css
+    assert ".explorer-table-wrap" in css
+    assert "data-explorer-table-wrap" in section
 
 
 def test_spa_has_explorer_without_anomalies() -> None:
@@ -340,6 +451,20 @@ def test_spa_has_explorer_without_anomalies() -> None:
     assert "data-overview-explorer" in views
     assert "Performance Explorer" in views
     assert "queryFromExplorerForm" in state
+    assert "explorerDirectionForMode" in state
+    form = state[state.index("export function queryFromExplorerForm") : state.index("export function withExplorerSort")]
+    assert "previousMode" in form
+    assert 'if (mode !== "ranking" || mode !== previousMode)' in form
+    assert "explorerDirectionForMode(mode, mover)" in form
+    helper = state[state.index("function explorerDirectionForMode") : state.index("export function queryFromExplorerForm")]
+    assert 'mode === "bottom"' in helper
+    assert 'mode === "movers" && mover === "down"' in helper
+    views_js = (root / "views.js").read_text(encoding="utf-8")
+    explorer_section = views_js[
+        views_js.index("function overviewExplorerSection") : views_js.index("const INSIGHT_CATEGORY_LABELS")
+    ]
+    assert "modeDirection" in explorer_section
+    assert 'mode === "ranking"' in explorer_section
     assert "explorerParamsFromQuery" in state
     assert "getOverviewExplorer" in app_js
     assert "withDrill" in views

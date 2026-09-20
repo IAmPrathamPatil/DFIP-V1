@@ -137,6 +137,7 @@ from dfip_api.schemas import (
     DrillParentItem,
     DrillRow,
     DrillSelection,
+    ExplorerMetricValues,
     ExplorerResponse,
     ExplorerRow,
     ExplorerSelection,
@@ -1025,6 +1026,8 @@ class AnalyticsService:
         elif mode_key == "bottom":
             sort_key = "value"
             direction_key = "asc"
+        elif mode_key == "movers":
+            direction_key = "asc" if mover_key == "down" else "desc"
         share_ok = contribution_supported(metric_spec)
         show_contribution = share_ok and contribution_mode != "none"
         selection = ExplorerSelection(
@@ -1953,6 +1956,7 @@ class _ExplorerBuiltRow:
     count: int
     prior_count: int
     measures: dict[str, object]
+    prior_measures: dict[str, object] | None = None
 
 
 def _numeric(value: object) -> Decimal | None:
@@ -1994,6 +1998,7 @@ def _explorer_from_groups(
                 count=count,
                 prior_count=prior_count,
                 measures=measures,
+                prior_measures=prior_payload[0] if prior_payload is not None else None,
             )
         )
     return rows
@@ -2031,9 +2036,42 @@ def _explorer_from_pairs(
                 count=count,
                 prior_count=prior_count,
                 measures=measures,
+                prior_measures=prior_payload[0] if prior_payload is not None else None,
             )
         )
     return rows
+
+
+def _explorer_metric_values(
+    measures: dict[str, object],
+    prior_measures: dict[str, object] | None,
+    *,
+    comparison_available: bool,
+) -> list[ExplorerMetricValues]:
+    """Project every D1/D3 catalog metric from already-aggregated group measures."""
+
+    kpis = compute_kpis(measures, namespace="client")
+    prior_kpis = (
+        compute_kpis(prior_measures, namespace="client") if prior_measures is not None else None
+    )
+    cells: list[ExplorerMetricValues] = []
+    for spec in TREND_METRICS:
+        current = _pick_metric(spec, measures, kpis)
+        prior = (
+            _pick_metric(spec, prior_measures, prior_kpis)
+            if comparison_available and prior_measures is not None and prior_kpis is not None
+            else None
+        )
+        cells.append(
+            ExplorerMetricValues(
+                key=spec.key,
+                value=_serialize(spec.kind, current),
+                prior_value=_serialize(spec.kind, prior) if comparison_available else None,
+                delta=_delta(spec.kind, current, prior) if comparison_available else None,
+                delta_pct=_delta_pct(current, prior) if comparison_available else None,
+            )
+        )
+    return cells
 
 
 def _explorer_sort_tuple(
@@ -2145,6 +2183,11 @@ def _rank_explorer_rows(
                 drillable=bool(drill_dimension),
                 drill_dimension=drill_dimension,
                 drill_parents=list(drill_parents),
+                metrics=_explorer_metric_values(
+                    item.measures,
+                    item.prior_measures,
+                    comparison_available=comparison_available,
+                ),
             )
         )
     return rows, result_count, truncated

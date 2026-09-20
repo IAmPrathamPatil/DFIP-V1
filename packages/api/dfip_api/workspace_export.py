@@ -233,17 +233,39 @@ def _csv_bytes(
                 getattr(selection, "sort", "") if selection else "",
             ]
         )
+        if selection is not None:
+            writer.writerow(
+                [
+                    "explorer",
+                    "grouping",
+                    getattr(selection, "dimension", "") or "",
+                    getattr(selection, "secondary", None) or "none",
+                    getattr(selection, "mover", None) or "",
+                    str(getattr(selection, "limit", "") or ""),
+                ]
+            )
         for row in explorer.rows:
             writer.writerow(
                 [
                     "explorer_row",
                     row.key,
-                    row.label,
+                    row.label if not row.parent_label else f"{row.parent_label} → {row.label}",
                     "" if row.value is None else str(row.value),
                     "" if row.prior_value is None else str(row.prior_value),
                     "" if row.delta_pct is None else str(row.delta_pct),
                 ]
             )
+            for metric in getattr(row, "metrics", None) or []:
+                writer.writerow(
+                    [
+                        "explorer_metric",
+                        f"{row.key}|{metric.key}",
+                        metric.key,
+                        "" if metric.value is None else str(metric.value),
+                        "" if metric.prior_value is None else str(metric.prior_value),
+                        "" if metric.delta_pct is None else str(metric.delta_pct),
+                    ]
+                )
     if insights is not None:
         for item in getattr(insights, "insights", []) or []:
             writer.writerow(

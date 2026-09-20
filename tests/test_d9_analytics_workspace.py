@@ -569,20 +569,23 @@ def test_overview_fullwidth_sectioned_layout() -> None:
     assert 'data-overview-section="filters"' in shell
     assert 'data-overview-section="kpis"' in shell
     assert 'data-overview-section="tools"' in shell
-    assert "overview-grid-mid" in shell
-    assert "overview-grid-lower" in shell
+    assert "overview-stack" in shell
+    assert "overview-grid-mid" not in shell
+    assert "overview-grid-lower" not in shell
     assert "Filters &amp; analytical context" in shell or "Filters & analytical context" in shell
     assert "Key Performance Indicators" in shell
     assert "Analysis Tools" in shell
     assert 'data-overview-saved-host="true"' in shell
     assert 'data-overview-ask-host="true"' in shell
-    assert shell.index("data-overview-trends-host") < shell.index("data-overview-explorer-host")
+    assert shell.index("data-overview-explorer-host") < shell.index("data-overview-trends-host")
+    assert shell.index("data-overview-trends-host") < shell.index("data-overview-insights-host")
     assert shell.index("data-overview-insights-host") < shell.index("data-overview-anomalies-host")
     assert shell.index("data-overview-anomalies-host") < shell.index("data-overview-ask-host")
     assert "overview-filter-row-period" in views
     assert "overview-filter-row-dims" in views
     assert "content:has([data-overview-shell])" in css
     assert "repeat(4, minmax(0, 1fr))" in css
+    assert ".overview-stack" in css
     assert ".overview-grid-mid" in css
     assert ".overview-grid-lower" in css
     assert "refreshOverviewInPlace" in app

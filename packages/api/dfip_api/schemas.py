@@ -954,6 +954,18 @@ class DrilldownResponse(BaseModel):
     dimensions: list[OverviewFilterOption] = Field(default_factory=list)
 
 
+class ExplorerMetricValues(BaseModel):
+    """One canonical D1/D3 metric on an explorer row. Formulas stay in kpis.py."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    key: str
+    value: str | int | None = None
+    prior_value: str | int | None = None
+    delta: str | int | None = None
+    delta_pct: str | None = None
+
+
 class ExplorerRow(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -974,6 +986,7 @@ class ExplorerRow(BaseModel):
     drillable: bool = False
     drill_dimension: str | None = None
     drill_parents: list[str] = Field(default_factory=list)
+    metrics: list[ExplorerMetricValues] = Field(default_factory=list)
 
 
 class ExplorerSelection(BaseModel):

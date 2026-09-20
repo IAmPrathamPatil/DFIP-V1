@@ -2723,10 +2723,10 @@ function explorerSortState(sort, direction, column) {
   return direction === "asc" ? "ascending" : "descending";
 }
 
-function explorerSortHead({ query, sort, direction, column, label }) {
+function explorerSortHead({ query, sort, direction, column, label, metricKey }) {
   const state = explorerSortState(sort, direction, column);
   const active = state !== "none";
-  return html`<th scope="col" class="num" aria-sort="${state}"${active ? raw(' data-explorer-sort-active="true"') : ""}>
+  return html`<th scope="col" class="num" aria-sort="${state}"${active ? raw(' data-explorer-sort-active="true"') : ""}${metricKey ? raw(` data-explorer-metric-col="${metricKey}"`) : ""}>
     <a class="action-link explorer-sort" href="${explorerSortHref(query, column)}" data-explorer-sort="${column}">
       ${label}<span class="explorer-sort-caret" aria-hidden="true">${active ? (state === "ascending" ? "▲" : "▼") : "↕"}</span>
       <span class="sr-only">${active ? `Sorted ${state}. Activate to reverse.` : "Activate to sort by this column."}</span>
@@ -2738,16 +2738,57 @@ function explorerSortHref(query, sort) {
   return overviewHref(withExplorerSort(query || new URLSearchParams(), sort));
 }
 
+function explorerMetricLookup(row, key) {
+  const list = Array.isArray(row && row.metrics) ? row.metrics : [];
+  return list.find((item) => item && item.key === key) || null;
+}
+
+function explorerMetricColumns(explorer) {
+  const catalog = Array.isArray(explorer && explorer.metrics) ? explorer.metrics : [];
+  if (catalog.length) return catalog;
+  return TREND_METRIC_OPTIONS.map(([key, label]) => ({
+    key,
+    label,
+    kind: key === "overall_roas" ? "roas" : key === "delivery_rate" || key === "ctr_del_to_clicks" ? "rate" : key === "delivered" || key === "unique_clicks" || key === "unique_conversions" ? "count" : "money",
+  }));
+}
+
+function explorerMetricHead({ query, sort, direction, spec, rankingKey }) {
+  if (spec.key === rankingKey) {
+    return explorerSortHead({ query, sort, direction, column: "value", label: spec.label, metricKey: spec.key });
+  }
+  return html`<th scope="col" class="num" data-explorer-metric-col="${spec.key}">${spec.label}</th>`;
+}
+
+function explorerMetricCell(row, spec, rankingKey, comparisonAvailable) {
+  const cell = explorerMetricLookup(row, spec.key);
+  const value = cell ? cell.value : spec.key === rankingKey ? row.value : null;
+  const delta = cell ? cell.delta : spec.key === rankingKey ? row.delta : null;
+  const deltaPct = cell ? cell.delta_pct : spec.key === rankingKey ? row.delta_pct : null;
+  const ranked = spec.key === rankingKey;
+  return html`<td class="num explorer-metric${ranked ? " is-rank-metric" : ""}" data-explorer-metric="${spec.key}">
+    <span class="explorer-metric-value">${formatKpiValue(spec.kind, value)}</span>
+    ${
+      comparisonAvailable
+        ? html`<span class="explorer-metric-delta">${formatDelta(spec.kind, delta, deltaPct) || "n/a"}</span>`
+        : ""
+    }
+  </td>`;
+}
+
 export function overviewExplorerSection({ query, data, explorer, explorerError }) {
   const selection = (explorer && explorer.selection) || {};
   const metricKey = selectedQueryValue(query, "ex_metric", selection.metric || "total_cost");
   const dimension = selectedQueryValue(query, "ex_dimension", selection.dimension || "campaign_id");
   const secondary = selectedQueryValue(query, "ex_secondary", selection.secondary || "");
   const mode = selectedQueryValue(query, "ex_mode", selection.mode || "ranking");
-  const direction = selectedQueryValue(query, "ex_dir", selection.direction || (mode === "bottom" ? "asc" : "desc"));
+  const mover = selectedQueryValue(query, "ex_mover", selection.mover || "up");
+  const modeDirection = mode === "bottom" || (mode === "movers" && mover === "down") ? "asc" : "desc";
+  const direction = mode === "ranking"
+    ? selectedQueryValue(query, "ex_dir", selection.direction || "desc")
+    : modeDirection;
   const sort = selectedQueryValue(query, "ex_sort", selection.sort || (mode === "movers" ? "delta" : "value"));
   const limit = selectedQueryValue(query, "ex_limit", String(selection.limit || (mode === "ranking" ? "25" : "10")));
-  const mover = selectedQueryValue(query, "ex_mover", selection.mover || "up");
   const minValue = selectedQueryValue(query, "ex_min", selection.min_value || "");
   const minContrib = selectedQueryValue(query, "ex_min_contrib", selection.min_contribution || "");
   const metricInfo = (explorer && explorer.metric) || {};
@@ -2781,6 +2822,7 @@ export function overviewExplorerSection({ query, data, explorer, explorerError }
   } else {
     const rows = Array.isArray(explorer.rows) ? explorer.rows : [];
     const anyDrillable = rows.some((row) => row.drillable && row.drill_dimension);
+    const metricColumns = explorerMetricColumns(explorer);
     body = html`
       <div class="explorer-notes">
         ${anyDrillable ? html`<p class="muted" data-explorer-drill-hint="true">Highlighted rows open the detail view for that dimension value.</p>` : ""}
@@ -2791,13 +2833,13 @@ export function overviewExplorerSection({ query, data, explorer, explorerError }
         }
         ${explorer.truncated ? html`<p class="muted" data-explorer-truncated="true">${explorer.truncated_message}</p>` : ""}
       </div>
-      <div class="table-wrap explorer-table-wrap">
+      <div class="table-wrap explorer-table-wrap" data-explorer-table-wrap="true">
         <table class="data-table explorer-table" data-explorer-table="true">
           <thead>
             <tr>
-              <th scope="col" class="num">Rank</th>
-              <th scope="col">${secondary ? `${dimensionLabel} → ${secondaryLabel}` : dimensionLabel}</th>
-              ${explorerSortHead({ query, sort, direction, column: "value", label: "Value" })}
+              <th scope="col" class="num explorer-sticky-rank">Rank</th>
+              <th scope="col" class="explorer-sticky-name">${secondary ? `${dimensionLabel} → ${secondaryLabel}` : dimensionLabel}</th>
+              ${metricColumns.map((spec) => explorerMetricHead({ query, sort, direction, spec, rankingKey: metricKey }))}
               <th scope="col" class="num">Comparison</th>
               ${explorerSortHead({ query, sort, direction, column: "delta", label: "Delta" })}
               ${showContribution ? explorerSortHead({ query, sort, direction, column: "contribution", label: "Share" }) : ""}
@@ -2826,8 +2868,8 @@ export function overviewExplorerSection({ query, data, explorer, explorerError }
                   : `${(Number(row.contribution_pct) * 100).toLocaleString("en-US", { maximumFractionDigits: 1 })}%`;
               return html`
                 <tr class="${(query && query.get && query.get("ex_row") === row.key) ? "is-selected" : ""} ${href ? "is-drillable" : ""}" data-explorer-row="${row.key}" data-drillable="${row.drillable ? "true" : "false"}" data-explorer-row-selected="${query && query.get && query.get("ex_row") === row.key ? "true" : "false"}">
-                  <td class="num">${row.rank}</td>
-                  <td class="explorer-name">
+                  <td class="num explorer-sticky-rank">${row.rank}</td>
+                  <td class="explorer-name explorer-sticky-name">
                     ${
                       href
                         ? html`<a href="${href}" data-explorer-drill="${row.key}">${label}<span class="explorer-affordance" aria-hidden="true">→</span></a>`
@@ -2835,7 +2877,7 @@ export function overviewExplorerSection({ query, data, explorer, explorerError }
                     }
                     ${share == null ? "" : html`<span class="drill-bar-track explorer-bar"><span class="drill-bar-fill" style="width: ${share}%;"></span></span>`}
                   </td>
-                  <td class="num">${formatKpiValue(metricInfo.kind, row.value)}</td>
+                  ${metricColumns.map((spec) => explorerMetricCell(row, spec, metricKey, comparison.available))}
                   <td class="num">${comparison.available ? formatKpiValue(metricInfo.kind, row.prior_value) : "n/a"}</td>
                   <td class="num">${comparison.available ? formatDelta(metricInfo.kind, row.delta, row.delta_pct) : "n/a"}</td>
                   ${showContribution ? html`<td class="num">${contribution}</td>` : ""}
@@ -4452,11 +4494,9 @@ export function clientOverviewView({ session, data, error, loading, query, trend
         </header>
         <div class="metrics overview-host" data-overview-kpis-host="true">${overviewKpiCardsHtml({ data, query, sparkline })}</div>
       </section>
-      <div class="overview-grid overview-grid-mid">
-        <div class="overview-host" data-overview-trends-host="true">${overviewHostOrRetry("trends", trendError, overviewTrendSection({ query, trend, trendError }))}</div>
+      <div class="overview-stack">
         <div class="overview-host" data-overview-explorer-host="true">${overviewHostOrRetry("explorer", explorerError, overviewExplorerSection({ query, data, explorer, explorerError }))}</div>
-      </div>
-      <div class="overview-grid overview-grid-lower">
+        <div class="overview-host" data-overview-trends-host="true">${overviewHostOrRetry("trends", trendError, overviewTrendSection({ query, trend, trendError }))}</div>
         <div class="overview-host" data-overview-insights-host="true">${overviewHostOrRetry("insights", insightsError, overviewInsightsSection({ query, data, insights, insightsError }))}</div>
         <div class="overview-host" data-overview-anomalies-host="true">${overviewHostOrRetry("anomalies", anomaliesError, overviewAnomaliesSection({ query, data, anomalies, anomaliesError }))}</div>
         <section class="overview-section overview-section-tools" data-overview-section="tools">

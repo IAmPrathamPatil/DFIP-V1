@@ -362,6 +362,11 @@ export function generatedTrendSelectionFromAsk(body) {
   return selection;
 }
 
+function explorerDirectionForMode(mode, mover) {
+  if (mode === "bottom" || (mode === "movers" && mover === "down")) return "asc";
+  return "desc";
+}
+
 export function queryFromExplorerForm(form, currentQuery) {
   const source = currentQuery instanceof URLSearchParams ? currentQuery : currentSearch();
   const query = new URLSearchParams();
@@ -372,6 +377,7 @@ export function queryFromExplorerForm(form, currentQuery) {
   copyMulti(source, DRILL_MULTI, query);
   copyKeys(source, FOCUS_KEYS, query);
   const data = new FormData(form);
+  const previousMode = String(source.get("ex_mode") || "ranking").trim() || "ranking";
   const metric = String(data.get("ex_metric") || "total_cost").trim();
   if (metric && metric !== "total_cost") query.set("ex_metric", metric);
   const dimension = String(data.get("ex_dimension") || "campaign_id").trim();
@@ -380,13 +386,16 @@ export function queryFromExplorerForm(form, currentQuery) {
   if (secondary) query.set("ex_secondary", secondary);
   const mode = String(data.get("ex_mode") || "ranking").trim();
   if (mode && mode !== "ranking") query.set("ex_mode", mode);
-  const direction = String(data.get("ex_dir") || "").trim();
+  const mover = String(data.get("ex_mover") || "up").trim();
+  let direction = String(data.get("ex_dir") || "").trim();
+  if (mode !== "ranking" || mode !== previousMode) {
+    direction = explorerDirectionForMode(mode, mover);
+  }
   if (direction && direction !== "desc") query.set("ex_dir", direction);
   const sort = String(data.get("ex_sort") || "").trim();
   if (sort && sort !== "value") query.set("ex_sort", sort);
   const limit = String(data.get("ex_limit") || "").trim();
   if (limit) query.set("ex_limit", limit);
-  const mover = String(data.get("ex_mover") || "up").trim();
   if (mode === "movers" && mover && mover !== "up") query.set("ex_mover", mover);
   const minValue = String(data.get("ex_min") || "").trim();
   if (minValue) query.set("ex_min", minValue);
