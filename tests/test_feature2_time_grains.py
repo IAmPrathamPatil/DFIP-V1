@@ -181,6 +181,8 @@ def test_trends_default_and_ui_selector_regression() -> None:
     assert views.count("findingGrainSelector(query)") >= 3
     assert "finding_grain" in state
     assert "findingChanged" in app
+    assert 'setOverviewHost("[data-overview-insights-host]", overviewHostLoading())' in app
+    assert 'setOverviewHost("[data-overview-anomalies-host]", overviewHostLoading())' in app
 
 
 def test_week_identity_is_iso_labelled_and_boundary_safe() -> None:

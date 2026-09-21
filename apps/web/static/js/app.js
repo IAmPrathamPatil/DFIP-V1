@@ -3315,6 +3315,8 @@ root.addEventListener("change", (event) => {
     const value = String(findingGrain.value || "month");
     if (value === "month") query.delete("finding_grain");
     else query.set("finding_grain", value);
+    setOverviewHost("[data-overview-insights-host]", overviewHostLoading());
+    setOverviewHost("[data-overview-anomalies-host]", overviewHostLoading());
     navigate(overviewHref(query));
     return;
   }
