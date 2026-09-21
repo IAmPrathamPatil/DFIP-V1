@@ -180,7 +180,12 @@ def test_trends_default_and_ui_selector_regression() -> None:
     assert views.count("data-finding-grain") >= 1
     assert views.count("findingGrainSelector(query)") >= 3
     assert "finding_grain" in state
-    assert "findingChanged" in app
+    assert "FINDING_KEYS" in app
+    assert "const findingChanged = queryKeysChanged(previousQuery, query, FINDING_KEYS);" in app
+    assert "filterChanged || findingChanged" in app
+    assert 'event.target.closest("[data-finding-grain]")' in app
+    assert 'query.set("finding_grain", value)' in app
+    assert "navigate(overviewHref(query))" in app
     assert 'setOverviewHost("[data-overview-insights-host]", overviewHostLoading())' in app
     assert 'setOverviewHost("[data-overview-anomalies-host]", overviewHostLoading())' in app
 
