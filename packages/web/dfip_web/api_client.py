@@ -111,6 +111,22 @@ class DfipApiClient:
     def get_overview_explorer(self, **params: Any) -> dict[str, Any]:
         return self._request("GET", f"{self.prefix}/analytics/explorer", params=params)
 
+    def download_explorer_export(self, **params: Any) -> bytes:
+        headers: dict[str, str] = {"Accept": "text/csv"}
+        if self.token:
+            headers["Authorization"] = f"Bearer {self.token}"
+        try:
+            response = self._client.get(
+                f"{self.prefix}/analytics/explorer.csv",
+                params=_query(params),
+                headers=headers,
+            )
+        except httpx.RequestError as exc:
+            raise ApiClientError(0, NETWORK_FAILURE, "Network failure contacting the API.") from exc
+        if response.status_code >= 400:
+            _parse_response(response)
+        return response.content
+
     def get_overview_insights(self, **params: Any) -> dict[str, Any]:
         return self._request("GET", f"{self.prefix}/analytics/insights", params=params)
 

@@ -187,6 +187,10 @@ export class DfipApiClient {
     return this.request("GET", `${this.prefix}/analytics/explorer`, { params });
   }
 
+  downloadExplorerExport(params) {
+    return this.request("GET", `${this.prefix}/analytics/explorer.csv`, { params, blob: true });
+  }
+
   getOverviewInsights(params) {
     return this.request("GET", `${this.prefix}/analytics/insights`, { params });
   }

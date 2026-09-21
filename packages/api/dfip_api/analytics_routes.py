@@ -30,6 +30,7 @@ from dfip_api.schemas import (
     SavedAnalysisUpdate,
     TrendResponse,
 )
+from dfip_api.explorer_export import render_explorer_csv
 from dfip_api.workspace_export import EXPORT_MEDIA_TYPE, render_workspace_csv
 
 analytics_router = APIRouter(
@@ -361,6 +362,82 @@ def get_overview_explorer(
         contribution=contribution or None,
         min_value=min_value or None,
         min_contribution=min_contribution or None,
+    )
+
+
+@analytics_router.get(
+    "/analytics/explorer.csv",
+    summary="Export the current Performance Explorer result as CSV",
+    description=(
+        "CSV of the JWT-scoped Performance Explorer ranking currently on "
+        "screen. Reuses GET /analytics/explorer. Does not return workspace "
+        "metadata, trend points, or unpublished facts."
+    ),
+    tags=["Analytics"],
+    response_class=Response,
+)
+def export_explorer_csv(
+    service: AnalyticsServiceDep,
+    principal: PrincipalDep,
+    client_id: OptionalUuid = None,
+    period: Annotated[str | None, Query()] = None,
+    month_start: OptionalDate = None,
+    day_from: OptionalDate = None,
+    day_to: OptionalDate = None,
+    compare: Annotated[str | None, Query()] = None,
+    compare_month_start: OptionalDate = None,
+    compare_from: OptionalDate = None,
+    compare_to: OptionalDate = None,
+    campaign_id: StringList = None,
+    channel: StringList = None,
+    filter_logic_1: StringList = None,
+    filter_logic_1_group: StringList = None,
+    metric: Annotated[str | None, Query()] = None,
+    dimension: Annotated[str | None, Query()] = None,
+    secondary: Annotated[str | None, Query()] = None,
+    mode: Annotated[str | None, Query()] = None,
+    direction: Annotated[str | None, Query()] = None,
+    sort: Annotated[str | None, Query()] = None,
+    limit: Annotated[int | None, Query()] = None,
+    mover: Annotated[str | None, Query()] = None,
+    contribution: Annotated[str | None, Query()] = None,
+    min_value: Annotated[str | None, Query()] = None,
+    min_contribution: Annotated[str | None, Query()] = None,
+) -> Response:
+    explorer = service.explorer(
+        **_overview_kwargs(
+            principal=principal,
+            client_id=client_id,
+            period=period,
+            month_start=month_start,
+            day_from=day_from,
+            day_to=day_to,
+            compare=compare,
+            compare_month_start=compare_month_start,
+            compare_from=compare_from,
+            compare_to=compare_to,
+            campaign_id=campaign_id,
+            channel=channel,
+            filter_logic_1=filter_logic_1,
+            filter_logic_1_group=filter_logic_1_group,
+        ),
+        metric=metric or None,
+        dimension=dimension or None,
+        secondary=secondary or None,
+        mode=mode or None,
+        direction=direction or None,
+        sort=sort or None,
+        limit=limit,
+        mover=mover or None,
+        contribution=contribution or None,
+        min_value=min_value or None,
+        min_contribution=min_contribution or None,
+    )
+    filename, body = render_explorer_csv(explorer)
+    return Response(
+        content=body,
+        media_type=EXPORT_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
 
 

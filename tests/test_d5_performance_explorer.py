@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import csv
+import io
 from datetime import date
 from decimal import Decimal
 from pathlib import Path
@@ -16,8 +18,9 @@ from dfip_analytics.explorer import (
 )
 from dfip_analytics.filters import FilterValidationError
 from dfip_analytics.kpis import compute_kpis
-from dfip_analytics.trends import TREND_METRICS_BY_KEY
+from dfip_analytics.trends import TREND_METRICS, TREND_METRICS_BY_KEY
 from dfip_api.errors import PersistenceUnavailableError
+from dfip_api.explorer_export import METRIC_DELTA_HEADERS, WORKSPACE_METADATA_HEADERS
 from dfip_api.publication_store import InMemoryPublicationStore
 
 from test_d1_kpi_overview import CLIENT_B, OCT, OVERVIEW, _kpi_map, _publish
@@ -28,11 +31,30 @@ from test_p5_api import CLIENT_ID
 from test_p9_authz import jwt_app, jwt_headers
 
 EXPLORER = "/api/v1/analytics/explorer"
+EXPLORER_CSV = "/api/v1/analytics/explorer.csv"
 
 
 def _get(store, params=None, *, role: str = "client", client_id: str = CLIENT_ID):
     http, *_rest = jwt_app(publication_store=store)
     return http.get(EXPLORER, headers=jwt_headers(role, client_id), params=params or {})
+
+
+def _csv(store, params=None, *, role: str = "client", client_id: str = CLIENT_ID):
+    http, *_rest = jwt_app(publication_store=store)
+    return http.get(EXPLORER_CSV, headers=jwt_headers(role, client_id), params=params or {})
+
+
+def _parse_csv(text: str) -> tuple[list[str], list[list[str]]]:
+    rows = list(csv.reader(io.StringIO(text)))
+    return rows[0], rows[1:]
+
+
+def _expected_metric_headers() -> list[str]:
+    headers: list[str] = []
+    for spec in TREND_METRICS:
+        headers.append(spec.label)
+        headers.append(METRIC_DELTA_HEADERS[spec.key])
+    return headers
 
 
 def _row(body: dict, key: str) -> dict:
@@ -441,6 +463,138 @@ def test_d5_explorer_presentation_layer() -> None:
     assert "position: sticky" in css
     assert ".explorer-table-wrap" in css
     assert "data-explorer-table-wrap" in section
+    assert 'data-overview-explorer-export="csv"' in section
+    assert "Export CSV" in section
+    assert section.index("data-overview-explorer-export") < section.index("data-overview-explorer-form")
+    assert "data-overview-export" not in section
+
+
+def test_explorer_csv_campaign_ranking_headers_and_order() -> None:
+    store = d2_store()
+    params = {"dimension": "campaign_id", "metric": "total_cost", "mode": "ranking"}
+    json_body = _get(store, params).json()
+    exported = _csv(store, params)
+    assert exported.status_code == 200, exported.text
+    assert "text/csv" in exported.headers["content-type"]
+    assert "dfip-explorer.csv" in exported.headers.get("content-disposition", "")
+    headers, rows = _parse_csv(exported.text)
+    assert headers[0] == "Rank"
+    assert headers[1] == "Campaign"
+    assert "Channel" not in headers
+    for label in _expected_metric_headers():
+        assert label in headers
+    assert headers[-4:] == ["Comparison", "Delta", "Delta %", "Share"]
+    assert not WORKSPACE_METADATA_HEADERS.intersection(headers)
+    assert "section" not in exported.text.splitlines()[0]
+    assert "trend_point" not in exported.text
+    assert "explorer_metric" not in exported.text
+    assert [row[1] for row in rows] == [item["label"] for item in json_body["rows"]]
+    assert [row[0] for row in rows] == [str(item["rank"]) for item in json_body["rows"]]
+    assert rows[0][headers.index("Total Cost")] == json_body["rows"][0]["value"] == "40.0000"
+    assert rows[0][headers.index("Δ Cost")] == json_body["rows"][0]["delta"] == "30.0000"
+    assert rows[0][headers.index("Comparison")] == json_body["rows"][0]["prior_value"] == "10.0000"
+    assert rows[0][headers.index("Delta")] == "30.0000"
+    assert rows[0][headers.index("Delta %")] == json_body["rows"][0]["delta_pct"]
+    assert rows[0][headers.index("Share")] == json_body["rows"][0]["contribution_pct"]
+    assert rows[0][headers.index("Revenue")] == "80.0000"
+
+
+def test_explorer_csv_dimensions_modes_filters_limit_and_empty() -> None:
+    store = d2_store()
+    headers, rows = _parse_csv(_csv(store, {"dimension": "filter_logic_1"}).text)
+    assert headers[1] == "Filter Logic 1"
+    assert [row[1] for row in rows] == [item["label"] for item in _get(store, {"dimension": "filter_logic_1"}).json()["rows"]]
+
+    group_headers, group_rows = _parse_csv(_csv(store, {"dimension": "filter_logic_1_group"}).text)
+    assert group_headers[1] == "Filter Logic 1 group"
+    json_group = _get(store, {"dimension": "filter_logic_1_group"}).json()
+    assert [row[1] for row in group_rows] == [item["label"] for item in json_group["rows"]]
+
+    day_json = _get(store, {"dimension": "day"}).json()
+    day_headers, day_rows = _parse_csv(_csv(store, {"dimension": "day"}).text)
+    assert day_headers[1] == "Day"
+    assert [row[1] for row in day_rows] == [item["label"] for item in day_json["rows"]]
+    if day_json["rows"][0]["prior_value"] is None:
+        assert day_rows[0][day_headers.index("Comparison")] == "n/a"
+        assert day_rows[0][day_headers.index("Delta")] == "n/a"
+        assert day_rows[0][day_headers.index("Delta %")] == "n/a"
+    else:
+        assert day_rows[0][day_headers.index("Comparison")] == day_json["rows"][0]["prior_value"]
+
+    secondary_params = {"dimension": "campaign_id", "secondary": "channel"}
+    secondary_json = _get(store, secondary_params).json()
+    secondary_headers, secondary_rows = _parse_csv(_csv(store, secondary_params).text)
+    assert secondary_headers[1] == "Campaign"
+    assert secondary_headers[2] == "Channel"
+    assert [row[1:3] for row in secondary_rows] == [
+        [item["parent_label"] or item["parent_key"], item["label"]] for item in secondary_json["rows"]
+    ]
+
+    ranking = _parse_csv(_csv(store, {"dimension": "campaign_id", "mode": "ranking"}).text)[1]
+    assert [row[1] for row in ranking] == ["camp-a", "camp-b"]
+    top = _parse_csv(_csv(store, {"dimension": "campaign_id", "mode": "top", "limit": 1}).text)[1]
+    assert [row[1] for row in top] == ["camp-a"]
+    bottom = _parse_csv(_csv(store, {"dimension": "campaign_id", "mode": "bottom", "limit": 1}).text)[1]
+    assert [row[1] for row in bottom] == ["camp-b"]
+    ranked_limit = _parse_csv(
+        _csv(store, {"dimension": "campaign_id", "mode": "ranking", "limit": 1}).text
+    )[1]
+    assert [row[1] for row in ranked_limit] == ["camp-a"]
+
+    up_json = _get(store, {"dimension": "campaign_id", "mode": "movers", "mover": "up"}).json()
+    up_rows = _parse_csv(_csv(store, {"dimension": "campaign_id", "mode": "movers", "mover": "up"}).text)[1]
+    assert [row[1] for row in up_rows] == [item["label"] for item in up_json["rows"]] == ["camp-a", "camp-b"]
+    down_params = {
+        "dimension": "campaign_id",
+        "mode": "movers",
+        "mover": "down",
+        "month_start": "2025-06-01",
+        "compare_month_start": "2025-10-01",
+    }
+    down_json = _get(store, down_params).json()
+    down_headers, down_rows = _parse_csv(_csv(store, down_params).text)
+    assert [row[1] for row in down_rows] == [item["label"] for item in down_json["rows"]]
+    assert down_rows[0][down_headers.index("Delta")].startswith("-")
+
+    june = _parse_csv(_csv(store, {"dimension": "campaign_id", "month_start": "2025-06-01"}).text)[1]
+    june_json = _get(store, {"dimension": "campaign_id", "month_start": "2025-06-01"}).json()
+    assert [row[1] for row in june] == [item["label"] for item in june_json["rows"]]
+    assert june[0][2] == june_json["rows"][0]["value"] == "10.0000"
+
+    filtered_params = {"dimension": "campaign_id", "channel": "SMS", "filter_logic_1": "Group B"}
+    filtered_json = _get(store, filtered_params).json()
+    filtered_rows = _parse_csv(_csv(store, filtered_params).text)[1]
+    assert [row[1] for row in filtered_rows] == [item["label"] for item in filtered_json["rows"]] == ["camp-b"]
+
+    empty = _csv(
+        store,
+        {"dimension": "campaign_id", "period": "range", "day_from": "2025-07-01", "day_to": "2025-07-31"},
+    )
+    assert empty.status_code == 200, empty.text
+    empty_headers, empty_rows = _parse_csv(empty.text)
+    assert empty_headers[0] == "Rank"
+    assert empty_headers[1] == "Campaign"
+    assert "Total Cost" in empty_headers
+    assert empty_rows == []
+    assert not WORKSPACE_METADATA_HEADERS.intersection(empty_headers)
+
+
+def test_explorer_csv_client_isolation() -> None:
+    store = d2_store()
+    http, *_rest = jwt_app(publication_store=store)
+    assert http.get(EXPLORER_CSV).status_code == 401
+    denied = http.get(
+        EXPLORER_CSV,
+        headers=jwt_headers("client", CLIENT_ID),
+        params={"client_id": CLIENT_B, "dimension": "campaign_id"},
+    )
+    assert denied.status_code == 403
+    own = _csv(store, {"dimension": "campaign_id"}, client_id=CLIENT_ID)
+    other = _csv(store, {"dimension": "campaign_id"}, client_id=CLIENT_B)
+    assert own.status_code == 200
+    assert other.status_code == 200
+    assert "999.0000" not in own.text
+    assert "999.0000" in other.text
 
 
 def test_spa_has_explorer_without_anomalies() -> None:
@@ -467,6 +621,8 @@ def test_spa_has_explorer_without_anomalies() -> None:
     assert 'mode === "ranking"' in explorer_section
     assert "explorerParamsFromQuery" in state
     assert "getOverviewExplorer" in app_js
+    assert "downloadExplorerExport" in app_js
+    assert "downloadExplorerExport(explorerParamsFromQuery" in app_js
     assert "withDrill" in views
     assert "data-explorer-drill" in views
     assert "data-overview-insights" in views

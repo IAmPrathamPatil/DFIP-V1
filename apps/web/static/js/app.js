@@ -2898,6 +2898,25 @@ root.addEventListener("click", (event) => {
     });
     return;
   }
+  const explorerExportCsv = event.target.closest("[data-overview-explorer-export]");
+  if (explorerExportCsv) {
+    event.preventDefault();
+    event.stopPropagation();
+    api
+      .downloadExplorerExport(explorerParamsFromQuery(currentLocation().query, publishedParams({})))
+      .then((payload) => {
+        saveBlob(payload.blob, payload.filename || "dfip-explorer.csv");
+        showToast({ tone: "success", title: "Explorer CSV downloaded." });
+      })
+      .catch((error) => {
+        if (isAuthError(error) && error.status === 401) {
+          handleError(error, currentLocation().path);
+          return;
+        }
+        showToast({ tone: "warning", title: "Could not export explorer.", message: error.message || "" });
+      });
+    return;
+  }
   const exportCsv = event.target.closest("[data-overview-export]");
   if (exportCsv) {
     event.preventDefault();

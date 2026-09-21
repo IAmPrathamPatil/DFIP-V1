@@ -397,6 +397,8 @@ def test_d1_d8_dashboard_reports_regression_and_ui_contract() -> None:
     assert "data-overview-trend-kpi" in components
     assert "data-trend-explorer" in views
     assert "data-overview-export" in views
+    assert 'data-overview-explorer-export="csv"' in views
+    assert views.index("data-overview-explorer-export") < views.index("data-overview-export")
     assert "workspace-context" in views
     assert "workspace-chrome" in views
     for key in ("kpi", "insight", "anomaly", "ex_row", "trend_point"):

@@ -2488,14 +2488,17 @@ function selectedQueryValue(query, key, fallback) {
   return value || fallback;
 }
 
-function overviewPanelHead({ title, description, meta }) {
+function overviewPanelHead({ title, description, meta, actions }) {
   return html`
     <summary class="overview-panel-head">
       <span class="overview-panel-copy">
         <span class="overview-kicker">${title}</span>
         ${description ? html`<span class="overview-lede">${description}</span>` : ""}
       </span>
-      ${meta ? html`<span class="muted overview-panel-meta">${meta}</span>` : ""}
+      <span class="overview-panel-head-end">
+        ${meta ? html`<span class="muted overview-panel-meta">${meta}</span>` : ""}
+        ${actions || ""}
+      </span>
     </summary>
   `;
 }
@@ -2899,6 +2902,7 @@ export function overviewExplorerSection({ query, data, explorer, explorerError }
         title: "Performance Explorer",
         description: "Rank dimensions to identify what drives performance.",
         meta: `${metricLabel} · ${dimensionLabel} · ${modeLabel}`,
+        actions: html`<button type="button" class="btn-secondary" data-overview-explorer-export="csv">Export CSV</button>`,
       })}
       <div class="overview-panel-toolbar">
         ${askAboutButton({ source: "explorer", metric: metricKey, dimension, question: "Explain this ranking." })}

@@ -1097,11 +1097,24 @@ button.linkish {
   line-height: 1.35;
 }
 
+.overview-panel-head-end {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.45rem;
+  justify-self: end;
+  min-width: 0;
+}
+
 .overview-panel-meta {
   margin: 0.05rem 0 0;
   justify-self: end;
   text-align: right;
   max-width: 14rem;
+}
+
+.overview-panel-head-end [data-overview-explorer-export] {
+  flex: 0 0 auto;
 }
 
 .overview-panel > summary .muted {
