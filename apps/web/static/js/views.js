@@ -7,6 +7,7 @@ import {
   pageHeader,
   workflowSteps,
   icon,
+  themeSwitcher,
 } from "./components.js";
 import { companyLabel, inspectorClients, isCompanyInactive, operationalClients } from "./roles.js";
 import { overviewHref, parseDrillQuery, stripDrill, withDrill, withExplorerFromTrend, withExplorerSort, withFocus, withTrendMetric } from "./analytics-state.js";
@@ -674,10 +675,12 @@ function catalogErrors(error, uploadResult) {
   `;
 }
 
-export function credentialView({ error, nextPath, setupRequired, setupDone }) {
+export function credentialView({ error, nextPath, setupRequired, setupDone, standalone }) {
+  const theme = standalone ? html`<div class="login-theme">${themeSwitcher()}</div>` : "";
   if (setupRequired) {
     return html`
       <div class="login-shell" id="main">
+        ${theme}
         <section class="login-card">
           <p class="brand">DFIP</p>
           <p class="eyebrow">Initial setup</p>
@@ -710,6 +713,7 @@ export function credentialView({ error, nextPath, setupRequired, setupDone }) {
   }
   return html`
     <div class="login-shell" id="main">
+      ${theme}
       <section class="login-card">
         <p class="brand">DFIP</p>
         <p class="eyebrow">Publisher control center</p>

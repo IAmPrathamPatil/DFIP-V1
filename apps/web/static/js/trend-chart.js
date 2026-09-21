@@ -1,6 +1,16 @@
 import { escapeHtml, html, raw } from "./format.js";
 
-const SERIES_COLORS = ["#4c8dff", "#3dd68c", "#e3b341", "#f07178", "#c4a0ff", "#7ec2ff", "#6aa0ff", "#8b98a8", "#b7c3d2"];
+const SERIES_COLORS = [
+  "var(--chart-1)",
+  "var(--chart-2)",
+  "var(--chart-3)",
+  "var(--chart-4)",
+  "var(--chart-5)",
+  "var(--chart-6)",
+  "var(--chart-7)",
+  "var(--chart-8)",
+  "var(--chart-9)",
+];
 
 function asNumber(value) {
   if (value == null || value === "") return null;

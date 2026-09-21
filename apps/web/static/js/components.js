@@ -1,5 +1,6 @@
 import { canAccessAdmin, companyLabel, inspectorClients, isCompanyInactive, operationalClients } from "./roles.js";
 import { html, raw } from "./format.js";
+import { readStoredTheme } from "./theme.js";
 
 function svg(markup) {
   return html`<svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${raw(markup)}</svg>`;
@@ -106,6 +107,18 @@ function companySwitcher(session) {
   `;
 }
 
+function themeSwitcher() {
+  const current = readStoredTheme();
+  return html`
+    <div class="theme-switch" role="group" aria-label="Color theme">
+      <button type="button" data-theme-set="dark" aria-pressed="${current === "dark" ? "true" : "false"}">Dark</button>
+      <button type="button" data-theme-set="light" aria-pressed="${current === "light" ? "true" : "false"}">Light</button>
+    </div>
+  `;
+}
+
+export { themeSwitcher };
+
 export function layout({ path, session, body }) {
   const role = session ? session.role : "";
   const admin = canAccessAdmin(role);
@@ -187,6 +200,7 @@ export function layout({ path, session, body }) {
             <p class="topbar-heading">${pageTitleFor(path)}</p>
           </div>
           <div class="topbar-meta">
+            ${themeSwitcher()}
             ${envLabel ? html`<span class="env-pill">${envLabel}</span>` : ""}
             ${
               session

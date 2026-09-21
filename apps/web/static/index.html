@@ -4,6 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>DFIP — Publisher Control Center</title>
+    <script>
+      (function () {
+        try {
+          var theme = localStorage.getItem("dfip.theme");
+          if (theme === "light") {
+            document.documentElement.setAttribute("data-theme", "light");
+            document.documentElement.style.colorScheme = "light";
+          } else {
+            document.documentElement.style.colorScheme = "dark";
+          }
+        } catch (error) {
+          document.documentElement.style.colorScheme = "dark";
+        }
+      })();
+    </script>
     <link rel="stylesheet" href="/css/app.css" />
   </head>
   <body>
