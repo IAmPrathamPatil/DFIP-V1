@@ -712,7 +712,7 @@ class OverviewPeriod(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    grain: Literal["month", "range", "all_history"] = "month"
+    grain: Literal["day", "week", "month", "range", "all_history"] = "month"
     month_start: date | None = None
     month_label: str | None = None
     day_min: date | None = None
@@ -725,7 +725,7 @@ class OverviewComparison(BaseModel):
 
     available: bool
     reason: str | None = None
-    grain: Literal["month", "range", "all_history"] | None = None
+    grain: Literal["day", "week", "month", "range", "all_history"] | None = None
     month_start: date | None = None
     month_label: str | None = None
     day_min: date | None = None
@@ -1086,6 +1086,8 @@ class InsightItem(BaseModel):
     explanation: str
     metric: str
     metric_label: str
+    direction: Literal["up", "down", "neutral"] = "neutral"
+    magnitude: str | int | None = None
     kind: Literal["money", "count", "rate", "roas"]
     current_value: str | int | None = None
     prior_value: str | int | None = None
@@ -1133,6 +1135,7 @@ class InsightResponse(BaseModel):
     has_published_history: bool
     period: OverviewPeriod | None = None
     comparison: OverviewComparison
+    grain: Literal["day", "week", "month"] = "month"
     comparison_shown: bool = False
     empty: bool = True
     empty_reason: str | None = None
@@ -1190,6 +1193,7 @@ class AnomalyItem(BaseModel):
     explanation: str
     metric: str
     metric_label: str
+    magnitude: str | int | None = None
     value_kind: Literal["money", "count", "rate", "roas"]
     current_value: str | int | None = None
     baseline_value: str | int | None = None
@@ -1230,7 +1234,7 @@ class AnomalyThresholds(BaseModel):
 class AnomalyBaseline(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    grain: Literal["month"] = "month"
+    grain: Literal["day", "week", "month"] = "month"
     method: str = "median"
     month_starts: list[date] = Field(default_factory=list)
     observation_count: int = 0
@@ -1247,6 +1251,7 @@ class AnomalyResponse(BaseModel):
     has_published_history: bool
     period: OverviewPeriod | None = None
     comparison: OverviewComparison
+    grain: Literal["day", "week", "month"] = "month"
     comparison_shown: bool = False
     empty: bool = True
     empty_reason: str | None = None

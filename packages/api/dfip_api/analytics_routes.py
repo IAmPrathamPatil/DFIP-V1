@@ -13,6 +13,7 @@ from dfip_api.analytics_service import AnalyticsService
 from dfip_api.ask_service import AskService
 from dfip_api.deps import PrincipalDep, get_principal
 from dfip_api.errors import ValidationFailed
+from dfip_api.explorer_export import render_explorer_csv
 from dfip_api.publication_routes import ERROR_RESPONSES
 from dfip_api.saved_analysis import SavedAnalysisService
 from dfip_api.schemas import (
@@ -30,7 +31,6 @@ from dfip_api.schemas import (
     SavedAnalysisUpdate,
     TrendResponse,
 )
-from dfip_api.explorer_export import render_explorer_csv
 from dfip_api.workspace_export import EXPORT_MEDIA_TYPE, render_workspace_csv
 
 analytics_router = APIRouter(
@@ -472,6 +472,7 @@ def get_overview_insights(
     metric: Annotated[str | None, Query()] = None,
     dimension: Annotated[str | None, Query()] = None,
     limit: Annotated[int | None, Query()] = None,
+    grain: Annotated[str | None, Query()] = None,
 ) -> InsightResponse:
     return service.insights(
         **_overview_kwargs(
@@ -493,6 +494,7 @@ def get_overview_insights(
         metric=metric or None,
         dimension=dimension or None,
         limit=limit,
+        grain=grain or None,
     )
 
 
@@ -527,6 +529,7 @@ def get_overview_anomalies(
     metric: Annotated[str | None, Query()] = None,
     dimension: Annotated[str | None, Query()] = None,
     limit: Annotated[int | None, Query()] = None,
+    grain: Annotated[str | None, Query()] = None,
 ) -> AnomalyResponse:
     return service.anomalies(
         **_overview_kwargs(
@@ -548,6 +551,7 @@ def get_overview_anomalies(
         metric=metric or None,
         dimension=dimension or None,
         limit=limit,
+        grain=grain or None,
     )
 
 

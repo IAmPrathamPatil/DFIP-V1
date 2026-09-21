@@ -1,4 +1,4 @@
-import { ANALYTICS_MULTI, ANALYTICS_SINGLE, DRILL_MULTI, DRILL_SINGLE, EXPLORER_KEYS, FOCUS_KEYS, TREND_KEYS, drillParamsFromQuery, drillTrendParamsFromQuery, explorerParamsFromQuery, insightsParamsFromQuery, anomaliesParamsFromQuery, askPayloadFromForm, exportParamsFromQuery, generateTrendAskPayload, generatedTrendSelectionFromAsk, overviewHref, overviewParamsFromQuery, parseDrillQuery, queryFromExplorerForm, queryFromOverviewForm, queryFromTrendForm, queryFromWorkspaceState, sparklineParamsFromQuery, stripDrill, withDrill, withTrendSelection, workspaceStateFromQuery } from "./analytics-state.js";
+import { ANALYTICS_MULTI, ANALYTICS_SINGLE, DRILL_MULTI, DRILL_SINGLE, EXPLORER_KEYS, FINDING_KEYS, FOCUS_KEYS, TREND_KEYS, drillParamsFromQuery, drillTrendParamsFromQuery, explorerParamsFromQuery, insightsParamsFromQuery, anomaliesParamsFromQuery, askPayloadFromForm, exportParamsFromQuery, generateTrendAskPayload, generatedTrendSelectionFromAsk, overviewHref, overviewParamsFromQuery, parseDrillQuery, queryFromExplorerForm, queryFromOverviewForm, queryFromTrendForm, queryFromWorkspaceState, sparklineParamsFromQuery, stripDrill, withDrill, withTrendSelection, workspaceStateFromQuery } from "./analytics-state.js";
 import { contextualTrendFromSparkline } from "./sparkline.js";
 import { DfipApiClient, ApiError } from "./api-client.js";
 import { clearToken, getStoredToken, storeToken } from "./auth.js";
@@ -1400,6 +1400,7 @@ async function refreshOverviewInPlace(query, { force = [] } = {}) {
   const forced = new Set(force);
   const filterChanged = queryKeysChanged(previousQuery, query, [...ANALYTICS_SINGLE, ...ANALYTICS_MULTI]);
   const trendChanged = queryKeysChanged(previousQuery, query, TREND_KEYS);
+  const findingChanged = queryKeysChanged(previousQuery, query, FINDING_KEYS);
   const explorerChanged = queryKeysChanged(previousQuery, query, EXPLORER_KEYS);
   const drillChanged = queryKeysChanged(previousQuery, query, [...DRILL_SINGLE, ...DRILL_MULTI]);
   const focusChanged = queryKeysChanged(previousQuery, query, FOCUS_KEYS);
@@ -1417,8 +1418,8 @@ async function refreshOverviewInPlace(query, { force = [] } = {}) {
   const needSparklines = forced.has("sparklines") || forced.has("all") || filterChanged;
   const needTrends = forced.has("trends") || forced.has("all") || filterChanged || trendChanged;
   const needExplorer = forced.has("explorer") || forced.has("all") || filterChanged || explorerChanged;
-  const needInsights = forced.has("insights") || forced.has("all") || filterChanged;
-  const needAnomalies = forced.has("anomalies") || forced.has("all") || filterChanged;
+  const needInsights = forced.has("insights") || forced.has("all") || filterChanged || findingChanged;
+  const needAnomalies = forced.has("anomalies") || forced.has("all") || filterChanged || findingChanged;
   const needDrill = Boolean(drillQuery) && (forced.has("drill") || forced.has("all") || drillChanged || filterChanged);
   const closeDrill = !drillQuery && (drillChanged || forced.has("drill"));
   const needSaved = overviewSavedDirty || identical || (savedChanged && Boolean(query.get("saved")) && !root.querySelector(`[data-saved-id="${query.get("saved")}"]`));
@@ -3306,6 +3307,15 @@ root.addEventListener("change", (event) => {
   if (trendAuto) {
     const form = trendAuto.closest("[data-overview-trend-form]");
     if (form instanceof HTMLFormElement) form.requestSubmit();
+    return;
+  }
+  const findingGrain = event.target.closest("[data-finding-grain]");
+  if (findingGrain) {
+    const query = new URLSearchParams(window.location.search);
+    const value = String(findingGrain.value || "month");
+    if (value === "month") query.delete("finding_grain");
+    else query.set("finding_grain", value);
+    navigate(overviewHref(query));
     return;
   }
   const drillAuto = event.target.closest("[data-overview-drill-autosubmit]");

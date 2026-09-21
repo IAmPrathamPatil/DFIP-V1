@@ -14,6 +14,7 @@ export const ANALYTICS_SINGLE = [
 export const ANALYTICS_MULTI = ["campaign_id", "channel", "filter_logic_1", "filter_logic_1_group"];
 
 export const TREND_KEYS = ["trend_metric", "trend_secondary", "trend_grain", "trend_breakdown"];
+export const FINDING_KEYS = ["finding_grain"];
 
 export const TREND_API_KEYS = {
   trend_metric: "metric",
@@ -68,6 +69,7 @@ export const KPI_TO_TREND_METRIC = {
 export const WORKSPACE_SINGLE = [
   ...ANALYTICS_SINGLE,
   ...TREND_KEYS,
+  ...FINDING_KEYS,
   ...DRILL_SINGLE,
   ...EXPLORER_KEYS,
   ...FOCUS_KEYS,
@@ -246,6 +248,7 @@ export function queryFromOverviewForm(form) {
   copyMulti(data, ANALYTICS_MULTI, query);
   const existing = currentSearch();
   copyKeys(existing, TREND_KEYS, query);
+  copyKeys(existing, FINDING_KEYS, query);
   copyKeys(existing, DRILL_SINGLE, query);
   copyMulti(existing, DRILL_MULTI, query);
   copyKeys(existing, EXPLORER_KEYS, query);
@@ -258,6 +261,7 @@ export function queryFromTrendForm(form, currentQuery) {
   const query = new URLSearchParams();
   copyKeys(source, ANALYTICS_SINGLE, query);
   copyMulti(source, ANALYTICS_MULTI, query);
+  copyKeys(source, FINDING_KEYS, query);
   copyKeys(source, DRILL_SINGLE, query);
   copyMulti(source, DRILL_MULTI, query);
   copyKeys(source, EXPLORER_KEYS, query);
@@ -284,11 +288,15 @@ export function explorerParamsFromQuery(query, scoped) {
 }
 
 export function insightsParamsFromQuery(query, scoped) {
-  return filterParamsFromQuery(query, scoped);
+  const next = filterParamsFromQuery(query, scoped);
+  next.grain = query.get("finding_grain") || "month";
+  return next;
 }
 
 export function anomaliesParamsFromQuery(query, scoped) {
-  return filterParamsFromQuery(query, scoped);
+  const next = filterParamsFromQuery(query, scoped);
+  next.grain = query.get("finding_grain") || "month";
+  return next;
 }
 
 export function askFiltersFromQuery(query) {
@@ -373,6 +381,7 @@ export function queryFromExplorerForm(form, currentQuery) {
   copyKeys(source, ANALYTICS_SINGLE, query);
   copyMulti(source, ANALYTICS_MULTI, query);
   copyKeys(source, TREND_KEYS, query);
+  copyKeys(source, FINDING_KEYS, query);
   copyKeys(source, DRILL_SINGLE, query);
   copyMulti(source, DRILL_MULTI, query);
   copyKeys(source, FOCUS_KEYS, query);

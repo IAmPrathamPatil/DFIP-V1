@@ -6,22 +6,39 @@ by D1 cards and D3 trends. Does not scan the working set.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
-from datetime import date
+from datetime import date, timedelta
 from decimal import Decimal
 
-from dfip_analytics.divide import RATE_SCALE, as_decimal, safe_divide, safe_subtract
-from dfip_analytics.filters import (
-    DimensionFilters,
-    FilterValidationError,
-    PeriodWindow,
-    add_calendar_month,
-    drop_unknown,
-    normalize_multi,
-    resolve_comparison,
-    resolve_period,
+from dfip_analytics.anomalies import (
+    ANOMALY_KINDS,
+    MIN_BASELINE_MONTHS,
+    REASON_NO_ANOMALIES,
+    REASON_PERIOD_NOT_MONTH,
+    SERIES_GROUP_LIMIT,
+    AnomalyDraft,
+    GroupMonth,
+    MonthObservation,
+    build_anomalies,
+    parse_anomaly_dimension,
+    parse_anomaly_limit,
+    parse_anomaly_metric,
+    select_baseline_months,
 )
-from dfip_analytics.kpis import ADDITIVE_MEASURES, INTEGER_MEASURES, compute_kpis
+from dfip_analytics.anomalies import (
+    REASON_EMPTY_PERIOD as ANOMALY_EMPTY_PERIOD,
+)
+from dfip_analytics.anomalies import (
+    REASON_INSUFFICIENT_HISTORY as ANOMALY_INSUFFICIENT_HISTORY,
+)
+from dfip_analytics.anomalies import (
+    REASON_NO_HISTORY as ANOMALY_NO_HISTORY,
+)
+from dfip_analytics.anomalies import (
+    threshold_catalog as anomaly_threshold_catalog,
+)
+from dfip_analytics.divide import RATE_SCALE, as_decimal, safe_divide, safe_subtract
 from dfip_analytics.drill import (
     DRILL_DIMENSIONS,
     MAX_DRILL_DEPTH,
@@ -52,24 +69,16 @@ from dfip_analytics.explorer import (
     parse_threshold,
     validate_explorer_selection,
 )
-from dfip_analytics.anomalies import (
-    ANOMALY_KINDS,
-    GroupMonth,
-    MIN_BASELINE_MONTHS,
-    MonthObservation,
-    REASON_EMPTY_PERIOD as ANOMALY_EMPTY_PERIOD,
-    REASON_INSUFFICIENT_HISTORY as ANOMALY_INSUFFICIENT_HISTORY,
-    REASON_NO_ANOMALIES,
-    REASON_NO_HISTORY as ANOMALY_NO_HISTORY,
-    REASON_PERIOD_NOT_MONTH,
-    SERIES_GROUP_LIMIT,
-    AnomalyDraft,
-    build_anomalies,
-    parse_anomaly_dimension,
-    parse_anomaly_limit,
-    parse_anomaly_metric,
-    select_baseline_months,
-    threshold_catalog as anomaly_threshold_catalog,
+from dfip_analytics.filters import (
+    REASON_NO_COMPARABLE_RANGE,
+    DimensionFilters,
+    FilterValidationError,
+    PeriodWindow,
+    add_calendar_month,
+    drop_unknown,
+    normalize_multi,
+    resolve_comparison,
+    resolve_period,
 )
 from dfip_analytics.insights import (
     DEFAULT_DRIVER_DIMENSIONS,
@@ -91,6 +100,7 @@ from dfip_analytics.insights import (
     parse_insight_metric,
     threshold_catalog,
 )
+from dfip_analytics.kpis import ADDITIVE_MEASURES, INTEGER_MEASURES, compute_kpis
 from dfip_analytics.overview import HERO_KPIS, REASON_NO_HISTORY
 from dfip_analytics.trends import (
     MAX_BREAKDOWN_SERIES,
@@ -114,25 +124,19 @@ from dfip_analytics.trends import (
     validate_trend_selection,
 )
 from dfip_core.transform.derive import month_label
+from dfip_core.transform.derive import month_start as month_of
 
 from dfip_api.auth import Principal
 from dfip_api.errors import AuthorizationError, ValidationFailed
 from dfip_api.lifecycle import require_company_active
 from dfip_api.publication_service import _resolve_client_id
 from dfip_api.schemas import (
-    OverviewAppliedState,
-    OverviewComparison,
-    OverviewFilterOption,
-    OverviewFilterOptions,
-    OverviewKpiCard,
-    OverviewKpiResponse,
-    OverviewMonthOption,
-    OverviewPeriod,
-    TrendMetricInfo,
-    TrendPoint,
-    TrendResponse,
-    TrendSelection,
-    TrendSeries,
+    AnomalyBaseline,
+    AnomalyDriver,
+    AnomalyEvidence,
+    AnomalyItem,
+    AnomalyResponse,
+    AnomalyThresholds,
     DrilldownResponse,
     DrillParentItem,
     DrillRow,
@@ -146,12 +150,19 @@ from dfip_api.schemas import (
     InsightItem,
     InsightResponse,
     InsightThresholds,
-    AnomalyBaseline,
-    AnomalyDriver,
-    AnomalyEvidence,
-    AnomalyItem,
-    AnomalyResponse,
-    AnomalyThresholds,
+    OverviewAppliedState,
+    OverviewComparison,
+    OverviewFilterOption,
+    OverviewFilterOptions,
+    OverviewKpiCard,
+    OverviewKpiResponse,
+    OverviewMonthOption,
+    OverviewPeriod,
+    TrendMetricInfo,
+    TrendPoint,
+    TrendResponse,
+    TrendSelection,
+    TrendSeries,
 )
 from dfip_api.service import decimal_to_api
 
@@ -209,6 +220,13 @@ def _delta_pct(current: object, prior: object) -> str | None:
     return decimal_to_api(safe_divide(change, prior, scale=RATE_SCALE))
 
 
+def _magnitude(kind: str, current: object, prior: object) -> str | int | None:
+    delta = safe_subtract(current, prior)
+    if delta is None:
+        return None
+    return _serialize(kind, abs(delta))
+
+
 def _operand(measures: dict, name: str | None) -> str | int | None:
     if not name:
         return None
@@ -249,6 +267,59 @@ def _window_comparison(
         day_max=day_max,
         grain_row_count=count,
     )
+
+
+def _bucket_period(window: PeriodWindow, bucket: date, grain: str, count: int) -> OverviewPeriod:
+    buckets = iter_buckets(window.day_from, window.day_to_exclusive, grain)
+    index = buckets.index(bucket)
+    next_bucket = buckets[index + 1] if index + 1 < len(buckets) else window.day_to_exclusive
+    return OverviewPeriod(
+        grain=grain,  # type: ignore[arg-type]
+        month_start=window.month_start,
+        month_label=bucket_label(bucket, grain),
+        day_min=max(bucket, window.day_from),
+        day_max=min(next_bucket - timedelta(days=1), window.inclusive_to),
+        grain_row_count=count,
+    )
+
+
+def _bucket_comparison(
+    window: PeriodWindow | None, bucket: date, grain: str, count: int
+) -> OverviewComparison:
+    if window is None:
+        return OverviewComparison(available=False, reason=REASON_INSUFFICIENT_COMPARISON)
+    bucket_end = bucket + timedelta(days=6 if grain == "week" else 0)
+    if bucket_end < window.day_from or bucket >= window.day_to_exclusive:
+        return OverviewComparison(available=False, reason=REASON_NO_COMPARABLE_RANGE)
+    period = _bucket_period(window, bucket, grain, count)
+    return OverviewComparison(
+        available=True,
+        grain=grain,  # type: ignore[arg-type]
+        month_start=window.month_start,
+        month_label=period.month_label or "",
+        day_min=period.day_min,
+        day_max=period.day_max,
+        grain_row_count=count,
+    )
+
+
+def _bucket_rows(
+    rows: list[tuple[date, str | None, str | None, dict[str, object], int]],
+) -> dict[tuple[date, str | None], tuple[str | None, dict[str, object], int]]:
+    return {(bucket, key): (label, measures, count) for bucket, key, label, measures, count in rows}
+
+
+def _bucket_slots(window: PeriodWindow, grain: str) -> dict[int, tuple[str, date]]:
+    """Map a bounded series to stable relative slots and ISO-labelled identities."""
+    buckets = iter_buckets(window.day_from, window.day_to_exclusive, grain)
+    if not buckets:
+        return {}
+    anchor = buckets[0]
+    step = 7 if grain == "week" else 1
+    return {
+        (bucket - anchor).days // step: (bucket_label(bucket, grain), bucket)
+        for bucket in buckets
+    }
 
 
 def _metric_info(spec: TrendMetricSpec) -> TrendMetricInfo:
@@ -300,6 +371,14 @@ def _serialize_insight(
         explanation=draft.explanation,
         metric=spec.key,
         metric_label=spec.label,
+        direction=(
+            "up"
+            if draft.snapshot.delta is not None and draft.snapshot.delta > 0
+            else "down"
+            if draft.snapshot.delta is not None and draft.snapshot.delta < 0
+            else "neutral"
+        ),
+        magnitude=_magnitude(kind, draft.snapshot.current, draft.snapshot.prior),
         kind=kind,  # type: ignore[arg-type]
         current_value=_serialize(kind, draft.snapshot.current),
         prior_value=_serialize(kind, draft.snapshot.prior),
@@ -350,6 +429,13 @@ def _serialize_anomaly(
 ) -> AnomalyItem:
     spec = draft.metric
     kind = spec.kind
+    headline = draft.headline
+    explanation = draft.explanation
+    if period.grain == "week":
+        headline = re.sub(r"in \d{4}-\d{2}", f"in {period.month_label}", headline, count=1)
+        explanation = re.sub(
+            r"in \d{4}-\d{2}", f"in {period.month_label}", explanation, count=1
+        )
     drivers: list[AnomalyDriver] = []
     for item in draft.drivers:
         dim = DRIVER_DIMENSIONS_BY_KEY[item.dimension]
@@ -376,10 +462,11 @@ def _serialize_anomaly(
         anomaly_id=draft.anomaly_id,
         kind=draft.kind,
         direction=draft.direction,
-        headline=draft.headline,
-        explanation=draft.explanation,
+        headline=headline,
+        explanation=explanation,
         metric=spec.key,
         metric_label=spec.label,
+        magnitude=_magnitude(kind, draft.current, draft.baseline),
         value_kind=kind,  # type: ignore[arg-type]
         current_value=_serialize(kind, draft.current),
         baseline_value=_serialize(kind, draft.baseline),
@@ -1165,6 +1252,7 @@ class AnalyticsService:
         metric: str | None = None,
         dimension: str | None = None,
         limit: int | str | None = None,
+        grain: str | None = None,
     ) -> InsightResponse:
         scope = self._resolve_scope(
             principal=principal,
@@ -1195,6 +1283,7 @@ class AnalyticsService:
             metric_spec = parse_insight_metric(metric)
             dimension_spec = parse_insight_dimension(dimension)
             limit_n = parse_insight_limit(limit)
+            grain_key = parse_trend_grain(grain or "month")
         except FilterValidationError as exc:
             raise ValidationFailed(str(exc)) from exc
         metrics = (metric_spec,) if metric_spec is not None else TREND_METRICS
@@ -1217,6 +1306,18 @@ class AnalyticsService:
         )
         if not scope.has_history or scope.window is None:
             return empty
+        if grain_key != "month":
+            return self._granular_insights(
+                scope=scope,
+                grain=grain_key,
+                metrics=metrics,
+                driver_keys=driver_keys,
+                limit=limit_n,
+                thresholds=thresholds,
+                catalog_metrics=catalog_metrics,
+                catalog_dimensions=catalog_dimensions,
+                catalog_categories=catalog_categories,
+            )
         if scope.comparison_window is None:
             reason = (
                 REASON_INSUFFICIENT_COMPARISON
@@ -1339,6 +1440,7 @@ class AnalyticsService:
         metric: str | None = None,
         dimension: str | None = None,
         limit: int | str | None = None,
+        grain: str | None = None,
     ) -> AnomalyResponse:
         scope = self._resolve_scope(
             principal=principal,
@@ -1368,6 +1470,7 @@ class AnalyticsService:
             metric_spec = parse_anomaly_metric(metric)
             dimension_spec = parse_anomaly_dimension(dimension)
             limit_n = parse_anomaly_limit(limit)
+            grain_key = parse_trend_grain(grain or "month")
         except FilterValidationError as exc:
             raise ValidationFailed(str(exc)) from exc
         metrics = (metric_spec,) if metric_spec is not None else TREND_METRICS
@@ -1398,6 +1501,18 @@ class AnalyticsService:
         )
         if not scope.has_history or scope.window is None:
             return empty
+        if grain_key != "month":
+            return self._granular_anomalies(
+                scope=scope,
+                grain=grain_key,
+                metrics=metrics,
+                driver_keys=driver_keys,
+                limit=limit_n,
+                thresholds=thresholds,
+                catalog_metrics=catalog_metrics,
+                catalog_dimensions=catalog_dimensions,
+                catalog_kinds=catalog_kinds,
+            )
         current_month = scope.window.month_start
         if scope.window.grain != "month" or current_month is None:
             current_measures, current_count, day_min, day_max = self._sum(
@@ -1527,6 +1642,346 @@ class AnalyticsService:
             result_count=len(items),
             anomalies=items,
             baseline=baseline_meta.model_copy(update={"observation_count": len(baseline_obs)}),
+            applied=scope.applied,
+            dropped_filters=scope.dropped,
+            thresholds=thresholds,
+            metrics=catalog_metrics,
+            dimensions=catalog_dimensions,
+            kinds=catalog_kinds,
+        )
+
+    def _granular_insights(
+        self,
+        *,
+        scope: _AnalyticsScope,
+        grain: str,
+        metrics: tuple[TrendMetricSpec, ...],
+        driver_keys: tuple[str, ...],
+        limit: int,
+        thresholds: InsightThresholds,
+        catalog_metrics: list[TrendMetricInfo],
+        catalog_dimensions: list[OverviewFilterOption],
+        catalog_categories: list[OverviewFilterOption],
+    ) -> InsightResponse:
+        assert scope.window is not None
+        current_rows, _ = self._history_series(
+            scope.client_id, scope.window, scope.filters, grain
+        )
+        current_total = _bucket_rows(current_rows)
+        current_slots = _bucket_slots(scope.window, grain)
+        current_count, current_min, current_max = self._sum(
+            scope.client_id, scope.window, scope.filters
+        )[1:]
+        if scope.comparison_window is None:
+            return InsightResponse(
+                client_id=scope.client_id,
+                company_name=scope.company_name,
+                has_published_history=True,
+                period=_window_period(scope.window, current_count, current_min, current_max),
+                comparison=_window_comparison(
+                    None, available=False, reason=scope.comparison_reason
+                ),
+                grain=grain,  # type: ignore[arg-type]
+                empty=True,
+                empty_reason=(
+                    REASON_INSUFFICIENT_COMPARISON
+                    if scope.comparison_reason == "comparison_disabled"
+                    else REASON_INSUFFICIENT_HISTORY
+                ),
+                applied=scope.applied,
+                dropped_filters=scope.dropped,
+                thresholds=thresholds,
+                metrics=catalog_metrics,
+                dimensions=catalog_dimensions,
+                categories=catalog_categories,
+            )
+
+        comparison_rows, _ = self._history_series(
+            scope.client_id, scope.comparison_window, scope.filters, grain
+        )
+        comparison_total = _bucket_rows(comparison_rows)
+        comparison_slots = _bucket_slots(scope.comparison_window, grain)
+        current_groups = {
+            key: _bucket_rows(
+                self._history_series(
+                    scope.client_id, scope.window, scope.filters, grain, breakdown=key
+                )[0]
+            )
+            for key in driver_keys
+        }
+        comparison_groups = {
+            key: _bucket_rows(
+                self._history_series(
+                    scope.client_id,
+                    scope.comparison_window,
+                    scope.filters,
+                    grain,
+                    breakdown=key,
+                )[0]
+            )
+            for key in driver_keys
+        }
+        items: list[InsightItem] = []
+        for slot, (_current_identity, bucket) in current_slots.items():
+            current_payload = current_total.get((bucket, None))
+            comparison_ref = comparison_slots.get(slot)
+            if current_payload is None or comparison_ref is None:
+                continue
+            _comparison_identity, comparison_bucket = comparison_ref
+            prior_payload = comparison_total.get((comparison_bucket, None))
+            if prior_payload is None:
+                continue
+            current_measures, current_rows_count = current_payload[1], current_payload[2]
+            prior_measures, prior_rows_count = prior_payload[1], prior_payload[2]
+            grouped = {}
+            for key in driver_keys:
+                current_groups_for_bucket = [
+                    (group_key, label or group_key or "(blank)", measures, count)
+                    for (row_bucket, group_key), (label, measures, count) in current_groups[
+                        key
+                    ].items()
+                    if row_bucket == bucket and group_key is not None
+                ]
+                prior_groups_for_bucket = [
+                    (group_key, label or group_key or "(blank)", measures, count)
+                    for (row_bucket, group_key), (label, measures, count) in comparison_groups[
+                        key
+                    ].items()
+                    if row_bucket == comparison_bucket and group_key is not None
+                ]
+                grouped[key] = (current_groups_for_bucket, prior_groups_for_bucket)
+            drafts = build_insights(
+                current_measures=current_measures,
+                prior_measures=prior_measures,
+                current_count=current_rows_count,
+                prior_count=prior_rows_count,
+                grouped=grouped,
+                metrics=metrics,
+                limit=limit,
+            )
+            period = _bucket_period(scope.window, bucket, grain, current_rows_count)
+            comparison = _bucket_comparison(
+                scope.comparison_window, comparison_bucket, grain, prior_rows_count
+            )
+            for draft in drafts:
+                draft.insight_id = f"{draft.insight_id}:{bucket.isoformat()}"
+                items.append(
+                    _serialize_insight(
+                        draft,
+                        index=len(items) + 1,
+                        period=period,
+                        comparison=comparison,
+                    )
+                )
+                if len(items) >= limit:
+                    break
+            if len(items) >= limit:
+                break
+        return InsightResponse(
+            client_id=scope.client_id,
+            company_name=scope.company_name,
+            has_published_history=True,
+            period=_window_period(scope.window, current_count, current_min, current_max),
+            comparison=_window_comparison(
+                scope.comparison_window,
+                available=True,
+                reason=None,
+            ),
+            grain=grain,  # type: ignore[arg-type]
+            comparison_shown=True,
+            empty=not items,
+            empty_reason=REASON_NO_MATERIAL if not items else None,
+            result_count=len(items),
+            insights=items,
+            applied=scope.applied,
+            dropped_filters=scope.dropped,
+            thresholds=thresholds,
+            metrics=catalog_metrics,
+            dimensions=catalog_dimensions,
+            categories=catalog_categories,
+        )
+
+    def _granular_anomalies(
+        self,
+        *,
+        scope: _AnalyticsScope,
+        grain: str,
+        metrics: tuple[TrendMetricSpec, ...],
+        driver_keys: tuple[str, ...],
+        limit: int,
+        thresholds: AnomalyThresholds,
+        catalog_metrics: list[TrendMetricInfo],
+        catalog_dimensions: list[OverviewFilterOption],
+        catalog_kinds: list[OverviewFilterOption],
+    ) -> AnomalyResponse:
+        assert scope.window is not None
+        current_month = scope.window.month_start or month_of(scope.window.day_from)
+        prior_months = select_baseline_months(scope.months, current_month)
+        baseline = AnomalyBaseline(
+            grain=grain,  # type: ignore[arg-type]
+            month_starts=prior_months,
+            observation_count=len(prior_months),
+            required_count=MIN_BASELINE_MONTHS,
+        )
+        current_rows, _ = self._history_series(
+            scope.client_id, scope.window, scope.filters, grain
+        )
+        current_total = _bucket_rows(current_rows)
+        current_slots = _bucket_slots(scope.window, grain)
+        current_count, current_min, current_max = self._sum(
+            scope.client_id, scope.window, scope.filters
+        )[1:]
+        comparison = (
+            _window_comparison(scope.comparison_window, available=True, reason=None)
+            if scope.comparison_window is not None
+            else _window_comparison(None, available=False, reason=scope.comparison_reason)
+        )
+        if len(prior_months) < MIN_BASELINE_MONTHS:
+            return AnomalyResponse(
+                client_id=scope.client_id,
+                company_name=scope.company_name,
+                has_published_history=True,
+                period=_window_period(scope.window, current_count, current_min, current_max),
+                comparison=comparison,
+                grain=grain,  # type: ignore[arg-type]
+                empty=True,
+                empty_reason=ANOMALY_INSUFFICIENT_HISTORY,
+                baseline=baseline,
+                applied=scope.applied,
+                dropped_filters=scope.dropped,
+                thresholds=thresholds,
+                metrics=catalog_metrics,
+                dimensions=catalog_dimensions,
+                kinds=catalog_kinds,
+            )
+
+        month_windows = {
+            month: PeriodWindow(
+                grain="month",
+                day_from=month,
+                day_to_exclusive=add_calendar_month(month),
+                month_start=month,
+                month_label=month_label(month),
+            )
+            for month in prior_months
+        }
+        historical_total = {
+            month: _bucket_rows(
+                self._history_series(
+                    scope.client_id, month_windows[month], scope.filters, grain
+                )[0]
+            )
+            for month in prior_months
+        }
+        historical_groups = {
+            key: {
+                month: _bucket_rows(
+                    self._history_series(
+                        scope.client_id,
+                        month_windows[month],
+                        scope.filters,
+                        grain,
+                        breakdown=key,
+                        limit_series=SERIES_GROUP_LIMIT,
+                    )[0]
+                )
+                for month in prior_months
+            }
+            for key in driver_keys
+        }
+        current_groups = {
+            key: _bucket_rows(
+                self._history_series(
+                    scope.client_id, scope.window, scope.filters, grain, breakdown=key,
+                    limit_series=SERIES_GROUP_LIMIT,
+                )[0]
+            )
+            for key in driver_keys
+        }
+        items: list[AnomalyItem] = []
+        for slot, (_current_identity, bucket) in current_slots.items():
+            current_payload = current_total.get((bucket, None))
+            if current_payload is None:
+                continue
+            baseline_observations = []
+            grouped = {key: [] for key in driver_keys}
+            for month in prior_months:
+                prior_ref = _bucket_slots(month_windows[month], grain).get(slot)
+                if prior_ref is None:
+                    continue
+                _prior_identity, prior_bucket = prior_ref
+                prior_payload = historical_total[month].get((prior_bucket, None))
+                if prior_payload is None:
+                    continue
+                grouped_payload = MonthObservation(
+                    month,
+                    prior_payload[1],
+                    prior_payload[2],
+                )
+                baseline_observations.append(grouped_payload)
+                for key in driver_keys:
+                    for (row_bucket, group_key), (label, measures, count) in historical_groups[
+                        key
+                    ][month].items():
+                        if row_bucket == prior_bucket and group_key is not None:
+                            grouped[key].append(
+                                GroupMonth(
+                                    key=group_key,
+                                    label=label or group_key or "(blank)",
+                                    month_start=month,
+                                    measures=measures,
+                                    count=count,
+                                )
+                            )
+            for key in driver_keys:
+                for (row_bucket, group_key), (label, measures, count) in current_groups[
+                    key
+                ].items():
+                    if row_bucket == bucket and group_key is not None:
+                        grouped[key].append(
+                            GroupMonth(
+                                key=group_key,
+                                label=label or group_key or "(blank)",
+                                month_start=bucket,
+                                measures=measures,
+                                count=count,
+                            )
+                        )
+            if len(baseline_observations) < MIN_BASELINE_MONTHS:
+                continue
+            current_observation = MonthObservation(
+                bucket, current_payload[1], current_payload[2]
+            )
+            drafts = build_anomalies(
+                current=current_observation,
+                baseline=baseline_observations,
+                grouped=grouped,
+                metrics=metrics,
+                limit=limit,
+            )
+            period = _bucket_period(scope.window, bucket, grain, current_payload[2])
+            for draft in drafts:
+                draft.anomaly_id = f"{draft.anomaly_id}:{bucket.isoformat()}"
+                items.append(
+                    _serialize_anomaly(draft, index=len(items) + 1, period=period)
+                )
+                if len(items) >= limit:
+                    break
+            if len(items) >= limit:
+                break
+        return AnomalyResponse(
+            client_id=scope.client_id,
+            company_name=scope.company_name,
+            has_published_history=True,
+            period=_window_period(scope.window, current_count, current_min, current_max),
+            comparison=comparison,
+            grain=grain,  # type: ignore[arg-type]
+            comparison_shown=comparison.available,
+            empty=not items,
+            empty_reason=REASON_NO_ANOMALIES if not items else None,
+            result_count=len(items),
+            anomalies=items,
+            baseline=baseline.model_copy(update={"observation_count": len(prior_months)}),
             applied=scope.applied,
             dropped_filters=scope.dropped,
             thresholds=thresholds,

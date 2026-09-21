@@ -2503,6 +2503,20 @@ function overviewPanelHead({ title, description, meta, actions }) {
   `;
 }
 
+function findingGrainSelector(query) {
+  const selected = selectedQueryValue(query, "finding_grain", "month");
+  return html`
+    <label class="finding-grain-control">
+      <span class="sr-only">Finding time grain</span>
+      <select data-finding-grain aria-label="Finding time grain">
+        ${["day", "week", "month"].map(
+          (grain) => html`<option value="${grain}"${grain === selected ? " selected" : ""}>${grain[0].toUpperCase()}${grain.slice(1)}</option>`,
+        )}
+      </select>
+    </label>
+  `;
+}
+
 function overviewEmpty({ message, actionHref, actionLabel, attr, reason }) {
   return html`
     <div class="overview-empty"${attr ? raw(` ${attr}`) : ""}>
@@ -3120,8 +3134,8 @@ export function overviewInsightsSection({ query, data, insights, insightsError }
                 <h3>${item.headline}</h3>
                 <dl class="finding-context" data-insight-context="true">
                   ${metricLabel ? html`<div><dt>Metric</dt><dd>${metricLabel}</dd></div>` : ""}
-                  <div><dt>Period</dt><dd>${periodLabel}</dd></div>
-                  <div><dt>Compared with</dt><dd>${compareLabel}</dd></div>
+                  <div><dt>Period</dt><dd>${(item.period && item.period.month_label) || periodLabel}</dd></div>
+                  <div><dt>Compared with</dt><dd>${(item.comparison && item.comparison.month_label) || compareLabel}</dd></div>
                 </dl>
                 ${
                   top
@@ -3162,6 +3176,7 @@ export function overviewInsightsSection({ query, data, insights, insightsError }
         title: "Key Insights",
         description: "Evidence-backed changes and drivers.",
         meta: insightSummary,
+        actions: findingGrainSelector(query),
       })}
       ${body}
     </details>
@@ -3268,7 +3283,7 @@ export function overviewAnomaliesSection({ query, data, anomalies, anomaliesErro
                 <h3>${item.headline}</h3>
                 <dl class="finding-context" data-anomaly-context="true">
                   ${metricLabel ? html`<div><dt>Metric</dt><dd>${metricLabel}</dd></div>` : ""}
-                  <div><dt>Period</dt><dd>${periodLabel}</dd></div>
+                  <div><dt>Period</dt><dd>${(item.period && item.period.month_label) || periodLabel}</dd></div>
                   ${affected ? html`<div><dt>Affected</dt><dd>${affected}</dd></div>` : ""}
                 </dl>
                 <p class="insight-explanation">${item.explanation}</p>
@@ -3305,6 +3320,7 @@ export function overviewAnomaliesSection({ query, data, anomalies, anomaliesErro
         title: "Anomalies",
         description: "Unusual behavior against historical baseline.",
         meta: anomalySummary,
+        actions: findingGrainSelector(query),
       })}
       ${baselineMonths ? html`<p class="muted overview-chart-caption">Baseline: ${baselineMonths}.</p>` : ""}
       ${body}
