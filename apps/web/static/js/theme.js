@@ -35,3 +35,12 @@ export function applyTheme(theme, options) {
 export function bootTheme() {
   return applyTheme(readStoredTheme(), { persist: false });
 }
+
+document.addEventListener("click", (event) => {
+  const themeSet = event.target.closest("[data-theme-set]");
+  if (!themeSet) return;
+  event.preventDefault();
+  applyTheme(themeSet.getAttribute("data-theme-set"));
+});
+
+bootTheme();

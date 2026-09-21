@@ -68,16 +68,17 @@ def test_theme_boot_defaults_dark_and_persists_dfip_theme() -> None:
     assert "THEME_DARK" in theme
     assert 'localStorage.getItem(THEME_KEY) === THEME_LIGHT' in theme
     assert "removeAttribute" in theme
+    assert 'closest("[data-theme-set]")' in theme
+    assert "addEventListener(\"click\"" in theme
+    assert "bootTheme()" in theme
+    assert 'from "./theme.js"' not in app
+    assert 'closest("[data-theme-set]")' not in app
     assert 'data-theme-set="dark"' in components
     assert 'data-theme-set="light"' in components
     assert "themeSwitcher()" in components
-    assert 'from "./theme.js"' in app
     views = _js("views.js")
     assert "themeSwitcher()" in views
     assert "standalone" in views
-    assert 'closest("[data-theme-set]")' in app
-    assert "bootTheme()" in app
-    assert "applyTheme(" in app
 
 
 def test_charts_and_explorer_follow_theme_tokens() -> None:
