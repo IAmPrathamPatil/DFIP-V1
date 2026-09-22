@@ -118,6 +118,11 @@ export function overviewHref(query) {
   return encoded ? `/client/overview?${encoded}` : "/client/overview";
 }
 
+export function studioHref(query) {
+  const encoded = query instanceof URLSearchParams ? query.toString() : "";
+  return encoded ? `/client/studio?${encoded}` : "/client/studio";
+}
+
 export function filterParamsFromQuery(query, scoped) {
   const next = { ...scoped };
   for (const key of ANALYTICS_SINGLE) {
@@ -143,6 +148,10 @@ export function overviewParamsFromQuery(query, scoped) {
     if (value) next[apiKey] = value;
   }
   return next;
+}
+
+export function studioParamsFromQuery(query, scoped) {
+  return filterParamsFromQuery(query, scoped);
 }
 
 export function sparklineParamsFromQuery(query, scoped) {
@@ -253,6 +262,15 @@ export function queryFromOverviewForm(form) {
   copyMulti(existing, DRILL_MULTI, query);
   copyKeys(existing, EXPLORER_KEYS, query);
   copyKeys(existing, FOCUS_KEYS, query);
+  return query;
+}
+
+export function queryFromStudioForm(form) {
+  const query = queryFromOverviewForm(form);
+  for (const key of [...TREND_KEYS, ...FINDING_KEYS, ...DRILL_SINGLE, ...EXPLORER_KEYS, ...FOCUS_KEYS]) {
+    query.delete(key);
+  }
+  query.delete("drill_parent");
   return query;
 }
 

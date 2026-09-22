@@ -267,6 +267,7 @@ def test_spa_has_overview_route_and_keeps_reports() -> None:
     assert 'navItem("/admin", "Dashboard"' in components
     assert 'navItem("/client", "Reports"' in components
     assert 'navItem("/client/overview", "Overview"' in components
+    assert 'navItem("/client/studio", "Analytics Studio"' in components
     assert "export function clientOverviewView" in views
     assert 'title: "Reports"' in views
     assert "charts" not in views[views.index("export function clientOverviewView") : views.index("export function clientHomeView")].lower()

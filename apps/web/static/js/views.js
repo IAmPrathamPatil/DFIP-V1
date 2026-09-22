@@ -10,7 +10,7 @@ import {
   themeSwitcher,
 } from "./components.js";
 import { companyLabel, inspectorClients, isCompanyInactive, operationalClients } from "./roles.js";
-import { overviewHref, parseDrillQuery, stripDrill, withDrill, withExplorerFromTrend, withExplorerSort, withFocus, withTrendMetric } from "./analytics-state.js";
+import { overviewHref, parseDrillQuery, stripDrill, studioHref, withDrill, withExplorerFromTrend, withExplorerSort, withFocus, withTrendMetric } from "./analytics-state.js";
 import { renderTrendChart } from "./trend-chart.js";
 import { kpiSparklineMarkup } from "./sparkline.js";
 import {
@@ -18,6 +18,7 @@ import {
   displayCell,
   emptyState,
   errorBanner,
+  escapeHtml,
   html,
   loadingState,
   paginationControls,
@@ -2366,9 +2367,10 @@ export function overviewFilterPatchModel(data, query) {
   };
 }
 
-export function overviewFilterBar(data, query) {
+export function overviewFilterBar(data, query, options = {}) {
   const model = overviewFilterPatchModel(data, query);
-  const { grain, compare, applied, options, latest, droppedKeys } = model;
+  const { grain, compare, applied, latest, droppedKeys } = model;
+  const filterOptions = model.options;
   return html`
     <form class="overview-filters" data-overview-filters="true" data-latest-month="${latest}">
       <div class="overview-filter-grid">
@@ -2389,11 +2391,11 @@ export function overviewFilterBar(data, query) {
           </label>
           <label>
             From
-            <input name="day_from" type="date" value="${applied.day_from || options.published_day_min || ""}" min="${options.published_day_min || ""}" max="${options.published_day_max || ""}" ${grain === "range" ? "" : raw(" disabled")} data-overview-autosubmit="true" />
+            <input name="day_from" type="date" value="${applied.day_from || filterOptions.published_day_min || ""}" min="${filterOptions.published_day_min || ""}" max="${filterOptions.published_day_max || ""}" ${grain === "range" ? "" : raw(" disabled")} data-overview-autosubmit="true" />
           </label>
           <label>
             To
-            <input name="day_to" type="date" value="${applied.day_to || options.published_day_max || ""}" min="${options.published_day_min || ""}" max="${options.published_day_max || ""}" ${grain === "range" ? "" : raw(" disabled")} data-overview-autosubmit="true" />
+            <input name="day_to" type="date" value="${applied.day_to || filterOptions.published_day_max || ""}" min="${filterOptions.published_day_min || ""}" max="${filterOptions.published_day_max || ""}" ${grain === "range" ? "" : raw(" disabled")} data-overview-autosubmit="true" />
           </label>
           <label>
             Comparison
@@ -2413,28 +2415,28 @@ export function overviewFilterBar(data, query) {
           ${overviewFilterPicker({
             name: "channel",
             label: "Channel",
-            options: options.channels,
+            options: filterOptions.channels,
             selected: applied.channels,
             searchPlaceholder: "Search channels...",
           })}
           ${overviewFilterPicker({
             name: "filter_logic_1",
             label: "Filter Logic 1",
-            options: options.filter_logic_1,
+            options: filterOptions.filter_logic_1,
             selected: applied.filter_logic_1,
             searchPlaceholder: "Search Filter Logic 1...",
           })}
           ${overviewFilterPicker({
             name: "filter_logic_1_group",
             label: "Filter Logic 1 group",
-            options: options.filter_logic_1_group,
+            options: filterOptions.filter_logic_1_group,
             selected: applied.filter_logic_1_group,
             searchPlaceholder: "Search groups...",
           })}
           ${overviewFilterPicker({
             name: "campaign_id",
             label: "Campaign",
-            options: options.campaigns,
+            options: filterOptions.campaigns,
             selected: applied.campaign_ids,
             searchPlaceholder: "Search campaigns",
             searchAttr: 'data-overview-campaign-search="true"',
@@ -2445,7 +2447,11 @@ export function overviewFilterBar(data, query) {
       <div class="overview-filter-foot">
         ${model.chipsHtml}
         <p class="overview-filter-actions">
-          <a class="btn-secondary" href="/client/overview" aria-label="Clear all filters">Clear all</a>
+          ${
+            options.clearHref
+              ? html`<a class="btn-secondary" href="${options.clearHref}" aria-label="Clear all filters">Clear all</a>`
+              : html`<a class="btn-secondary" href="/client/overview" aria-label="Clear all filters">Clear all</a>`
+          }
           <button type="submit">Apply filters</button>
         </p>
         ${
@@ -4371,7 +4377,8 @@ function kpiCompareVsText(kind, priorValue, comparison) {
   return "";
 }
 
-export function overviewKpiCardsHtml({ data, query, sparkline }) {
+export function overviewKpiCardsHtml({ data, query, sparkline, interactive = true }) {
+  const linked = interactive !== false;
   const comparison = (data && data.comparison) || {};
   const comparisonNone = comparison.reason === "comparison_disabled";
   const comparisonOff = !comparison.available;
@@ -4380,8 +4387,9 @@ export function overviewKpiCardsHtml({ data, query, sparkline }) {
   return kpis.map((kpi) => {
     const delta = comparison.available ? kpiDeltaPresentation(kpi.kind, kpi.delta, kpi.delta_pct) : { direction: "", text: "" };
     const selected = Boolean(
-      (query && query.get && query.get("kpi") === kpi.id) ||
-        (parsed && parsed.origin === "kpi" && parsed.metric === kpi.id),
+      linked &&
+        ((query && query.get && query.get("kpi") === kpi.id) ||
+          (parsed && parsed.origin === "kpi" && parsed.metric === kpi.id)),
     );
     return overviewKpiCard({
       id: kpi.id,
@@ -4394,15 +4402,18 @@ export function overviewKpiCardsHtml({ data, query, sparkline }) {
       comparisonNone,
       unavailableComparison: comparisonOff && !comparisonNone,
       selected,
-      sparklineHtml: kpiSparklineMarkup(sparkline, kpi.id),
-      trendHref: overviewHref(withTrendMetric(query || new URLSearchParams(), kpi.id)),
-      detailsHref: overviewHref(
-        withDrill(withFocus(query || new URLSearchParams(), { kpi: kpi.id }), {
-          origin: "kpi",
-          metric: kpi.id,
-          dimension: "campaign_id",
-        }),
-      ),
+      sparklineHtml: linked ? kpiSparklineMarkup(sparkline, kpi.id) : "",
+      interactive: linked,
+      trendHref: linked ? overviewHref(withTrendMetric(query || new URLSearchParams(), kpi.id)) : "",
+      detailsHref: linked
+        ? overviewHref(
+            withDrill(withFocus(query || new URLSearchParams(), { kpi: kpi.id }), {
+              origin: "kpi",
+              metric: kpi.id,
+              dimension: "campaign_id",
+            }),
+          )
+        : "",
     });
   });
 }
@@ -4608,6 +4619,976 @@ export function clientHomeView({ session, currentPublication, publications }) {
           `
         : ""
     }
+  `;
+}
+
+function studioZoneLoading(label) {
+  return html`
+    <div class="studio-zone-status is-loading" data-studio-loading="true" role="status">
+      <span class="sr-only">${label}</span>
+      <div class="skeleton-stack" aria-hidden="true">
+        <div class="skeleton skeleton-title"></div>
+        <div class="skeleton skeleton-line"></div>
+        <div class="skeleton skeleton-table"></div>
+      </div>
+    </div>
+  `;
+}
+
+function studioReservedZone({ zone, title, description }) {
+  const titleId = `studio-${zone}-title`;
+  const descId = `studio-${zone}-desc`;
+  return html`
+    <section class="studio-zone" data-studio-zone="${zone}" aria-labelledby="${titleId}" aria-describedby="${descId}">
+      <header class="studio-zone-head">
+        <h3 id="${titleId}">${title}</h3>
+        <p class="muted" id="${descId}">${description}</p>
+      </header>
+      <div class="studio-zone-body" aria-hidden="true">
+        <span class="studio-zone-mark"></span>
+      </div>
+    </section>
+  `;
+}
+
+function studioTrendZone({ query, trend, trendError, loading }) {
+  const selection = (trend && trend.selection) || {};
+  const metric = selection.metric || "total_cost";
+  const grain = selection.grain || "day";
+  const metricLabel = (TREND_METRIC_OPTIONS.find((item) => item[0] === metric) || [metric, metric])[1];
+  const grainLabel = (TREND_GRAIN_OPTIONS.find((item) => item[0] === grain) || [grain, grain])[1];
+  const unsupported = trendError && trendError.status === 422;
+  const failed = trendError && trendError.status !== 422;
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading trend.");
+  } else if (failed) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-trend-error="true">${errorBanner(trendError)}</div>`;
+  } else if (unsupported) {
+    body = html`<div class="trend-chart-frame is-state"><p class="banner warn" data-trend-unsupported="true">${trendError.message || "This metric combination is not supported."}</p></div>`;
+  } else if (!trend || trend.empty) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-trend-empty="true">${overviewEmpty({
+      message: "No published history matches this trend.",
+      reason: "No data",
+      actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+      actionLabel: "Clear filters",
+    })}</div>`;
+  } else {
+    const primaryOnly = {
+      ...trend,
+      secondary: null,
+      selection: { ...(trend.selection || {}), secondary: null, dual_axis: false },
+    };
+    body = html`
+      <div class="trend-chart-frame" data-studio-trend-chart="true">
+        ${renderTrendChart(primaryOnly, { interactive: false, tooltip: true })}
+        <div class="trend-notes">
+          ${
+            trend.comparison_shown
+              ? html`<p class="muted" data-trend-comparison="shown">Comparison is overlaid by period offset from the start of each window.</p>`
+              : html`<p class="muted" data-trend-comparison="${trend.comparison_omitted_reason || "unavailable"}">${
+                  trend.comparison_omitted_reason === "comparison_disabled"
+                    ? "No comparison: comparison is turned off."
+                    : "No comparison for this trend."
+                }</p>`
+          }
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-trend-zone" data-studio-zone="trend" data-studio-trend-zone="true" aria-labelledby="studio-trend-title" aria-describedby="studio-trend-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-trend-title">Trend</h3>
+        <p class="muted" id="studio-trend-desc">${metricLabel} by ${grainLabel}. Published-history series from the trends contract.</p>
+      </header>
+      <div class="studio-trend-body">${body}</div>
+    </section>
+  `;
+}
+
+function studioDonutSlices(rows) {
+  const colors = [
+    "var(--chart-1)",
+    "var(--chart-2)",
+    "var(--chart-3)",
+    "var(--chart-4)",
+    "var(--chart-5)",
+    "var(--chart-6)",
+    "var(--chart-7)",
+    "var(--chart-8)",
+    "var(--chart-9)",
+  ];
+  const slices = [];
+  (Array.isArray(rows) ? rows : []).forEach((row) => {
+    const share = contributionSharePct(row && row.contribution_pct);
+    if (share == null || share <= 0) return;
+    slices.push({
+      key: row.key,
+      label: row.label || "(blank)",
+      share,
+      value: row.value,
+      color: colors[slices.length % colors.length],
+    });
+  });
+  return slices;
+}
+
+function studioDonutChart({ slices, kind, metricLabel }) {
+  if (!slices.length) {
+    return html`<p class="muted" data-studio-donut-empty="true" role="status">Contribution share is not available for this mix.</p>`;
+  }
+  const radius = 42;
+  const circumference = 2 * Math.PI * radius;
+  let offset = 0;
+  const arcs = slices.map((slice) => {
+    const dash = (slice.share / 100) * circumference;
+    const gap = Math.max(0, circumference - dash);
+    const current = offset;
+    offset += dash;
+    return `<circle class="studio-donut-slice" cx="60" cy="60" r="${radius}" stroke="${slice.color}" stroke-dasharray="${dash.toFixed(2)} ${gap.toFixed(2)}" stroke-dashoffset="${(-current).toFixed(2)}" transform="rotate(-90 60 60)"></circle>`;
+  });
+  return html`
+    <div class="studio-donut-panel" data-studio-donut="true">
+      <svg class="studio-donut" viewBox="0 0 120 120" role="img" aria-labelledby="studio-distribution-title" aria-label="${metricLabel} contribution mix">
+        <circle class="studio-donut-track" cx="60" cy="60" r="${radius}"></circle>
+        ${raw(arcs.join(""))}
+        <circle class="studio-donut-hole" cx="60" cy="60" r="28"></circle>
+      </svg>
+      <ul class="studio-donut-legend">
+        ${slices.map(
+          (slice) => html`
+            <li data-studio-donut-slice="${slice.key}">
+              <span class="trend-swatch" style="background: ${slice.color}" aria-hidden="true"></span>
+              <span class="studio-donut-legend-copy">
+                <span class="studio-donut-legend-label">${slice.label}</span>
+                <span class="studio-donut-legend-meta">
+                  <span>${slice.share.toLocaleString("en-US", { maximumFractionDigits: 1 })}%</span>
+                  <span>${formatKpiValue(kind, slice.value)}</span>
+                </span>
+              </span>
+            </li>
+          `,
+        )}
+      </ul>
+    </div>
+  `;
+}
+
+function studioDistributionZone({ query, mix, mixError, loading }) {
+  const selection = (mix && mix.selection) || {};
+  const metric = (mix && mix.metric) || {};
+  const dimension = selection.dimension || "campaign_id";
+  const dimLabel = DRILL_DIM_LABELS[dimension] || dimension;
+  const metricLabel = metric.label || (TREND_METRIC_OPTIONS.find((item) => item[0] === (selection.metric || "total_cost")) || ["total_cost", "Total Cost"])[1];
+  const kind = metric.kind || "money";
+  const unsupported = mixError && mixError.status === 422;
+  const failed = mixError && mixError.status !== 422;
+  const rows = Array.isArray(mix && mix.rows) ? mix.rows : [];
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading distribution.");
+  } else if (failed) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-mix-error="true">${errorBanner(mixError)}</div>`;
+  } else if (unsupported) {
+    body = html`<div class="trend-chart-frame is-state"><p class="banner warn" data-studio-mix-unsupported="true">${mixError.message || "This mix combination is not supported."}</p></div>`;
+  } else if (!mix || mix.empty || !rows.length) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-mix-empty="true">${overviewEmpty({
+      message: "No published history matches this mix.",
+      reason: "No data",
+      actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+      actionLabel: "Clear filters",
+    })}</div>`;
+  } else {
+    const chartRows = drillChartRows(rows);
+    const chartPeak = drillChartPeak(chartRows);
+    const chartPeakValue = drillChartNumber(chartPeak && chartPeak.value);
+    const donutSlices = studioDonutSlices(chartRows);
+    body = html`
+      <div class="trend-chart-frame" data-studio-mix-chart="true">
+        <div class="studio-mix-visuals">
+          ${studioDonutChart({ slices: donutSlices, kind, metricLabel })}
+          <figure class="drill-chart studio-mix-chart">
+          <figcaption class="drill-chart-caption">
+            <span class="drill-chart-title">${dimLabel} mix</span>
+            <span class="drill-chart-scope">${drillChartScopeLabel(rows, chartRows)} · ${metricLabel}</span>
+          </figcaption>
+          <ol class="drill-chart-rows">
+            ${chartRows.map((row) => {
+              const share = contributionSharePct(row.contribution_pct);
+              const bar = drillChartBarPct(row.value, chartPeakValue);
+              const rowValue = drillChartNumber(row.value);
+              const negative = (rowValue || 0) < 0;
+              const capped =
+                bar === 100 && chartPeakValue != null && Math.abs(rowValue) > Math.abs(chartPeakValue);
+              const barClass =
+                bar == null
+                  ? ""
+                  : bar === 0
+                    ? " is-zero"
+                    : capped
+                      ? " is-capped"
+                      : negative
+                        ? " is-negative"
+                        : "";
+              const label = row.label || "(blank)";
+              return html`
+                <li class="drill-chart-row" data-studio-mix-row="${row.key}">
+                  <div class="drill-chart-item is-static" title="${label}">
+                    <span class="sr-only">${drillChartRowText({
+                      row,
+                      kind,
+                      dimLabel,
+                      metricLabel,
+                      share,
+                      capped,
+                      drillLabel: "",
+                    })}</span>
+                    <span class="drill-chart-rank" aria-hidden="true">${row.rank == null ? "—" : row.rank}</span>
+                    <span class="drill-chart-label" aria-hidden="true">${label}</span>
+                    <span class="drill-chart-plot" aria-hidden="true">
+                      ${bar == null ? "" : html`<span class="drill-chart-bar${barClass}" style="width: ${bar}%;"></span>`}
+                    </span>
+                    <span class="drill-chart-value" aria-hidden="true">${formatKpiValue(kind, row.value)}</span>
+                    <span class="drill-chart-share" aria-hidden="true">${share == null ? "" : `${share.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`}</span>
+                  </div>
+                </li>
+              `;
+            })}
+          </ol>
+        </figure>
+        </div>
+        <div class="trend-notes">
+          <p class="muted">Share uses the explorer contribution contract. Bars are display-only.</p>
+          ${mix.truncated ? html`<p class="muted" data-studio-mix-truncated="true">${mix.truncated_message || "Some groups were limited in this ranking."}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-mix-zone" data-studio-zone="distribution" data-studio-mix-zone="true" aria-labelledby="studio-distribution-title" aria-describedby="studio-distribution-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-distribution-title">Distribution</h3>
+        <p class="muted" id="studio-distribution-desc">${metricLabel} by ${dimLabel}. Ranked mix from the explorer aggregate.</p>
+      </header>
+      <div class="studio-mix-body">${body}</div>
+    </section>
+  `;
+}
+
+function studioStackedBarChart(trend) {
+  const series = Array.isArray(trend && trend.series) ? trend.series : [];
+  const first = series[0];
+  const labels = first && Array.isArray(first.points) ? first.points.map((point) => point.bucket_label || point.bucket || "") : [];
+  const kind = (trend && trend.metric && trend.metric.kind) || "money";
+  const metricLabel = (trend && trend.metric && trend.metric.label) || "Total Cost";
+  const n = Math.max(labels.length, 1);
+  const colors = [
+    "var(--chart-1)",
+    "var(--chart-2)",
+    "var(--chart-3)",
+    "var(--chart-4)",
+    "var(--chart-5)",
+    "var(--chart-6)",
+    "var(--chart-7)",
+    "var(--chart-8)",
+    "var(--chart-9)",
+  ];
+  const stacks = labels.map((_, index) => {
+    const parts = [];
+    series.forEach((item, seriesIndex) => {
+      const point = (item.points || [])[index];
+      const value = drillChartNumber(point && point.value);
+      if (value == null || value <= 0) return;
+      parts.push({
+        key: item.key,
+        label: item.label || item.key,
+        value,
+        color: colors[seriesIndex % colors.length],
+      });
+    });
+    return parts;
+  });
+  const totals = stacks.map((parts) => parts.reduce((sum, part) => sum + part.value, 0));
+  const yMax = Math.max(0, ...totals) || 1;
+  const width = 920;
+  const height = 280;
+  const left = 52;
+  const right = 16;
+  const top = 16;
+  const bottom = 42;
+  const innerW = width - left - right;
+  const innerH = height - top - bottom;
+  const slot = innerW / n;
+  const barW = Math.max(6, Math.min(28, slot * 0.62));
+  const yAt = (value) => top + innerH - (value / yMax) * innerH;
+  const xAt = (index) => left + slot * index + slot / 2;
+  const yTicks = [0, yMax * 0.25, yMax * 0.5, yMax * 0.75, yMax];
+  const grid = yTicks.map(
+    (tick) =>
+      `<line class="trend-grid" x1="${left}" x2="${width - right}" y1="${yAt(tick).toFixed(1)}" y2="${yAt(tick).toFixed(1)}" />`,
+  );
+  const yLabels = yTicks.map(
+    (tick) =>
+      `<text class="trend-axis-label" x="${left - 8}" y="${yAt(tick).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${formatKpiValue(kind, tick)}</text>`,
+  );
+  const xLabels = labels.map((label, index) => {
+    const show = n <= 12 || index === 0 || index === n - 1 || index % Math.ceil(n / 8) === 0;
+    if (!show) return "";
+    return `<text class="trend-axis-label" x="${xAt(index).toFixed(1)}" y="${height - 14}" text-anchor="middle">${escapeHtml(label)}</text>`;
+  });
+  const rects = [];
+  stacks.forEach((parts, index) => {
+    let y = top + innerH;
+    parts.forEach((part) => {
+      const h = Math.max(1, (part.value / yMax) * innerH);
+      y -= h;
+      const title = `${escapeHtml(part.label)}: ${escapeHtml(formatKpiValue(kind, part.value))} (${escapeHtml(labels[index] || "")})`;
+      rects.push(
+        `<rect class="studio-stack-seg" x="${(xAt(index) - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${part.color}"><title>${title}</title></rect>`,
+      );
+    });
+  });
+  const legend = series.map(
+    (item, index) =>
+      `<span class="trend-legend-item"><span class="trend-swatch" style="background:${colors[index % colors.length]}"></span>${escapeHtml(item.label || item.key)}</span>`,
+  );
+  return html`
+    <div class="trend-chart" data-studio-stacked-chart="true">
+      <div class="trend-legend">${raw(legend.join(""))}</div>
+      <svg class="trend-svg studio-stack-svg" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="studio-stacked-title" aria-label="${metricLabel} stacked by channel">
+        ${raw(grid.join("") + yLabels.join("") + xLabels.join("") + rects.join(""))}
+      </svg>
+    </div>
+  `;
+}
+
+function studioStackedBarZone({ query, stack, stackError, loading }) {
+  const selection = (stack && stack.selection) || {};
+  const metric = (stack && stack.metric) || {};
+  const metricLabel = metric.label || "Total Cost";
+  const breakdown = selection.breakdown || "channel";
+  const dimLabel = DRILL_DIM_LABELS[breakdown] || breakdown;
+  const grain = selection.grain || "day";
+  const grainLabel = (TREND_GRAIN_OPTIONS.find((item) => item[0] === grain) || [grain, grain])[1];
+  const unsupported = stackError && stackError.status === 422;
+  const failed = stackError && stackError.status !== 422;
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading stacked mix.");
+  } else if (failed) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-stack-error="true">${errorBanner(stackError)}</div>`;
+  } else if (unsupported) {
+    body = html`<div class="trend-chart-frame is-state"><p class="banner warn" data-studio-stack-unsupported="true">${stackError.message || "This stacked combination is not supported."}</p></div>`;
+  } else if (!stack || stack.empty) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-stack-empty="true">${overviewEmpty({
+      message: "No published history matches this stacked mix.",
+      reason: "No data",
+      actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+      actionLabel: "Clear filters",
+    })}</div>`;
+  } else {
+    body = html`
+      <div class="trend-chart-frame" data-studio-stacked-frame="true">
+        ${studioStackedBarChart(stack)}
+        <div class="trend-notes">
+          <p class="muted">Stacked ${metricLabel} by ${dimLabel}. Values come from the trends breakdown contract.</p>
+          ${stack.truncated ? html`<p class="muted" data-studio-stack-truncated="true">${stack.truncated_message || "Some series were grouped into Other."}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-stack-zone" data-studio-stacked-zone="true" aria-labelledby="studio-stacked-title" aria-describedby="studio-stacked-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-stacked-title">Stacked mix</h3>
+        <p class="muted" id="studio-stacked-desc">${metricLabel} by ${dimLabel} over ${grainLabel}. Absolute stacked values, not 100% share.</p>
+      </header>
+      <div class="studio-stack-body">${body}</div>
+    </section>
+  `;
+}
+
+function studioShareStackedBarChart(trend) {
+  const series = Array.isArray(trend && trend.series) ? trend.series : [];
+  const first = series[0];
+  const labels = first && Array.isArray(first.points) ? first.points.map((point) => point.bucket_label || point.bucket || "") : [];
+  const metricLabel = (trend && trend.metric && trend.metric.label) || "Total Cost";
+  const n = Math.max(labels.length, 1);
+  const colors = [
+    "var(--chart-1)",
+    "var(--chart-2)",
+    "var(--chart-3)",
+    "var(--chart-4)",
+    "var(--chart-5)",
+    "var(--chart-6)",
+    "var(--chart-7)",
+    "var(--chart-8)",
+    "var(--chart-9)",
+  ];
+  const stacks = labels.map((_, index) => {
+    const parts = [];
+    series.forEach((item, seriesIndex) => {
+      const point = (item.points || [])[index];
+      const share = drillChartNumber(point && point.bucket_share);
+      if (share == null || share <= 0) return;
+      parts.push({
+        key: item.key,
+        label: item.label || item.key,
+        share,
+        color: colors[seriesIndex % colors.length],
+      });
+    });
+    return parts;
+  });
+  const width = 920;
+  const height = 280;
+  const left = 52;
+  const right = 16;
+  const top = 16;
+  const bottom = 42;
+  const innerW = width - left - right;
+  const innerH = height - top - bottom;
+  const slot = innerW / n;
+  const barW = Math.max(6, Math.min(28, slot * 0.62));
+  const yAt = (share) => top + innerH - share * innerH;
+  const xAt = (index) => left + slot * index + slot / 2;
+  const yTicks = [
+    [0, "0"],
+    [0.25, "0.25"],
+    [0.5, "0.5"],
+    [0.75, "0.75"],
+    [1, "1"],
+  ];
+  const grid = yTicks.map(
+    ([tick]) =>
+      `<line class="trend-grid" x1="${left}" x2="${width - right}" y1="${yAt(tick).toFixed(1)}" y2="${yAt(tick).toFixed(1)}" />`,
+  );
+  const yLabels = yTicks.map(
+    ([tick, label]) =>
+      `<text class="trend-axis-label" x="${left - 8}" y="${yAt(tick).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${label}</text>`,
+  );
+  const xLabels = labels.map((label, index) => {
+    const show = n <= 12 || index === 0 || index === n - 1 || index % Math.ceil(n / 8) === 0;
+    if (!show) return "";
+    return `<text class="trend-axis-label" x="${xAt(index).toFixed(1)}" y="${height - 14}" text-anchor="middle">${escapeHtml(label)}</text>`;
+  });
+  const rects = [];
+  stacks.forEach((parts, index) => {
+    if (!parts.length) return;
+    let y = top + innerH;
+    parts.forEach((part) => {
+      const h = Math.max(1, part.share * innerH);
+      y -= h;
+      const title = `${escapeHtml(part.label)}: ${escapeHtml(String(part.share))} of bucket (${escapeHtml(labels[index] || "")})`;
+      rects.push(
+        `<rect class="studio-stack-seg studio-share-stack-seg" x="${(xAt(index) - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${part.color}"><title>${title}</title></rect>`,
+      );
+    });
+  });
+  const legend = series.map(
+    (item, index) =>
+      `<span class="trend-legend-item"><span class="trend-swatch" style="background:${colors[index % colors.length]}"></span>${escapeHtml(item.label || item.key)}</span>`,
+  );
+  return html`
+    <div class="trend-chart" data-studio-share-stack-chart="true">
+      <div class="trend-legend">${raw(legend.join(""))}</div>
+      <svg class="trend-svg studio-stack-svg studio-share-stack-svg" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="studio-share-title" aria-label="${metricLabel} 100% stacked by channel">
+        ${raw(grid.join("") + yLabels.join("") + xLabels.join("") + rects.join(""))}
+      </svg>
+    </div>
+  `;
+}
+
+function studioShareStackedZone({ query, stack, stackError, loading }) {
+  const selection = (stack && stack.selection) || {};
+  const metric = (stack && stack.metric) || {};
+  const metricLabel = metric.label || "Total Cost";
+  const breakdown = selection.breakdown || "channel";
+  const dimLabel = DRILL_DIM_LABELS[breakdown] || breakdown;
+  const grain = selection.grain || "day";
+  const grainLabel = (TREND_GRAIN_OPTIONS.find((item) => item[0] === grain) || [grain, grain])[1];
+  const unsupported = stackError && stackError.status === 422;
+  const failed = stackError && stackError.status !== 422;
+  const series = Array.isArray(stack && stack.series) ? stack.series : [];
+  const hasShare = series.some((item) =>
+    (item.points || []).some((point) => {
+      const share = drillChartNumber(point && point.bucket_share);
+      return share != null && share > 0;
+    }),
+  );
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading share mix.");
+  } else if (failed) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-share-stack-error="true">${errorBanner(stackError)}</div>`;
+  } else if (unsupported) {
+    body = html`<div class="trend-chart-frame is-state"><p class="banner warn" data-studio-share-stack-unsupported="true">${stackError.message || "This stacked combination is not supported."}</p></div>`;
+  } else if (!stack || stack.empty || !hasShare) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-share-stack-empty="true">${overviewEmpty({
+      message: "No bucket share is available for this composition.",
+      reason: "No data",
+      actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+      actionLabel: "Clear filters",
+    })}</div>`;
+  } else {
+    body = html`
+      <div class="trend-chart-frame" data-studio-share-stack-frame="true">
+        ${studioShareStackedBarChart(stack)}
+        <div class="trend-notes">
+          <p class="muted">100% stacked ${metricLabel} by ${dimLabel}. Segment height uses server bucket_share.</p>
+          ${stack.truncated ? html`<p class="muted" data-studio-share-stack-truncated="true">${stack.truncated_message || "Some series were grouped into Other."}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-share-stack-zone" data-studio-share-stack-zone="true" aria-labelledby="studio-share-title" aria-describedby="studio-share-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-share-title">Share mix</h3>
+        <p class="muted" id="studio-share-desc">${metricLabel} composition by ${dimLabel} over ${grainLabel}. 100% stacked share, not absolute values.</p>
+      </header>
+      <div class="studio-share-stack-body">${body}</div>
+    </section>
+  `;
+}
+
+function studioComboChart(trend) {
+  const series = Array.isArray(trend && trend.series) ? trend.series : [];
+  const first = series[0] || { points: [] };
+  const points = Array.isArray(first.points) ? first.points : [];
+  const labels = points.map((point) => point.bucket_label || point.bucket || "");
+  const primary = (trend && trend.metric) || {};
+  const secondary = (trend && trend.secondary) || {};
+  const primaryKind = primary.kind || "money";
+  const secondaryKind = secondary.kind || "money";
+  const primaryLabel = primary.label || "Total Cost";
+  const secondaryLabel = secondary.label || "Revenue";
+  const n = Math.max(labels.length, 1);
+  const barColor = "var(--chart-1)";
+  const lineColor = "var(--chart-2)";
+  const barValues = points.map((point) => drillChartNumber(point && point.value));
+  const lineValues = points.map((point) => drillChartNumber(point && point.secondary_value));
+  const barMax = Math.max(0, ...barValues.filter((value) => value != null));
+  const lineMax = Math.max(0, ...lineValues.filter((value) => value != null));
+  const yBarMax = barMax || 1;
+  const yLineMax = lineMax || 1;
+  const width = 920;
+  const height = 280;
+  const left = 56;
+  const right = 56;
+  const top = 16;
+  const bottom = 42;
+  const innerW = width - left - right;
+  const innerH = height - top - bottom;
+  const slot = innerW / n;
+  const barW = Math.max(6, Math.min(28, slot * 0.55));
+  const yBar = (value) => top + innerH - (value / yBarMax) * innerH;
+  const yLine = (value) => top + innerH - (value / yLineMax) * innerH;
+  const xAt = (index) => left + slot * index + slot / 2;
+  const yTicks = [0, 0.25, 0.5, 0.75, 1];
+  const grid = yTicks.map((tick) => {
+    const y = (top + innerH - tick * innerH).toFixed(1);
+    return `<line class="trend-grid" x1="${left}" x2="${width - right}" y1="${y}" y2="${y}" />`;
+  });
+  const yBarLabels = yTicks.map((tick) => {
+    const value = tick * yBarMax;
+    return `<text class="trend-axis-label" x="${left - 8}" y="${(top + innerH - tick * innerH).toFixed(1)}" text-anchor="end" dominant-baseline="middle">${escapeHtml(formatKpiValue(primaryKind, value))}</text>`;
+  });
+  const yLineLabels = yTicks.map((tick) => {
+    const value = tick * yLineMax;
+    return `<text class="trend-axis-label" x="${width - right + 8}" y="${(top + innerH - tick * innerH).toFixed(1)}" text-anchor="start" dominant-baseline="middle">${escapeHtml(formatKpiValue(secondaryKind, value))}</text>`;
+  });
+  const xLabels = labels.map((label, index) => {
+    const show = n <= 12 || index === 0 || index === n - 1 || index % Math.ceil(n / 8) === 0;
+    if (!show) return "";
+    return `<text class="trend-axis-label" x="${xAt(index).toFixed(1)}" y="${height - 14}" text-anchor="middle">${escapeHtml(label)}</text>`;
+  });
+  const rects = [];
+  barValues.forEach((value, index) => {
+    if (value == null || value <= 0) return;
+    const h = Math.max(1, (value / yBarMax) * innerH);
+    const y = yBar(value);
+    const title = `${escapeHtml(primaryLabel)}: ${escapeHtml(formatKpiValue(primaryKind, value))} (${escapeHtml(labels[index] || "")})`;
+    rects.push(
+      `<rect class="studio-combo-bar" x="${(xAt(index) - barW / 2).toFixed(1)}" y="${y.toFixed(1)}" width="${barW.toFixed(1)}" height="${h.toFixed(1)}" fill="${barColor}"><title>${title}</title></rect>`,
+    );
+  });
+  let linePath = "";
+  lineValues.forEach((value, index) => {
+    if (value == null) return;
+    const command = linePath ? "L" : "M";
+    linePath += `${command}${xAt(index).toFixed(1)} ${yLine(value).toFixed(1)} `;
+  });
+  const line = linePath
+    ? `<path class="studio-combo-line" d="${linePath.trim()}" fill="none" stroke="${lineColor}"></path>`
+    : "";
+  const dots = [];
+  lineValues.forEach((value, index) => {
+    if (value == null) return;
+    const title = `${escapeHtml(secondaryLabel)}: ${escapeHtml(formatKpiValue(secondaryKind, value))} (${escapeHtml(labels[index] || "")})`;
+    dots.push(
+      `<circle class="studio-combo-point" cx="${xAt(index).toFixed(1)}" cy="${yLine(value).toFixed(1)}" r="3.2" fill="${lineColor}"><title>${title}</title></circle>`,
+    );
+  });
+  const legend = [
+    `<span class="trend-legend-item"><span class="trend-swatch" style="background:${barColor}"></span>${escapeHtml(primaryLabel)} (bar)</span>`,
+    `<span class="trend-legend-item"><span class="trend-swatch" style="background:${lineColor}"></span>${escapeHtml(secondaryLabel)} (line)</span>`,
+  ];
+  return html`
+    <div class="trend-chart" data-studio-combo-chart="true">
+      <div class="trend-legend">${raw(legend.join(""))}</div>
+      <svg class="trend-svg studio-combo-svg" viewBox="0 0 ${width} ${height}" role="img" aria-labelledby="studio-combo-title" aria-label="${primaryLabel} bars and ${secondaryLabel} line">
+        ${raw(
+          grid.join("") +
+            yBarLabels.join("") +
+            yLineLabels.join("") +
+            xLabels.join("") +
+            rects.join("") +
+            line +
+            dots.join(""),
+        )}
+      </svg>
+    </div>
+  `;
+}
+
+function studioComboZone({ query, trend, trendError, loading }) {
+  const selection = (trend && trend.selection) || {};
+  const primary = (trend && trend.metric) || {};
+  const secondary = (trend && trend.secondary) || {};
+  const primaryLabel = primary.label || "Total Cost";
+  const secondaryLabel = secondary.label || "Revenue";
+  const grain = selection.grain || "day";
+  const grainLabel = (TREND_GRAIN_OPTIONS.find((item) => item[0] === grain) || [grain, grain])[1];
+  const unsupported = trendError && trendError.status === 422;
+  const failed = trendError && trendError.status !== 422;
+  const first = Array.isArray(trend && trend.series) ? trend.series[0] : null;
+  const points = first && Array.isArray(first.points) ? first.points : [];
+  const hasBars = points.some((point) => drillChartNumber(point && point.value) != null);
+  const hasLine = points.some((point) => drillChartNumber(point && point.secondary_value) != null);
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading cost and revenue.");
+  } else if (failed) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-combo-error="true">${errorBanner(trendError)}</div>`;
+  } else if (unsupported) {
+    body = html`<div class="trend-chart-frame is-state"><p class="banner warn" data-studio-combo-unsupported="true">${trendError.message || "This metric combination is not supported."}</p></div>`;
+  } else if (!trend || trend.empty || !hasBars || !hasLine) {
+    body = html`<div class="trend-chart-frame is-state" data-studio-combo-empty="true">${overviewEmpty({
+      message: "No published cost and revenue series match this combo.",
+      reason: "No data",
+      actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+      actionLabel: "Clear filters",
+    })}</div>`;
+  } else {
+    body = html`
+      <div class="trend-chart-frame" data-studio-combo-frame="true">
+        ${studioComboChart(trend)}
+        <div class="trend-notes">
+          <p class="muted">${primaryLabel} bars and ${secondaryLabel} line over ${grainLabel}. Separate axes; not a ratio.</p>
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-combo-zone" data-studio-combo-zone="true" aria-labelledby="studio-combo-title" aria-describedby="studio-combo-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-combo-title">Cost and revenue</h3>
+        <p class="muted" id="studio-combo-desc">${primaryLabel} as bars and ${secondaryLabel} as a line. Server values only.</p>
+      </header>
+      <div class="studio-combo-body">${body}</div>
+    </section>
+  `;
+}
+
+function studioDetailZone({ query, mix, mixError, loading }) {
+  const selection = (mix && mix.selection) || {};
+  const metric = (mix && mix.metric) || {};
+  const dimension = selection.dimension || "campaign_id";
+  const dimLabel = DRILL_DIM_LABELS[dimension] || dimension;
+  const metricLabel = metric.label || (TREND_METRIC_OPTIONS.find((item) => item[0] === (selection.metric || "total_cost")) || ["total_cost", "Total Cost"])[1];
+  const kind = metric.kind || "money";
+  const unsupported = mixError && mixError.status === 422;
+  const failed = mixError && mixError.status !== 422;
+  const rows = Array.isArray(mix && mix.rows) ? mix.rows : [];
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading detail table.");
+  } else if (failed) {
+    body = html`<div class="studio-detail-frame is-state" data-studio-detail-error="true">${errorBanner(mixError)}</div>`;
+  } else if (unsupported) {
+    body = html`<div class="studio-detail-frame is-state"><p class="banner warn" data-studio-detail-unsupported="true">${mixError.message || "This mix combination is not supported."}</p></div>`;
+  } else if (!mix || mix.empty || !rows.length) {
+    body = html`<div class="studio-detail-frame is-state" data-studio-detail-empty="true">${overviewEmpty({
+      message: "No published history matches this ranking.",
+      reason: "No data",
+      actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+      actionLabel: "Clear filters",
+    })}</div>`;
+  } else {
+    body = html`
+      <div class="studio-detail-frame" data-studio-detail-host="true">
+        <div class="table-wrap explorer-table-wrap studio-detail-wrap" data-studio-detail-wrap="true">
+          <table class="data-table explorer-table studio-detail-table" data-studio-detail-table="true" aria-labelledby="studio-detail-title">
+            <caption class="sr-only">Ranked explorer detail for ${metricLabel} by ${dimLabel}</caption>
+            <thead>
+              <tr>
+                <th scope="col" class="num explorer-sticky-rank">Rank</th>
+                <th scope="col" class="explorer-sticky-name">${dimLabel}</th>
+                <th scope="col" class="num">${metricLabel}</th>
+                <th scope="col" class="num">Comparison</th>
+                <th scope="col" class="num">Delta</th>
+                <th scope="col" class="num">Share</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${rows.map((row) => {
+                const share = contributionSharePct(row.contribution_pct);
+                return html`
+                  <tr data-studio-detail-row="${row.key}" data-studio-detail-rank="${row.rank == null ? "" : row.rank}">
+                    <td class="num explorer-sticky-rank">${row.rank == null ? "—" : row.rank}</td>
+                    <th scope="row" class="explorer-name explorer-sticky-name">${row.label || "(blank)"}</th>
+                    <td class="num">${formatKpiValue(kind, row.value)}</td>
+                    <td class="num">${formatKpiValue(kind, row.prior_value)}</td>
+                    <td class="num">${formatKpiValue(kind, row.delta)}</td>
+                    <td class="num">${share == null ? "n/a" : `${share.toLocaleString("en-US", { maximumFractionDigits: 1 })}%`}</td>
+                  </tr>
+                `;
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div class="trend-notes">
+          <p class="muted">Ranked explorer rows in server order. Display-only values.</p>
+          ${mix.truncated ? html`<p class="muted" data-studio-detail-truncated="true">${mix.truncated_message || "Some groups were limited in this ranking."}</p>` : ""}
+        </div>
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-detail-zone" data-studio-zone="detail" data-studio-detail-zone="true" aria-labelledby="studio-detail-title" aria-describedby="studio-detail-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-detail-title">Detail</h3>
+        <p class="muted" id="studio-detail-desc">${metricLabel} by ${dimLabel}. Ranked rows from the explorer aggregate.</p>
+      </header>
+      <div class="studio-detail-body">${body}</div>
+    </section>
+  `;
+}
+
+function studioNarrativeInsights({ query, insights, insightsError }) {
+  const unsupported = insightsError && insightsError.status === 422;
+  const failed = insightsError && insightsError.status !== 422;
+  if (failed) {
+    return html`<section class="studio-narrative-panel" data-studio-narrative-insights="true" aria-labelledby="studio-narrative-insights-title">
+      <h4 id="studio-narrative-insights-title">Insights</h4>
+      <div class="trend-chart-frame is-state" data-studio-insights-error="true">${errorBanner(insightsError)}</div>
+    </section>`;
+  }
+  if (unsupported) {
+    return html`<section class="studio-narrative-panel" data-studio-narrative-insights="true" aria-labelledby="studio-narrative-insights-title">
+      <h4 id="studio-narrative-insights-title">Insights</h4>
+      <div class="trend-chart-frame is-state"><p class="banner warn" data-studio-insights-unsupported="true">${insightsError.message || "This insight request is not supported."}</p></div>
+    </section>`;
+  }
+  const items = Array.isArray(insights && insights.insights) ? insights.insights : [];
+  if (!insights || insights.empty || !items.length) {
+    const reason = (insights && insights.empty_reason) || "no_material_insights";
+    return html`<section class="studio-narrative-panel" data-studio-narrative-insights="true" aria-labelledby="studio-narrative-insights-title">
+      <h4 id="studio-narrative-insights-title">Insights</h4>
+      <div class="trend-chart-frame is-state" data-studio-insights-empty="${reason}">${overviewEmpty({
+        message: insightEmptyCopy(reason),
+        reason: INSIGHT_EMPTY_STATUS[reason] || "Nothing to report",
+        actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+        actionLabel: "Clear filters",
+      })}</div>
+    </section>`;
+  }
+  return html`
+    <section class="studio-narrative-panel" data-studio-narrative-insights="true" aria-labelledby="studio-narrative-insights-title">
+      <h4 id="studio-narrative-insights-title">Insights</h4>
+      <ol class="studio-narrative-list" data-studio-insights-list="true">
+        ${items.map((item) => {
+          const kind = item.kind || "money";
+          return html`
+            <li class="studio-narrative-item" data-studio-insight="${item.insight_id}" data-studio-insight-category="${item.category || ""}">
+              <p class="studio-narrative-kicker">${INSIGHT_CATEGORY_LABELS[item.category] || "Insight"}</p>
+              <p class="studio-narrative-headline">${item.headline}</p>
+              <p class="studio-narrative-copy">${item.explanation}</p>
+              <p class="muted studio-narrative-meta">
+                <span>${item.metric_label || item.metric || ""}</span>
+                <span>Current ${formatKpiValue(kind, item.current_value)}</span>
+                <span>Comparison ${formatKpiValue(kind, item.prior_value)}</span>
+                ${item.driver_label ? html`<span>Driver ${item.driver_label}</span>` : ""}
+              </p>
+            </li>
+          `;
+        })}
+      </ol>
+    </section>
+  `;
+}
+
+function studioNarrativeAnomalies({ query, anomalies, anomaliesError }) {
+  const unsupported = anomaliesError && anomaliesError.status === 422;
+  const failed = anomaliesError && anomaliesError.status !== 422;
+  if (failed) {
+    return html`<section class="studio-narrative-panel" data-studio-narrative-anomalies="true" aria-labelledby="studio-narrative-anomalies-title">
+      <h4 id="studio-narrative-anomalies-title">Anomalies</h4>
+      <div class="trend-chart-frame is-state" data-studio-anomalies-error="true">${errorBanner(anomaliesError)}</div>
+    </section>`;
+  }
+  if (unsupported) {
+    return html`<section class="studio-narrative-panel" data-studio-narrative-anomalies="true" aria-labelledby="studio-narrative-anomalies-title">
+      <h4 id="studio-narrative-anomalies-title">Anomalies</h4>
+      <div class="trend-chart-frame is-state"><p class="banner warn" data-studio-anomalies-unsupported="true">${anomaliesError.message || "This anomaly request is not supported."}</p></div>
+    </section>`;
+  }
+  const items = Array.isArray(anomalies && anomalies.anomalies) ? anomalies.anomalies : [];
+  if (!anomalies || anomalies.empty || !items.length) {
+    const reason = (anomalies && anomalies.empty_reason) || "no_anomalies";
+    return html`<section class="studio-narrative-panel" data-studio-narrative-anomalies="true" aria-labelledby="studio-narrative-anomalies-title">
+      <h4 id="studio-narrative-anomalies-title">Anomalies</h4>
+      <div class="trend-chart-frame is-state" data-studio-anomalies-empty="${reason}">${overviewEmpty({
+        message: anomalyEmptyCopy(reason),
+        reason: ANOMALY_EMPTY_STATUS[reason] || "Unavailable",
+        actionHref: queryHasDimensionFilters(query) ? studioHref() : "",
+        actionLabel: "Clear filters",
+      })}</div>
+    </section>`;
+  }
+  return html`
+    <section class="studio-narrative-panel" data-studio-narrative-anomalies="true" aria-labelledby="studio-narrative-anomalies-title">
+      <h4 id="studio-narrative-anomalies-title">Anomalies</h4>
+      <ol class="studio-narrative-list" data-studio-anomalies-list="true">
+        ${items.map((item) => {
+          const kind = item.value_kind || "money";
+          return html`
+            <li class="studio-narrative-item" data-studio-anomaly="${item.anomaly_id}" data-studio-anomaly-kind="${item.kind || ""}" data-studio-anomaly-severity="${item.severity || ""}">
+              <p class="studio-narrative-kicker">${ANOMALY_SEVERITY_LABELS[item.severity] || "Anomaly"} · ${ANOMALY_KIND_LABELS[item.kind] || "Unusual movement"}</p>
+              <p class="studio-narrative-headline">${item.headline}</p>
+              <p class="studio-narrative-copy">${item.explanation}</p>
+              <p class="muted studio-narrative-meta">
+                <span>${item.metric_label || item.metric || ""}</span>
+                <span>Observed ${formatKpiValue(kind, item.current_value)}</span>
+                <span>Baseline ${formatKpiValue(kind, item.baseline_value)}</span>
+                ${item.affected_label ? html`<span>Affected ${item.affected_label}</span>` : ""}
+              </p>
+            </li>
+          `;
+        })}
+      </ol>
+    </section>
+  `;
+}
+
+function studioNarrativeZone({ query, insights, insightsError, anomalies, anomaliesError, loading }) {
+  let body;
+  if (loading) {
+    body = studioZoneLoading("Loading narrative.");
+  } else {
+    body = html`
+      <div class="studio-narrative-frame" data-studio-narrative-frame="true">
+        ${studioNarrativeInsights({ query, insights, insightsError })}
+        ${studioNarrativeAnomalies({ query, anomalies, anomaliesError })}
+      </div>
+    `;
+  }
+  return html`
+    <section class="studio-zone studio-narrative-zone" data-studio-zone="narrative" data-studio-narrative-zone="true" aria-labelledby="studio-narrative-title" aria-describedby="studio-narrative-desc">
+      <header class="studio-zone-head">
+        <h3 id="studio-narrative-title">Narrative</h3>
+        <p class="muted" id="studio-narrative-desc">Deterministic insights and anomalies for the current Studio filters. Server copy only.</p>
+      </header>
+      <div class="studio-narrative-body">${body}</div>
+    </section>
+  `;
+}
+
+export function clientStudioView({ session, data, error, kpiError, loading, query, trend, trendError, mix, mixError, stack, stackError, insights, insightsError, anomalies, anomaliesError }) {
+  const zoneLoading = Boolean(loading);
+  const kpiFail = kpiError || error;
+  const kpis = Array.isArray(data && data.kpis) ? data.kpis : [];
+  const company = overviewCompanyLabel(session, data);
+  const period = (data && data.period) || {};
+  const comparison = (data && data.comparison) || {};
+  const periodLabel =
+    period.grain === "all_history"
+      ? "All published history"
+      : period.grain === "range"
+        ? `${period.day_min || ""} – ${period.day_max || ""}`
+        : period.month_label || period.month_start || "Latest published month";
+  const compareLabel = comparison.available
+    ? comparison.month_label || comparison.month_start || "Prior period"
+    : comparison.reason === "comparison_disabled"
+      ? "None"
+      : "No prior period";
+  let kpiBody;
+  if (zoneLoading) {
+    kpiBody = studioZoneLoading("Loading KPI band.");
+  } else if (kpiFail && !data) {
+    kpiBody = html`<div data-studio-kpi-error="true">${errorBanner(kpiFail)}</div>`;
+  } else if (data && data.has_published_history && kpis.length) {
+    kpiBody = overviewKpiCardsHtml({ data, query, interactive: false });
+  } else {
+    kpiBody = html`<p class="muted" data-studio-kpi-empty="true" role="status">No published history is available for this company.</p>`;
+  }
+  return html`
+    <section class="studio-workspace" data-studio-shell="true" aria-busy="${zoneLoading ? "true" : "false"}">
+      <p class="sr-only" role="status" aria-live="polite">${zoneLoading ? "Loading Analytics Studio." : ""}</p>
+      <header class="studio-header workspace-chrome" data-studio-header="true">
+        ${pageHeader({
+          eyebrow: "Analytics Studio",
+          title: "Performance canvas",
+          description: "Full-width published-history analysis. Shared filters with Overview. KPI values come from the same overview contract.",
+        })}
+        <p class="studio-context" data-studio-context="true">
+          ${
+            zoneLoading
+              ? html`<span data-studio-context-loading="true">Loading published-history analysis.</span>`
+              : html`
+                  <span><strong>${company}</strong></span>
+                  <span>Period ${periodLabel}</span>
+                  <span>Comparison ${compareLabel}</span>
+                `
+          }
+        </p>
+      </header>
+      <div class="studio-body">
+        <aside class="studio-filter-rail" data-studio-filter-rail="true" aria-labelledby="studio-filters-title">
+          <header class="studio-rail-head">
+            <h2 id="studio-filters-title">Filters</h2>
+            <p class="muted" id="studio-filters-desc">Same D2 period, comparison, and dimension keys as Overview.</p>
+          </header>
+          <div class="studio-filter-host" data-studio-filter-bar="true">
+            ${
+              zoneLoading
+                ? studioZoneLoading("Loading filters.")
+                : overviewFilterBar(data, query, { clearHref: studioHref() })
+            }
+          </div>
+        </aside>
+        <div class="studio-canvas" data-studio-canvas="true" role="region" aria-label="Studio visuals">
+          <section class="studio-kpi-zone" data-studio-kpi-zone="true" aria-labelledby="studio-kpi-title" aria-describedby="studio-kpi-desc">
+            <header class="studio-zone-head">
+              <h2 id="studio-kpi-title">KPI band</h2>
+              <p class="muted" id="studio-kpi-desc">Eight published-history KPIs for the current Studio filters. Values are not computed in the browser.</p>
+            </header>
+            <div class="studio-kpi-slots" data-studio-kpi-slots="true" data-studio-kpis-host="true">${kpiBody}</div>
+          </section>
+          ${studioStackedBarZone({ query, stack, stackError, loading: zoneLoading })}
+          ${studioShareStackedZone({ query, stack, stackError, loading: zoneLoading })}
+          <div class="studio-canvas-grid">
+            ${studioTrendZone({ query, trend, trendError, loading: zoneLoading })}
+            ${studioDistributionZone({ query, mix, mixError, loading: zoneLoading })}
+            ${studioComboZone({ query, trend, trendError, loading: zoneLoading })}
+            ${studioDetailZone({ query, mix, mixError, loading: zoneLoading })}
+            ${studioNarrativeZone({ query, insights, insightsError, anomalies, anomaliesError, loading: zoneLoading })}
+          </div>
+        </div>
+      </div>
+    </section>
   `;
 }
 

@@ -907,7 +907,7 @@ def test_overview_compact_analytical_filters() -> None:
     assert "layout(" not in refresh
     submit = app[app.index('if (form.dataset.overviewFilters === "true")') : app.index('if (form.dataset.overviewTrendForm === "true")')]
     assert "queryFromOverviewForm(form)" in submit
-    assert "navigate(overviewHref" in submit
+    assert "overviewHref(queryFromOverviewForm(form))" in submit
     assert "window.location.reload" not in app
     assert ".filter-picker-trigger" in css
     assert ".filter-picker-popover" in css

@@ -1,4 +1,4 @@
-import { ANALYTICS_MULTI, ANALYTICS_SINGLE, DRILL_MULTI, DRILL_SINGLE, EXPLORER_KEYS, FINDING_KEYS, FOCUS_KEYS, TREND_KEYS, drillParamsFromQuery, drillTrendParamsFromQuery, explorerParamsFromQuery, insightsParamsFromQuery, anomaliesParamsFromQuery, askPayloadFromForm, exportParamsFromQuery, generateTrendAskPayload, generatedTrendSelectionFromAsk, overviewHref, overviewParamsFromQuery, parseDrillQuery, queryFromExplorerForm, queryFromOverviewForm, queryFromTrendForm, queryFromWorkspaceState, sparklineParamsFromQuery, stripDrill, withDrill, withTrendSelection, workspaceStateFromQuery } from "./analytics-state.js";
+import { ANALYTICS_MULTI, ANALYTICS_SINGLE, DRILL_MULTI, DRILL_SINGLE, EXPLORER_KEYS, FINDING_KEYS, FOCUS_KEYS, TREND_KEYS, drillParamsFromQuery, drillTrendParamsFromQuery, explorerParamsFromQuery, insightsParamsFromQuery, anomaliesParamsFromQuery, askPayloadFromForm, exportParamsFromQuery, generateTrendAskPayload, generatedTrendSelectionFromAsk, overviewHref, overviewParamsFromQuery, parseDrillQuery, queryFromExplorerForm, queryFromOverviewForm, queryFromStudioForm, queryFromTrendForm, queryFromWorkspaceState, sparklineParamsFromQuery, stripDrill, studioHref, studioParamsFromQuery, withDrill, withTrendSelection, workspaceStateFromQuery } from "./analytics-state.js";
 import { contextualTrendFromSparkline } from "./sparkline.js";
 import { DfipApiClient, ApiError } from "./api-client.js";
 import { clearToken, getStoredToken, storeToken } from "./auth.js";
@@ -23,6 +23,7 @@ import {
   clientFactListView,
   clientHomeView,
   clientOverviewView,
+  clientStudioView,
   companySelectView,
   companiesView,
   credentialView,
@@ -125,6 +126,7 @@ const routes = [
   { pattern: /^\/admin\/downloads$/, name: "admin-downloads", access: "admin" },
   { pattern: /^\/client$/, name: "client-home", access: "client" },
   { pattern: /^\/client\/overview$/, name: "client-overview", access: "client" },
+  { pattern: /^\/client\/studio$/, name: "client-studio", access: "client" },
   { pattern: /^\/client\/facts$/, name: "client-facts", access: "client" },
   { pattern: /^\/client\/facts\/detail$/, name: "client-fact-detail", access: "client" },
 ];
@@ -178,6 +180,14 @@ function withUploadLimit(viewArgs) {
 
 function render(body, path) {
   root.innerHTML = toHtml(layout({ path, session, body }));
+}
+
+function isStudioRoute() {
+  return currentLocation().path === "/client/studio";
+}
+
+function sharedFilterHref(query) {
+  return isStudioRoute() ? studioHref(query) : overviewHref(query);
 }
 
 function queryObject(query) {
@@ -1715,7 +1725,11 @@ async function renderRoute() {
       }
     }
     if (route.name !== "credential") {
-      render(loadingState(), path);
+      if (route.name === "client-studio") {
+        render(clientStudioView({ session, query, loading: true }), path);
+      } else {
+        render(loadingState(), path);
+      }
     }
     const body = await viewFor(route.name, { path, query, params });
     if (route.access === "public" && route.name === "credential") {
@@ -1723,7 +1737,7 @@ async function renderRoute() {
       return;
     }
     render(body, path);
-    if (route.name === "client-overview") {
+    if (route.name === "client-overview" || route.name === "client-studio") {
       observeStickyOffset();
       syncOverviewDrillInert();
       const drillQuery = parseDrillQuery(query);
@@ -1970,6 +1984,91 @@ async function viewFor(name, ctx) {
       currentPublication,
       loading: false,
     });
+  }
+  if (name === "client-studio") {
+    try {
+      const params = studioParamsFromQuery(query, publishedParams({}));
+      const trendParams = { ...params, secondary: "revenue_inr" };
+      const stackParams = { ...params, breakdown: "channel" };
+      const insightParams = insightsParamsFromQuery(query, publishedParams({}));
+      const anomalyParams = anomaliesParamsFromQuery(query, publishedParams({}));
+      const [kpiResult, trendResult, mixResult, stackResult, insightsResult, anomaliesResult] = await Promise.allSettled([
+        api.getOverviewKpis(params),
+        api.getOverviewTrends(trendParams),
+        api.getOverviewExplorer(params),
+        api.getOverviewTrends(stackParams),
+        api.getOverviewInsights(insightParams),
+        api.getOverviewAnomalies(anomalyParams),
+      ]);
+      let data = null;
+      let kpiError = null;
+      if (kpiResult.status === "fulfilled") {
+        data = kpiResult.value;
+      } else {
+        if (isAuthError(kpiResult.reason)) throw kpiResult.reason;
+        kpiError = kpiResult.reason;
+      }
+      let trend = null;
+      let trendError = null;
+      if (trendResult.status === "fulfilled") {
+        trend = trendResult.value;
+      } else {
+        if (isAuthError(trendResult.reason)) throw trendResult.reason;
+        trendError = trendResult.reason;
+      }
+      let mix = null;
+      let mixError = null;
+      if (mixResult.status === "fulfilled") {
+        mix = mixResult.value;
+      } else {
+        if (isAuthError(mixResult.reason)) throw mixResult.reason;
+        mixError = mixResult.reason;
+      }
+      let stack = null;
+      let stackError = null;
+      if (stackResult.status === "fulfilled") {
+        stack = stackResult.value;
+      } else {
+        if (isAuthError(stackResult.reason)) throw stackResult.reason;
+        stackError = stackResult.reason;
+      }
+      let insights = null;
+      let insightsError = null;
+      if (insightsResult.status === "fulfilled") {
+        insights = insightsResult.value;
+      } else {
+        if (isAuthError(insightsResult.reason)) throw insightsResult.reason;
+        insightsError = insightsResult.reason;
+      }
+      let anomalies = null;
+      let anomaliesError = null;
+      if (anomaliesResult.status === "fulfilled") {
+        anomalies = anomaliesResult.value;
+      } else {
+        if (isAuthError(anomaliesResult.reason)) throw anomaliesResult.reason;
+        anomaliesError = anomaliesResult.reason;
+      }
+      return clientStudioView({
+        session,
+        data,
+        kpiError,
+        trend,
+        trendError,
+        mix,
+        mixError,
+        stack,
+        stackError,
+        insights,
+        insightsError,
+        anomalies,
+        anomaliesError,
+        query,
+        loading: false,
+      });
+    } catch (error) {
+      if (isAuthError(error)) throw error;
+      return clientStudioView({ session, error, loading: false, query });
+    }
   }
   if (name === "client-overview") {
     try {
@@ -2784,7 +2883,11 @@ root.addEventListener("click", (event) => {
       query.delete(key);
       for (const item of kept) query.append(key, item);
     }
-    navigate(overviewHref(query));
+    if (isStudioRoute()) {
+      for (const key of [...TREND_KEYS, ...FINDING_KEYS, ...DRILL_SINGLE, ...EXPLORER_KEYS, ...FOCUS_KEYS]) query.delete(key);
+      query.delete("drill_parent");
+    }
+    navigate(sharedFilterHref(query));
     return;
   }
   const retry = event.target.closest("[data-overview-retry]");
@@ -3068,6 +3171,7 @@ root.addEventListener("click", (event) => {
   }
   const trendDrill = event.target.closest("[data-trend-drill]");
   if (trendDrill && !trendDrill.closest("[data-drill-panel]")) {
+    if (isStudioRoute()) return;
     event.preventDefault();
     overviewDrillReturnFocus = "";
     openTrendDrill(trendDrill);
@@ -3261,7 +3365,7 @@ root.addEventListener("keydown", (event) => {
     return;
   }
   const trendDrill = event.target.closest("[data-trend-drill]");
-  if (!trendDrill || trendDrill.closest("[data-drill-panel]")) return;
+  if (!trendDrill || trendDrill.closest("[data-drill-panel]") || isStudioRoute()) return;
   event.preventDefault();
   overviewDrillReturnFocus = "";
   openTrendDrill(trendDrill);
@@ -3359,7 +3463,7 @@ root.addEventListener("submit", async (event) => {
   if (!(form instanceof HTMLFormElement)) return;
   if (form.dataset.overviewFilters === "true") {
     event.preventDefault();
-    navigate(overviewHref(queryFromOverviewForm(form)));
+    navigate(isStudioRoute() ? studioHref(queryFromStudioForm(form)) : overviewHref(queryFromOverviewForm(form)));
     return;
   }
   if (form.dataset.overviewTrendForm === "true") {

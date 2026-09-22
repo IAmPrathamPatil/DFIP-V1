@@ -516,6 +516,26 @@ def _metric_values(
     }
 
 
+def _fill_trend_bucket_shares(series: list[TrendSeries]) -> None:
+    """Share of each breakdown point within its time bucket. Zero/empty totals stay null."""
+    if not series:
+        return
+    length = len(series[0].points)
+    for index in range(length):
+        amounts: list[Decimal | None] = []
+        for item in series:
+            point = item.points[index] if index < len(item.points) else None
+            amounts.append(_numeric(point.value) if point is not None else None)
+        present = [amount for amount in amounts if amount is not None]
+        total = sum(present, start=Decimal("0")) if present else None
+        for item, amount in zip(series, amounts, strict=False):
+            if index >= len(item.points):
+                continue
+            item.points[index].bucket_share = decimal_to_api(
+                safe_divide(amount, total, scale=RATE_SCALE)
+            )
+
+
 def _index_series_rows(
     rows: list[tuple[date, str | None, str | None, dict[str, object], int]],
     *,
@@ -839,6 +859,8 @@ class AnalyticsService:
             series.append(
                 TrendSeries(key=key, label=str(payload.get("label") or key), points=points)
             )
+        if breakdown_spec is not None and primary_spec.additive:
+            _fill_trend_bucket_shares(series)
         return TrendResponse(
             client_id=scope.client_id,
             company_name=scope.company_name,

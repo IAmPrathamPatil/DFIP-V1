@@ -25,6 +25,8 @@ export function icon(name) {
     client: '<rect x="3" y="4" width="18" height="14" rx="2"/><path d="M3 10h18"/>',
     overview:
       '<path d="M4 19V5h16v14z"/><path d="M8 15l2.5-3 2 2 3.5-4.5"/><circle cx="8" cy="15" r="0.6" fill="currentColor"/>',
+    studio:
+      '<rect x="3" y="4" width="8" height="7" rx="1"/><rect x="13" y="4" width="8" height="4" rx="1"/><rect x="13" y="10" width="8" height="10" rx="1"/><rect x="3" y="13" width="8" height="7" rx="1"/>',
     menu: '<path d="M4 7h16M4 12h16M4 17h16"/>',
     ask: '<path d="M5 6h14v10H8l-3 3z"/>',
     spark: '<path d="M12 3l1.35 6.15L20 12l-6.65 2.85L12 21l-1.35-6.15L4 12l6.65-2.85z"/>',
@@ -65,6 +67,7 @@ function pageTitleFor(path) {
   if (path.startsWith("/admin/publications")) return "Publications";
   if (path.startsWith("/admin/downloads")) return "Downloads";
   if (path === "/client/overview") return "Overview";
+  if (path === "/client/studio") return "Analytics Studio";
   if (path === "/client") return "Reports";
   if (path.startsWith("/client/facts")) return "Published data";
   if (path === "/unauthorized") return "Not authorized";
@@ -179,6 +182,7 @@ export function layout({ path, session, body }) {
                 <div class="nav-section">Reporting</div>
                 <ul>
                   ${navItem("/client/overview", "Overview", path, signedIn && !admin, "overview")}
+                  ${navItem("/client/studio", "Analytics Studio", path, signedIn, "studio")}
                   ${navItem("/client", "Reports", path, signedIn, "client")}
                   ${navItem("/client/facts", "Published data", path, signedIn, "facts")}
                 </ul>
@@ -252,7 +256,9 @@ export function overviewKpiCard({
   trendHref,
   selected,
   sparklineHtml,
+  interactive = true,
 }) {
+  const linked = interactive !== false;
   const direction = deltaDirection === "up" || deltaDirection === "down" || deltaDirection === "flat" ? deltaDirection : "";
   const arrow = direction === "up" ? "↑" : direction === "down" ? "↓" : direction === "flat" ? "→" : "";
   const stateClass = selected ? "is-selected" : "";
@@ -263,23 +269,11 @@ export function overviewKpiCard({
     if (deltaText) accessibleBits.push(direction === "down" ? `down ${deltaText}` : direction === "up" ? `up ${deltaText}` : deltaText);
     if (vsText) accessibleBits.push(vsText);
   }
-  accessibleBits.push("View details");
-  return html`
-    <a
-      class="metric-card overview-kpi ${stateClass}"
-      href="${detailsHref || "#"}"
-      data-overview-kpi="${id || ""}"
-      data-overview-kpi-selected="${selected ? "true" : "false"}"
-      data-overview-drill-kpi="${id || ""}"
-      data-overview-trend-kpi="${id || ""}"
-      data-overview-trend-href="${trendHref || ""}"
-      title="${definition || `View ${label || "KPI"} details`}"
-      aria-label="${accessibleBits.filter(Boolean).join(". ")}"
-      aria-current="${selected ? "true" : "false"}"
-    >
+  if (linked) accessibleBits.push("View details");
+  const body = html`
       <span class="kpi-card-head">
         <span class="metric-label">${label}</span>
-        <span class="kpi-card-affordance" aria-hidden="true">→</span>
+        ${linked ? html`<span class="kpi-card-affordance" aria-hidden="true">→</span>` : ""}
       </span>
       <span class="metric-value">${value}</span>
       ${
@@ -297,7 +291,11 @@ export function overviewKpiCard({
                 }
               `
       }
-      <span class="kpi-sparkline-slot" data-kpi-sparkline="${id || ""}" aria-hidden="true">${sparklineHtml || ""}</span>
+      ${
+        linked
+          ? html`<span class="kpi-sparkline-slot" data-kpi-sparkline="${id || ""}" aria-hidden="true">${sparklineHtml || ""}</span>`
+          : ""
+      }
       ${
         comparisonNone || unavailableComparison
           ? ""
@@ -305,7 +303,34 @@ export function overviewKpiCard({
             ? html`<span class="metric-hint kpi-card-vs" data-kpi-vs="true">${vsText}</span>`
             : ""
       }
-      <span class="kpi-card-action">View details</span>
+      ${linked ? html`<span class="kpi-card-action">View details</span>` : ""}
+  `;
+  if (!linked) {
+    return html`
+      <article
+        class="metric-card overview-kpi studio-kpi ${stateClass}"
+        data-studio-kpi="${id || ""}"
+        title="${definition || label || "KPI"}"
+        aria-label="${accessibleBits.filter(Boolean).join(". ")}"
+      >
+        ${body}
+      </article>
+    `;
+  }
+  return html`
+    <a
+      class="metric-card overview-kpi ${stateClass}"
+      href="${detailsHref || "#"}"
+      data-overview-kpi="${id || ""}"
+      data-overview-kpi-selected="${selected ? "true" : "false"}"
+      data-overview-drill-kpi="${id || ""}"
+      data-overview-trend-kpi="${id || ""}"
+      data-overview-trend-href="${trendHref || ""}"
+      title="${definition || `View ${label || "KPI"} details`}"
+      aria-label="${accessibleBits.filter(Boolean).join(". ")}"
+      aria-current="${selected ? "true" : "false"}"
+    >
+      ${body}
     </a>
   `;
 }

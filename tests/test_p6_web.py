@@ -197,6 +197,7 @@ def test_nav_current_state_is_exclusive_per_route() -> None:
         "/admin/downloads",
         "/client",
         "/client/overview",
+        "/client/studio",
         "/client/facts",
     ]
     paths = {
@@ -219,6 +220,7 @@ def test_nav_current_state_is_exclusive_per_route() -> None:
         "/admin/downloads": "/admin/downloads",
         "/client": "/client",
         "/client/overview": "/client/overview",
+        "/client/studio": "/client/studio",
         "/client/facts": "/client/facts",
         "/client/facts/detail": "/client/facts",
     }

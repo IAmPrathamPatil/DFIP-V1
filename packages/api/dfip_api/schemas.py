@@ -837,12 +837,15 @@ class TrendPoint(BaseModel):
     denominator: str | int | None = None
     grain_row_count: int = 0
     values: dict[str, str | int | None] | None = None
+    bucket_share: str | None = None
 
     @model_serializer(mode="wrap")
     def _omit_null_values(self, serializer):
         data = serializer(self)
         if isinstance(data, dict) and data.get("values") is None:
             data.pop("values", None)
+        if isinstance(data, dict) and data.get("bucket_share") is None:
+            data.pop("bucket_share", None)
         return data
 
 
