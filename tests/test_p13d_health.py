@@ -374,6 +374,19 @@ def test_processing_run_exposes_progress_and_error() -> None:
 @requires_postgres
 def test_postgres_ready_select_one(tmp_path: Path, pg_conn, postgres_url) -> None:
     seed_identity(pg_conn, subject="ops-publisher", role="publisher", client_id=CLIENT_ID)
+    # Company lifecycle is configuration, not tenant data, so `truncate_tenant`
+    # leaves the `client` row alone and an earlier test can leave this company
+    # inactive. Opening a Publisher session requires an active company, so pin
+    # it before the session is established.
+    pg_conn.execute(
+        """
+        UPDATE client
+        SET lifecycle_status = 'active', deactivated_at = NULL
+        WHERE id = %s
+        """,
+        (CLIENT_ID,),
+    )
+    pg_conn.commit()
     archive = tmp_path / "pg-archive"
     archive.mkdir()
     http = TestClient(
