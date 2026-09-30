@@ -56,6 +56,7 @@ from postgres_support import (
     requires_postgres,
     seed_identity,
 )
+from publisher_session_support import with_publisher_session
 from test_p5_api import JWT_SECRET, _encode_jwt, make_settings
 
 
@@ -234,6 +235,12 @@ def _pg_auth(subject: str, client_id: str) -> dict[str, str]:
     }
 
 
+def _pub(http: TestClient, headers: dict[str, str]) -> dict[str, str]:
+    """Attach this caller's active Publisher session to publisher headers."""
+    token = headers["Authorization"].split(" ", 1)[1]
+    return with_publisher_session(headers, http, token)
+
+
 requires_pg_dump = pytest.mark.skipif(
     not postgres_tools_available(),
     reason="pg_dump/pg_restore are not on PATH and compose dfip_db is unavailable",
@@ -280,8 +287,8 @@ def test_postgres_backup_restore_preserves_history_and_isolation(
     seed_identity(pg_conn, subject="publisher-b", role="publisher", client_id=CLIENT_B)
     archive = tmp_path / "live-archive"
     http = _pg_app(postgres_url, archive)
-    headers_a = _pg_auth("publisher-a", CLIENT_A)
-    headers_b = _pg_auth("publisher-b", CLIENT_B)
+    headers_a = _pub(http, _pg_auth("publisher-a", CLIENT_A))
+    headers_b = _pub(http, _pg_auth("publisher-b", CLIENT_B))
     first = _upload_process(http, tmp_path, headers_a, "a1.xlsx", **{"Campaign ID": "camp-a1"})
     a1 = _publish(http, headers_a, first["processing_run"]["processing_run_id"], CLIENT_A)
     second = _upload_process(http, tmp_path, headers_a, "a2.xlsx", **{"Campaign ID": "camp-a2"})

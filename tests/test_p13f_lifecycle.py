@@ -40,6 +40,7 @@ from test_company_registry import (
     WEB_STATIC,
     _bearer,
     _identity,
+    _pub,
     _publish_synthetic,
     _select,
     _token,
@@ -80,7 +81,7 @@ def test_settings_purge_policy_defaults() -> None:
 def test_active_company_operates_then_deactivate_blocks_live_ops(tmp_path: Path) -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     listed = http.get("/api/v1/clients", headers=company1)
     assert listed.status_code == 200
     row = next(item for item in listed.json()["items"] if item["client_id"] == DEFAULT_CLIENT_ID)
@@ -195,7 +196,7 @@ def test_active_company_operates_then_deactivate_blocks_live_ops(tmp_path: Path)
     assert ready.status_code == 200
     assert ready.json()["status"] == "ready"
 
-    other = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    other = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     other_list = http.get("/api/v1/clients", headers=other)
     assert other_list.status_code == 200
     other_ids = {item["client_id"] for item in other_list.json()["items"]}
@@ -206,7 +207,7 @@ def test_active_company_operates_then_deactivate_blocks_live_ops(tmp_path: Path)
 def test_reactivate_restores_operations(tmp_path: Path) -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     http.post(f"/api/v1/clients/{DEFAULT_CLIENT_ID}/deactivate", headers=company1)
     restored = http.post(f"/api/v1/clients/{DEFAULT_CLIENT_ID}/reactivate", headers=company1)
     assert restored.status_code == 200
@@ -225,7 +226,7 @@ def test_reactivate_restores_operations(tmp_path: Path) -> None:
 def test_in_flight_processing_is_not_cancelled(tmp_path: Path) -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     published = _publish_synthetic(
         http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id="camp-run"
     )
@@ -243,7 +244,7 @@ def test_in_flight_processing_is_not_cancelled(tmp_path: Path) -> None:
 def test_publisher_login_without_select_still_works() -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     http.post(f"/api/v1/clients/{DEFAULT_CLIENT_ID}/deactivate", headers=company1)
     again = http.post(
         "/api/v1/auth/login",
@@ -265,7 +266,7 @@ def test_publisher_login_without_select_still_works() -> None:
 def test_process_retry_blocked_after_deactivate(tmp_path: Path) -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     published = _publish_synthetic(
         http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id="camp-retry"
     )
@@ -281,7 +282,7 @@ def test_process_retry_blocked_after_deactivate(tmp_path: Path) -> None:
 def test_protected_company_cannot_be_deleted() -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     active = http.delete(f"/api/v1/clients/{DEFAULT_CLIENT_ID}", headers=company1)
     assert active.status_code == 409, active.text
     assert _error(active)["message"] == MUST_DEACTIVATE
@@ -317,7 +318,7 @@ def test_spa_exposes_deactivate_then_delete_company() -> None:
 
 def test_deactivate_unauthorized_company_is_forbidden() -> None:
     http = TestClient(_app())
-    other = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    other = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     response = http.post(f"/api/v1/clients/{DEFAULT_CLIENT_ID}/deactivate", headers=other)
     assert response.status_code == 403
     assert _error(response)["message"] != INACTIVE_COMPANY_MESSAGE
@@ -358,7 +359,7 @@ def test_postgres_lifecycle_defaults_active(pg_conn, postgres_url: str) -> None:
     )
     with TestClient(app) as http:
         unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-        company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+        company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
         deactivated = http.post(f"/api/v1/clients/{DEFAULT_CLIENT_ID}/deactivate", headers=company1)
         assert deactivated.status_code == 200
         assert deactivated.json()["purge_eligible_after"]
@@ -391,7 +392,7 @@ def test_postgres_lifecycle_defaults_active(pg_conn, postgres_url: str) -> None:
 def test_delete_company_after_deactivate_is_permanent(tmp_path: Path) -> None:
     http = TestClient(_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     kept = _publish_synthetic(
         http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id="camp-keep"
     )
@@ -399,7 +400,7 @@ def test_delete_company_after_deactivate_is_permanent(tmp_path: Path) -> None:
     assert created.status_code == 201, created.text
     target = created.json()["client_id"]
     assert target != DEFAULT_CLIENT_ID
-    scoped = _bearer(_select(http, unbound, target).json()["access_token"])
+    scoped = _pub(http, _select(http, unbound, target).json()["access_token"])
     listed = http.get("/api/v1/clients", headers=scoped)
     assert target in {item["client_id"] for item in listed.json()["items"]}
     _publish_synthetic(
@@ -467,7 +468,7 @@ def test_delete_company_after_deactivate_is_permanent(tmp_path: Path) -> None:
             "items"
         ]
     }
-    kept_headers = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    kept_headers = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     kept_facts = http.get("/api/v1/publications/current/facts", headers=kept_headers)
     assert kept_facts.status_code == 200
     assert kept_facts.json()["pagination"]["total"] >= 1

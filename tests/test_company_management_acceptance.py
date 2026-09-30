@@ -28,6 +28,7 @@ from fastapi.testclient import TestClient
 
 from http_ingest_support import source_row, upload_workbook, workbook_bytes
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_company_registry import (
     CLIENT2_PASSWORD,
     CLIENT_PASSWORD,
@@ -59,6 +60,11 @@ OPERATOR_PASS = "ops-publisher-pass"
 
 def _users_url(client_id: str) -> str:
     return f"/api/v1/clients/{client_id}/users"
+
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    """A Publisher must hold a live session before any gated route answers."""
+    return publisher_headers(http, token)
 
 
 def _user_body(
@@ -173,7 +179,9 @@ def test_seeded_environment_does_not_offer_product_publisher_setup() -> None:
 
 def test_client_password_confirmation_must_match() -> None:
     http = TestClient(_memory_app())
-    publisher = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
     mismatch = http.post(
         _users_url(DEFAULT_CLIENT_ID),
         headers=publisher,
@@ -186,7 +194,9 @@ def test_client_password_confirmation_must_match() -> None:
 
 def test_publisher_provisions_operator_chosen_client_login() -> None:
     http = TestClient(_memory_app())
-    publisher = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
     created = http.post(
         _users_url(DEFAULT_CLIENT_ID),
         headers=publisher,
@@ -223,7 +233,9 @@ def test_publisher_provisions_operator_chosen_client_login() -> None:
 
 def test_client_login_cannot_manage_companies_or_inspect() -> None:
     http = TestClient(_memory_app())
-    publisher = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
     http.post(
         _users_url(DEFAULT_CLIENT_ID),
         headers=publisher,
@@ -274,7 +286,7 @@ def test_client_login_cannot_manage_companies_or_inspect() -> None:
 
 def test_provision_denied_for_unauthorized_company_and_other_publisher() -> None:
     http = TestClient(_memory_app())
-    other = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    other = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     denied = http.post(
         _users_url(DEFAULT_CLIENT_ID),
         headers=other,
@@ -294,8 +306,10 @@ def test_provision_denied_for_unauthorized_company_and_other_publisher() -> None
 
 def test_existing_company_clients_stay_isolated_after_provision(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
-    pub1 = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
-    pub2 = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    pub1 = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
+    pub2 = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     _publish_synthetic(
         http, tmp_path, publisher=pub1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
     )
@@ -395,14 +409,15 @@ def test_postgres_new_company_client_ready_e2e(pg_conn, postgres_url: str, tmp_p
     )
     with TestClient(app) as http:
         unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-        company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+        company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
         first = _publish_synthetic(
             http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
         )
-        company2 = _bearer(
+        company2 = _pub(
+            http,
             _select(http, company1["Authorization"].split(" ", 1)[1], COMPANY_2_CLIENT_ID).json()[
                 "access_token"
-            ]
+            ],
         )
         second = _publish_synthetic(
             http, tmp_path, publisher=company2, client_id=COMPANY_2_CLIENT_ID, campaign_id=CAMP_2
@@ -422,7 +437,7 @@ def test_postgres_new_company_client_ready_e2e(pg_conn, postgres_url: str, tmp_p
         selected = _select(http, company2["Authorization"].split(" ", 1)[1], new_id)
         assert selected.status_code == 200, selected.text
         assert selected.json()["session"]["client_id"] == new_id
-        operator = _bearer(selected.json()["access_token"])
+        operator = _pub(http, selected.json()["access_token"])
         provisioned = http.post(
             _users_url(new_id),
             headers=operator,

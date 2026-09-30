@@ -30,6 +30,7 @@ from fastapi.testclient import TestClient
 
 from http_ingest_support import source_row, upload_workbook, workbook_bytes
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_p5_api import JWT_SECRET, make_settings
 
 PUBLISHER_PASSWORD = "local-publisher-pass"
@@ -48,6 +49,10 @@ def _guard_kwargs(**overrides):
     body.update(overrides)
     return body
 
+
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    return publisher_headers(http, token)
 
 def test_empty_database_url_is_refused() -> None:
     assert is_hosted_or_unsafe_database_url("")
@@ -178,7 +183,7 @@ def test_client_cannot_inspect_or_publish_and_publisher_upload_does_not_publish(
         "access_token"
     ]
     client_token = _login(http, DEMO_CLIENT_SUBJECT, CLIENT_PASSWORD).json()["access_token"]
-    publisher = _bearer(publisher_token)
+    publisher = _pub(http, publisher_token)
     client = _bearer(client_token)
 
     inspect = http.get("/api/v1/facts", headers=client)

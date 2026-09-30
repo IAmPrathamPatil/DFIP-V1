@@ -27,6 +27,7 @@ from fastapi.testclient import TestClient
 
 from http_ingest_support import source_row, upload_workbook, workbook_bytes
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_p5_api import JWT_SECRET, make_settings
 from test_p9_authz import _error
 
@@ -121,6 +122,15 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    """A Publisher must hold a live session before any gated route answers.
+
+    Only one Publisher session is active per account, so headers are re-derived
+    from the caller's token rather than stored once.
+    """
+    return publisher_headers(http, token)
+
+
 def _token(http: TestClient, username: str, password: str, client_id: str | None = None) -> str:
     response = _login(http, username, password, client_id)
     assert response.status_code == 200, response.text
@@ -130,7 +140,7 @@ def _token(http: TestClient, username: str, password: str, client_id: str | None
 def _select(http: TestClient, token: str, client_id: str):
     return http.post(
         "/api/v1/auth/select-client",
-        headers=_bearer(token),
+        headers=_pub(http, token),
         json={"client_id": client_id},
     )
 
@@ -174,7 +184,7 @@ def _publish_synthetic(
 
 def test_publisher_lists_authorized_companies() -> None:
     http = TestClient(_memory_app())
-    headers = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
+    headers = _pub(http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
     response = http.get("/api/v1/clients", headers=headers)
     assert response.status_code == 200, response.text
     body = response.json()
@@ -208,7 +218,7 @@ def test_client_and_reader_cannot_list_or_rename_registry() -> None:
 def test_publisher_renames_display_name_without_changing_client_id(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     published = _publish_synthetic(
         http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
     )
@@ -250,7 +260,7 @@ def test_publisher_renames_display_name_without_changing_client_id(tmp_path: Pat
     assert back.status_code == 200
     assert back.json()["session"]["client_id"] == DEFAULT_CLIENT_ID
     current = http.get(
-        "/api/v1/publications/current", headers=_bearer(back.json()["access_token"])
+        "/api/v1/publications/current", headers=_pub(http, back.json()["access_token"])
     )
     assert current.json()["publication"]["publication_id"] == publication_id
 
@@ -262,7 +272,7 @@ def test_publisher_renames_display_name_without_changing_client_id(tmp_path: Pat
 
 def test_cannot_rename_unauthorized_or_foreign_company() -> None:
     http = TestClient(_memory_app())
-    solo = _bearer(_token(http, SOLO_PUBLISHER, SOLO_PASSWORD))
+    solo = _pub(http, _token(http, SOLO_PUBLISHER, SOLO_PASSWORD))
     foreign = http.post(
         f"/api/v1/clients/{COMPANY_2_CLIENT_ID}/rename",
         headers=solo,
@@ -331,18 +341,18 @@ def test_postgres_rename_keeps_publication_and_other_tenant(
     )
     with TestClient(app) as http:
         unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-        listed = http.get("/api/v1/clients", headers=_bearer(unbound))
+        listed = http.get("/api/v1/clients", headers=_pub(http, unbound))
         assert listed.status_code == 200
         assert _ids(listed.json()) == {DEFAULT_CLIENT_ID, COMPANY_2_CLIENT_ID}
         original_two = _names(listed.json())[COMPANY_2_CLIENT_ID]
         assert original_two == COMPANY_2_CLIENT_NAME
 
-        company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+        company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
         first = _publish_synthetic(
             http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
         )
         token1 = company1["Authorization"].split(" ", 1)[1]
-        company2 = _bearer(_select(http, token1, COMPANY_2_CLIENT_ID).json()["access_token"])
+        company2 = _pub(http, _select(http, token1, COMPANY_2_CLIENT_ID).json()["access_token"])
         second = _publish_synthetic(
             http, tmp_path, publisher=company2, client_id=COMPANY_2_CLIENT_ID, campaign_id=CAMP_2
         )

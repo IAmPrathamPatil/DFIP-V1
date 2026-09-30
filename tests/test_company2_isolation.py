@@ -33,6 +33,7 @@ from psycopg.rows import dict_row
 
 from http_ingest_support import source_row, upload_workbook, workbook_bytes
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_p5_api import JWT_SECRET, make_settings
 
 PUBLISHER_PASSWORD = "local-publisher-pass"
@@ -143,6 +144,10 @@ def _publish_synthetic(
     return created.json()
 
 
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    return publisher_headers(http, token)
+
 def test_cli_company2_without_passwords_exits_nonzero(monkeypatch, capsys) -> None:
     monkeypatch.setenv("DFIP_LOCAL_DEMO_SEED", "1")
     monkeypatch.setenv("DFIP_ENV", "development")
@@ -179,8 +184,8 @@ def test_company1_and_company2_logins_resolve_only_own_client() -> None:
 
 def test_memory_two_tenant_publication_isolation(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
-    pub1 = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
-    pub2 = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    pub1 = _pub(http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
+    pub2 = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     client1 = _bearer(_token(http, DEMO_CLIENT_SUBJECT, CLIENT_PASSWORD))
     client2 = _bearer(_token(http, DEMO_CLIENT_2_SUBJECT, CLIENT2_PASSWORD))
 
@@ -353,8 +358,10 @@ def test_postgres_two_tenant_publication_isolation(
         )
     )
     with TestClient(app) as http:
-        pub1 = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
-        pub2 = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        pub1 = _pub(
+            http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+        )
+        pub2 = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
         client1 = _bearer(_token(http, DEMO_CLIENT_SUBJECT, CLIENT_PASSWORD))
         client2 = _bearer(_token(http, DEMO_CLIENT_2_SUBJECT, CLIENT2_PASSWORD))
 

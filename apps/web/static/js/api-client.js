@@ -8,11 +8,17 @@ export class ApiError extends Error {
   }
 }
 
+export const PUBLISHER_SESSION_REPLACED = "PUBLISHER_SESSION_REPLACED";
+
 export class DfipApiClient {
-  constructor({ baseUrl, prefix, getToken }) {
+  constructor({ baseUrl, prefix, getToken, getPublisherSession, onPublisherSessionReplaced }) {
     this.baseUrl = String(baseUrl || "").replace(/\/$/, "");
     this.prefix = "/" + String(prefix || "/api/v1").replace(/^\/+|\/+$/g, "");
     this.getToken = getToken;
+    // Both are optional. Without them the client behaves exactly as before and
+    // never sends a Publisher session header, which is the Client/Reader path.
+    this.getPublisherSession = getPublisherSession || null;
+    this.onPublisherSessionReplaced = onPublisherSessionReplaced || null;
   }
 
   health() {
@@ -93,6 +99,19 @@ export class DfipApiClient {
 
   refresh() {
     return this.request("POST", `${this.prefix}/auth/refresh`);
+  }
+
+  // Bootstrap: sends no Publisher session header because it is the request
+  // that creates the session. Taking over the previous session is intentional.
+  openPublisherSession() {
+    return this.request("POST", `${this.prefix}/auth/publisher-session`, {
+      skipPublisherSession: true,
+    });
+  }
+
+  // Carries the active Publisher session header.
+  heartbeatPublisherSession() {
+    return this.request("POST", `${this.prefix}/auth/publisher-session/heartbeat`);
   }
 
   listSourceFiles(params) {
@@ -305,7 +324,20 @@ export class DfipApiClient {
     });
   }
 
-  async request(method, path, { params, auth = true, body, multipart = false, blob = false, acceptStatuses = [], onHeaders } = {}) {
+  async request(
+    method,
+    path,
+    {
+      params,
+      auth = true,
+      body,
+      multipart = false,
+      blob = false,
+      acceptStatuses = [],
+      onHeaders,
+      skipPublisherSession = false,
+    } = {},
+  ) {
     const url = new URL(path, `${this.baseUrl}/`);
     if (params) {
       for (const [key, value] of Object.entries(params)) {
@@ -328,6 +360,16 @@ export class DfipApiClient {
         throw new ApiError(401, "AUTHENTICATION_FAILED", "Authentication required.");
       }
       headers.Authorization = `Bearer ${token}`;
+      // Single injection point: every authenticated request, including blob
+      // downloads, multipart uploads, exports, and Analytics Studio, goes
+      // through here. The getter returns null for a Client/Reader, before the
+      // session is established, and after this page is marked replaced.
+      if (!skipPublisherSession && this.getPublisherSession) {
+        const publisherSession = this.getPublisherSession();
+        if (publisherSession && publisherSession.value) {
+          headers[publisherSession.name] = publisherSession.value;
+        }
+      }
     }
     const options = { method, headers, credentials: "omit" };
     if (body !== undefined) {
@@ -358,12 +400,21 @@ export class DfipApiClient {
         }
       }
       const error = payload && payload.error ? payload.error : {};
-      throw new ApiError(
+      const apiError = new ApiError(
         response.status,
         error.code || "INTERNAL_ERROR",
         error.message || "Request failed.",
         error.details || null,
       );
+      // Terminal for this page. Reported before the throw so a poll that never
+      // awaits the result still stops.
+      if (
+        apiError.code === PUBLISHER_SESSION_REPLACED &&
+        typeof this.onPublisherSessionReplaced === "function"
+      ) {
+        this.onPublisherSessionReplaced(apiError);
+      }
+      throw apiError;
     }
     if (blob) {
       let blobBody;

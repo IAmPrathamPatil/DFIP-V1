@@ -19,6 +19,7 @@ from postgres_support import (
     seed_identity,
     seed_working_set,
 )
+from publisher_session_support import with_publisher_session
 from test_p5_api import JWT_SECRET, make_settings
 
 pytestmark = [postgres_only, requires_postgres]
@@ -34,6 +35,12 @@ def _jwt(*, role: str, sub: str, client_id: str | None = None) -> dict[str, str]
         payload["client_id"] = client_id
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
     return {"Authorization": f"Bearer {token}"}
+
+
+def _pub(http: TestClient, headers: dict[str, str]) -> dict[str, str]:
+    """Attach this caller's active Publisher session to publisher headers."""
+    token = headers["Authorization"].split(" ", 1)[1]
+    return with_publisher_session(headers, http, token)
 
 
 def _app(postgres_url: str) -> TestClient:
@@ -71,7 +78,7 @@ def test_publisher_working_set_and_reader_published(pg_conn, pg_stores, postgres
         notes=None,
     )
     client = _app(postgres_url)
-    publisher = _jwt(role="publisher", sub="publisher-1", client_id=CLIENT_A)
+    publisher = _pub(client, _jwt(role="publisher", sub="publisher-1", client_id=CLIENT_A))
     reader = _jwt(role="reader", sub="reader-1", client_id=CLIENT_A)
     working = client.get("/api/v1/facts", headers=publisher)
     assert working.status_code == 200
@@ -100,7 +107,7 @@ def test_cross_client_and_invalid_pagination(pg_conn, pg_stores, postgres_url) -
     seed_identity(pg_conn, subject="publisher-a", role="publisher", client_id=CLIENT_A)
     facts.upsert(sample_fact())
     client = _app(postgres_url)
-    headers = _jwt(role="publisher", sub="publisher-a", client_id=CLIENT_A)
+    headers = _pub(client, _jwt(role="publisher", sub="publisher-a", client_id=CLIENT_A))
     cross = client.get("/api/v1/facts", headers=headers, params={"client_id": CLIENT_B})
     assert cross.status_code in {200, 403}
     if cross.status_code == 200:
@@ -110,7 +117,7 @@ def test_cross_client_and_invalid_pagination(pg_conn, pg_stores, postgres_url) -
     assert page.json()["error"]["code"] == "INVALID_PAGINATION"
     jwt_cross = client.get(
         "/api/v1/publications/current/facts",
-        headers=_jwt(role="publisher", sub="publisher-a", client_id=CLIENT_A),
+        headers=_pub(client, _jwt(role="publisher", sub="publisher-a", client_id=CLIENT_A)),
         params={"client_id": CLIENT_B},
     )
     assert jwt_cross.status_code == 403
@@ -132,7 +139,7 @@ def test_restart_persistence(pg_conn, pg_stores, postgres_url) -> None:
     seed_identity(pg_conn, subject="publisher-1", role="publisher", client_id=CLIENT_A)
     facts.upsert(sample_fact())
     first = _app(postgres_url)
-    headers = _jwt(role="publisher", sub="publisher-1", client_id=CLIENT_A)
+    headers = _pub(first, _jwt(role="publisher", sub="publisher-1", client_id=CLIENT_A))
     before = first.get("/api/v1/facts", headers=headers).json()["pagination"]["total"]
     first.close()
     second = _app(postgres_url)
@@ -167,7 +174,7 @@ def test_facts_decimal_and_restart_entities(pg_conn, pg_stores, postgres_url) ->
         notes=None,
     )
     first = _app(postgres_url)
-    headers = _jwt(role="publisher", sub="publisher-1", client_id=CLIENT_A)
+    headers = _pub(first, _jwt(role="publisher", sub="publisher-1", client_id=CLIENT_A))
     working = first.get("/api/v1/facts", headers=headers)
     assert working.status_code == 200
     item = working.json()["items"][0]
@@ -209,13 +216,13 @@ def test_jwt_mismatch_is_403_run_mismatch_is_422(pg_conn, pg_stores, postgres_ur
     client = _app(postgres_url)
     jwt_mismatch = client.post(
         "/api/v1/publications",
-        headers=_jwt(role="publisher", sub="publisher-a", client_id=CLIENT_A),
+        headers=_pub(client, _jwt(role="publisher", sub="publisher-a", client_id=CLIENT_A)),
         json={"client_id": CLIENT_B, "processing_run_id": RUN_A},
     )
     assert jwt_mismatch.status_code == 403
     integrity = client.post(
         "/api/v1/publications",
-        headers=_jwt(role="publisher", sub="publisher-b"),
+        headers=_pub(client, _jwt(role="publisher", sub="publisher-b")),
         json={"client_id": CLIENT_B, "processing_run_id": RUN_A},
     )
     assert integrity.status_code == 422

@@ -7,6 +7,16 @@ import { confirmAction, showToast } from "./dialogs.js";
 import { errorBanner, html, loadingState, MIN_PASSWORD_LENGTH, toHtml } from "./format.js";
 import { currentLocation, matchRoute, navigate } from "./router.js";
 import {
+  ensurePublisherSession,
+  isPublisherSessionReplacedError,
+  isReplaced,
+  markReplaced,
+  publisherSessionHeader,
+  resetPublisherSession,
+  setPublisherSessionReplacedHandler,
+  stopHeartbeat,
+} from "./publisher-session.js";
+import {
   allowsInactiveCompanyRoute,
   canAccessAdmin,
   canAccessClient,
@@ -216,6 +226,37 @@ function isInactiveCompanyError(error) {
   );
 }
 
+const PUBLISHER_REPLACED_MESSAGE = "Publisher session opened elsewhere. This session is no longer active.";
+
+// Terminal for this page. Stops every background Publisher request, drops the
+// token, and shows why. Never re-establishes: the state is latched in
+// publisher-session.js so a replaced tab cannot take the session back.
+function enterPublisherSessionReplaced(path) {
+  // Latch first. Everything below assumes the replaced state is final: the
+  // header getter returns null and the poller guards stay closed from here.
+  markReplaced();
+  stopHeartbeat();
+  stopUploadPoll();
+  stopRunPoll();
+  stopBatchPoll();
+  stopPublishPoll();
+  clearPendingUpload();
+  overviewRefreshSeq += 1;
+  overviewClientId = "";
+  overviewKpiData = null;
+  refreshOverviewInPlace.previousQuery = null;
+  clearToken();
+  session = null;
+  const { pathname } = currentLocation();
+  const target = path && path !== pathname ? path : pathname;
+  root.innerHTML = toHtml(
+    credentialView({
+      error: new ApiError(401, "PUBLISHER_SESSION_REPLACED", PUBLISHER_REPLACED_MESSAGE),
+      nextPath: `${target}${window.location.search}`,
+    }),
+  );
+}
+
 function stopUploadPoll() {
   if (uploadPollTimer) {
     clearTimeout(uploadPollTimer);
@@ -258,6 +299,7 @@ function isTerminalBatch(item) {
 
 function scheduleBatchPoll(batchId) {
   stopBatchPoll();
+  if (isReplaced()) return;
   batchPollTimer = setTimeout(() => {
     pollBatchProgress(batchId);
   }, UPLOAD_POLL_MS);
@@ -402,6 +444,7 @@ function paintUploadBanner(uploadResult) {
 
 function scheduleUploadPoll(pending) {
   stopUploadPoll();
+  if (isReplaced()) return;
   uploadPollTimer = setTimeout(() => {
     pollPendingUpload(pending);
   }, UPLOAD_POLL_MS);
@@ -409,6 +452,7 @@ function scheduleUploadPoll(pending) {
 
 function scheduleRunPoll(runId) {
   stopRunPoll();
+  if (isReplaced()) return;
   runPollTimer = setTimeout(() => {
     pollPendingRun(runId);
   }, UPLOAD_POLL_MS);
@@ -561,10 +605,13 @@ async function loadSession() {
   } catch (error) {
     if (isInactiveCompanyError(error)) {
       session = await api.session();
-      return;
+    } else {
+      throw error;
     }
-    throw error;
   }
+  // Establish the Publisher session before any gated request can start.
+  // Client and Reader sessions return null here and send no header.
+  await ensurePublisherSession(api, session, { onReplaced: enterPublisherSessionReplaced });
 }
 
 async function bindSelectedCompany(clientId) {
@@ -1647,6 +1694,8 @@ async function renderRoute() {
     } catch (_error) {
       // Local session is still cleared below.
     }
+    stopHeartbeat();
+    resetPublisherSession();
     clearToken();
     session = null;
     navigate("/");
@@ -2296,6 +2345,13 @@ async function loadPublishedFact(query) {
 }
 
 function handleError(error, path) {
+  // Checked before the generic 401 branch: this page is a valid Publisher that
+  // is no longer the active session, which is a different message from an
+  // ordinary authentication failure.
+  if (isPublisherSessionReplacedError(error)) {
+    enterPublisherSessionReplaced(path);
+    return;
+  }
   if (error instanceof ApiError && (error.status === 401 || error.code === "AUTHENTICATION_FAILED")) {
     clearToken();
     session = null;
@@ -2666,6 +2722,7 @@ function paintPublishProgress(item) {
 
 function startPublicationProgressPoll(runId, clientId) {
   stopPublishPoll();
+  if (isReplaced()) return;
   paintPublishProgress({
     stage: "preparing",
     status: "running",
@@ -3912,7 +3969,10 @@ async function boot() {
     baseUrl: config.apiBaseUrl,
     prefix: config.apiPrefix,
     getToken: getStoredToken,
+    getPublisherSession: publisherSessionHeader,
+    onPublisherSessionReplaced: () => enterPublisherSessionReplaced(currentLocation().path),
   });
+  setPublisherSessionReplacedHandler(() => enterPublisherSessionReplaced(currentLocation().path));
   await renderRoute();
 }
 

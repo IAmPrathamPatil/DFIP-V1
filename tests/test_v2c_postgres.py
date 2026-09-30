@@ -20,8 +20,15 @@ from catalog_support import (
 )
 from http_ingest_support import source_row, workbook_bytes
 from postgres_support import CLIENT_A, postgres_only, requires_postgres, seed_identity
+from publisher_session_support import with_publisher_session
 from test_p5_api import JWT_SECRET, _encode_jwt, make_settings
 from test_v2_http_ingest import XLSX_TYPE, _upload
+
+
+def _pub(http, headers: dict[str, str]) -> dict[str, str]:
+    """Attach this caller's active Publisher session to publisher headers."""
+    token = headers["Authorization"].split(" ", 1)[1]
+    return with_publisher_session(headers, http, token)
 
 pytestmark = [postgres_only, requires_postgres]
 
@@ -34,7 +41,6 @@ def test_postgres_catalog_upload_activates_and_binds_processing(
     pg_conn, postgres_url, tmp_path: Path
 ) -> None:
     seed_identity(pg_conn, subject="v2c-publisher", role="publisher", client_id=CLIENT_A)
-    headers = _headers("publisher", CLIENT_A)
     with TestClient(
         create_app(
             settings=make_settings(
@@ -45,6 +51,7 @@ def test_postgres_catalog_upload_activates_and_binds_processing(
             )
         )
     ) as http:
+        headers = _pub(http, _headers("publisher", CLIENT_A))
         logic = http.post(
             "/api/v1/catalogs/logic",
             headers=headers,
