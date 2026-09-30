@@ -34,6 +34,7 @@ from fastapi.testclient import TestClient
 from openpyxl import load_workbook
 
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_company_registry import (
     CLIENT2_PASSWORD,
     CLIENT_PASSWORD,
@@ -84,6 +85,10 @@ def _query_names(body: bytes) -> set[str]:
     with ZipFile(io.BytesIO(body)) as archive:
         return set(archive.namelist())
 
+
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    return publisher_headers(http, token)
 
 def test_publishedfacts_m_uses_canonical_header_order() -> None:
     mashup = mashup_text()
@@ -217,8 +222,8 @@ def test_refreshable_artifact_authors_query_fields_and_keeps_query() -> None:
 def test_refreshable_http_download_and_tenant_isolation(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    pub_a = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
-    pub_b = _bearer(_select(http, unbound, COMPANY_2_CLIENT_ID).json()["access_token"])
+    pub_a = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    pub_b = _pub(http, _select(http, unbound, COMPANY_2_CLIENT_ID).json()["access_token"])
     _publish_synthetic(
         http, tmp_path, publisher=pub_a, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
     )
@@ -386,8 +391,10 @@ def test_postgres_refreshable_workbook_isolation(
         )
     )
     with TestClient(app) as http:
-        pub_a = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
-        pub_b = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        pub_a = _pub(
+            http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+        )
+        pub_b = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
         _publish_synthetic(
             http,
             tmp_path,

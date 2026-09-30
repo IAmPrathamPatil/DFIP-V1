@@ -3,20 +3,30 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from dataclasses import replace
 from typing import Annotated
 
 from dfip_config.settings import Settings
+from dfip_db.connection import DatabaseUnavailableError
 from dfip_db.rls import bind_rls, reset_rls
 from fastapi import Depends, Query, Request
 from fastapi.security import HTTPAuthorizationCredentials
 
 from dfip_api.auth import Principal, bearer_scheme, decode_jwt_claims, principal_from_credentials
 from dfip_api.catalog_service import CatalogService
-from dfip_api.errors import AuthorizationError
+from dfip_api.errors import AuthorizationError, PublisherSessionReplacedError
 from dfip_api.excel_grant import EXCEL_TOKEN_TYP, principal_from_excel_grant
 from dfip_api.lifecycle import require_company_active
 from dfip_api.membership import enrich_principal, rls_context_for
 from dfip_api.publication_service import PublicationService
+from dfip_api.publisher_session import (
+    PUBLISHER_SESSION_HEADER,
+    REPLACED_MESSAGE,
+    PublisherSessionStore,
+    active_publisher_session,
+    enforce_publisher_session,
+    requires_publisher_session,
+)
 from dfip_api.qa_store import QaFindingStore
 from dfip_api.roles import can_inspect
 from dfip_api.schemas import (
@@ -54,10 +64,8 @@ def get_catalog_service(request: Request) -> CatalogService:
     return request.app.state.catalog_service
 
 
-def get_principal(
-    request: Request,
-    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> Iterator[Principal]:
+def _authenticate(request: Request, credentials: HTTPAuthorizationCredentials | None) -> Principal:
+    """Resolve and verify the caller. No publisher-session check."""
     settings = request.app.state.settings
     principal = principal_from_credentials(settings, credentials)
     store = getattr(request.app.state, "identity_store", None)
@@ -77,6 +85,46 @@ def get_principal(
         require_company_active(
             getattr(request.app.state, "client_directory", None), principal.client_id
         )
+    return principal
+
+
+def publisher_session_store(request: Request) -> PublisherSessionStore | None:
+    return getattr(request.app.state, "publisher_session_store", None)
+
+
+def publisher_session_id(request: Request) -> str | None:
+    return request.headers.get(PUBLISHER_SESSION_HEADER)
+
+
+def get_principal(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> Iterator[Principal]:
+    principal = _authenticate(request, credentials)
+    # One active Publisher session per app_user. This runs before any route
+    # body, so a replaced tab or a direct API call with a stolen JWT is
+    # rejected on every protected route, not just on the HTML page.
+    enforce_publisher_session(
+        publisher_session_store(request), principal, publisher_session_id(request)
+    )
+    pool = getattr(request.app.state, "db_pool", None)
+    bind_rls(rls_context_for(principal, db_mode=pool is not None))
+    try:
+        yield principal
+    finally:
+        reset_rls()
+
+
+def get_principal_unchecked(
+    request: Request,
+    credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
+) -> Iterator[Principal]:
+    """Authenticate without requiring a live Publisher session.
+
+    Only for the routes that must work precisely when a Publisher session is
+    not active: POST /auth/logout and the publisher-session routes themselves.
+    """
+    principal = _authenticate(request, credentials)
     pool = getattr(request.app.state, "db_pool", None)
     bind_rls(rls_context_for(principal, db_mode=pool is not None))
     try:
@@ -105,6 +153,7 @@ UploadServiceDep = Annotated[UploadService, Depends(get_upload_service)]
 QaStoreDep = Annotated[QaFindingStore, Depends(get_qa_store)]
 CatalogServiceDep = Annotated[CatalogService, Depends(get_catalog_service)]
 PrincipalDep = Annotated[Principal, Depends(get_principal)]
+UncheckedPrincipalDep = Annotated[Principal, Depends(get_principal_unchecked)]
 PaginationDep = Annotated[PaginationParams, Depends(pagination_params)]
 HistoryFactsPaginationDep = Annotated[
     HistoryFactsPaginationParams, Depends(history_facts_pagination_params)
@@ -134,11 +183,52 @@ def get_ready_principal(
     return principal_from_credentials(request.app.state.settings, credentials)
 
 
+def _ready_publisher_session_active(request: Request, principal: Principal) -> bool:
+    """Publisher-session check for the readiness probe.
+
+    /ops/ready is publisher-only, so it is covered like every other Publisher
+    route. Resolving the session needs the app_user id, which this route
+    otherwise skips, so one directory lookup is added for inspector callers
+    only. The probe must still answer ``not_ready`` when PostgreSQL is
+    unreachable, so a failure caused by the database being down does not turn
+    the response into an auth error: the readiness body already reports the
+    outage and carries no tenant data. Every other outcome fails closed.
+    """
+    if not can_inspect(principal.role):
+        return True
+    resolved = principal
+    if not str(principal.user_id or "").strip() and principal.auth_mode == "jwt":
+        store = getattr(request.app.state, "identity_store", None)
+        if store is None:
+            return False
+        try:
+            identity = store.get_by_subject(principal.subject)
+        except DatabaseUnavailableError:
+            return True
+        if identity is None or not identity.user_id:
+            return False
+        resolved = replace(principal, user_id=identity.user_id, token_version=None)
+    if not requires_publisher_session(resolved):
+        return True
+    try:
+        return (
+            active_publisher_session(
+                publisher_session_store(request), resolved, publisher_session_id(request)
+            )
+            is not None
+        )
+    except DatabaseUnavailableError:
+        return True
+
+
 def require_ready_inspector(
+    request: Request,
     principal: Annotated[Principal, Depends(get_ready_principal)],
 ) -> Principal:
     if not can_inspect(principal.role):
         raise AuthorizationError()
+    if not _ready_publisher_session_active(request, principal):
+        raise PublisherSessionReplacedError(REPLACED_MESSAGE)
     return principal
 
 

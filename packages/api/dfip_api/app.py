@@ -38,7 +38,11 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 from dfip_api.analytics_routes import analytics_router
 from dfip_api.ask_llm import build_ask_llm
 from dfip_api.auth import validate_auth_settings
-from dfip_api.auth_routes import auth_public_router, auth_session_router
+from dfip_api.auth_routes import (
+    auth_public_router,
+    auth_publisher_session_router,
+    auth_session_router,
+)
 from dfip_api.catalog_routes import catalog_router
 from dfip_api.catalog_service import CatalogService
 from dfip_api.client_directory import (
@@ -66,11 +70,16 @@ from dfip_api.identity_store import (
     InMemoryIdentityStore,
     PostgresIdentityStore,
 )
-from dfip_api.limits import AttemptLimiter, JsonBodyLimitMiddleware
+from dfip_api.limits import AttemptLimiter, JsonBodyLimitMiddleware, RateWindowLimiter
 from dfip_api.ports import PublicationStore, ReadRepository
 from dfip_api.publication_routes import publication_router
 from dfip_api.publication_service import PublicationService
 from dfip_api.publication_store import InMemoryPublicationStore
+from dfip_api.publisher_session import (
+    PUBLISHER_SESSION_HEADER,
+    InMemoryPublisherSessionStore,
+    PostgresPublisherSessionStore,
+)
 from dfip_api.qa_store import InMemoryQaFindingStore, QaFindingStore
 from dfip_api.recovery import fail_abandoned_processing_runs
 from dfip_api.repository import InMemoryReadRepository
@@ -219,9 +228,11 @@ def create_app(
     if db_pool is not None:
         resolved_excel_grants = PostgresExcelGrantStore(db_pool)
         resolved_saved_analyses = PostgresSavedAnalysisStore(db_pool)
+        resolved_publisher_sessions = PostgresPublisherSessionStore(db_pool)
     else:
         resolved_excel_grants = InMemoryExcelGrantStore()
         resolved_saved_analyses = InMemorySavedAnalysisStore()
+        resolved_publisher_sessions = InMemoryPublisherSessionStore()
 
     if client_directory is not None:
         resolved_clients = client_directory
@@ -308,8 +319,10 @@ def create_app(
     application.state.identity_store = resolved_identity
     application.state.excel_grant_store = resolved_excel_grants
     application.state.saved_analysis_store = resolved_saved_analyses
+    application.state.publisher_session_store = resolved_publisher_sessions
     application.state.client_directory = resolved_clients
     application.state.attempt_limiter = AttemptLimiter()
+    application.state.publisher_session_limiter = RateWindowLimiter()
     application.state.ask_llm = build_ask_llm(resolved_settings)
 
     application.add_middleware(
@@ -323,7 +336,12 @@ def create_app(
             allow_origins=[origin],
             allow_credentials=False,
             allow_methods=["GET", "HEAD", "OPTIONS", "POST", "DELETE"],
-            allow_headers=["Authorization", "Content-Type", BOOTSTRAP_TOKEN_HEADER],
+            allow_headers=[
+                "Authorization",
+                "Content-Type",
+                BOOTSTRAP_TOKEN_HEADER,
+                PUBLISHER_SESSION_HEADER,
+            ],
             expose_headers=["Content-Disposition"],
         )
 
@@ -356,6 +374,7 @@ def create_app(
 
     application.include_router(auth_public_router, prefix=prefix)
     application.include_router(auth_session_router, prefix=prefix)
+    application.include_router(auth_publisher_session_router, prefix=prefix)
     application.include_router(ops_router, prefix=prefix)
     application.include_router(router, prefix=prefix)
     application.include_router(client_router, prefix=prefix)

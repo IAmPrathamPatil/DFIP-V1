@@ -103,6 +103,22 @@ class SessionResponse(BaseModel):
     clients: list[SessionClient] = Field(default_factory=list)
 
 
+class PublisherSessionResponse(BaseModel):
+    """One active Publisher session issued to the caller's browser instance.
+
+    ``session_id`` is an opaque token. It is not a JWT, it is not derived from
+    the subject, and the caller must send it back in
+    ``X-DFIP-Publisher-Session`` on protected Publisher requests.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    session_id: str
+    created_at: datetime
+    expires_at: datetime
+    heartbeat_seconds: int
+
+
 class LoginRequest(BaseModel):
     """POST /auth/login body. Username maps to app_user.subject."""
 

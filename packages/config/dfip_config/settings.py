@@ -100,6 +100,16 @@ class Settings(BaseSettings):
     # How long a client/reader workbook may call POST /auth/refresh after the
     # stamped access JWT expires. Default 90 days. Not a publisher/admin token.
     dfip_excel_grant_ttl_seconds: int = 7_776_000
+    # Publisher website session lease. One active Publisher session per
+    # app_user. A Publisher page/tab renews this lease with
+    # POST /auth/publisher-session/heartbeat; a crashed browser therefore
+    # releases the Publisher once the lease expires. Registering a new session
+    # revokes the previous one immediately. Client/reader users are not
+    # tracked and are never limited.
+    dfip_publisher_session_lease_seconds: int = 900
+    # How often the Publisher page asks the server to extend the lease. Must be
+    # comfortably below the lease so a throttled background tab cannot expire it.
+    dfip_publisher_session_heartbeat_seconds: int = 60
     # Empty: clone tracked excel/Client_Report.xlsx. Set only to an
     # Excel-authored disposable renewal template. Do not set in the normal
     # DFIP runtime. Never overwrite the tracked master through this path.

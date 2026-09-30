@@ -23,6 +23,7 @@ from dfip_web.refreshable_xlsm_stamp import (
 )
 from fastapi.testclient import TestClient
 
+from publisher_session_support import publisher_headers
 from refreshable_xlsm_fixture import (
     TEMPLATE_PLACEHOLDER_JWT,
     build_minimal_refreshable_xlsm,
@@ -51,6 +52,16 @@ SURVIVING = (
     "xl/pivotCache/pivotCacheDefinition1.xml",
     "xl/slicerCaches/slicerCache1.xml",
 )
+
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    """A Publisher must hold a live session before any gated route answers.
+
+    ``pub_a`` and ``pub_b`` below are the same publisher selecting two
+    different companies, so both resolve to the same active session: DFIP
+    allows exactly one active Publisher session per identity.
+    """
+    return publisher_headers(http, token)
 
 
 def _claims(token: str) -> dict:
@@ -109,8 +120,8 @@ def test_canonical_template_sha_is_enforced() -> None:
 def test_fresh_client_grants_differ_per_download(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    pub_a = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
-    pub_b = _bearer(_select(http, unbound, COMPANY_2_CLIENT_ID).json()["access_token"])
+    pub_a = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    pub_b = _pub(http, _select(http, unbound, COMPANY_2_CLIENT_ID).json()["access_token"])
     _publish_synthetic(
         http, tmp_path, publisher=pub_a, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
     )
@@ -168,8 +179,8 @@ def test_fresh_client_grants_differ_per_download(tmp_path: Path) -> None:
 def test_client_download_stays_on_own_grant(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
     unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-    pub_a = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
-    pub_b = _bearer(_select(http, unbound, COMPANY_2_CLIENT_ID).json()["access_token"])
+    pub_a = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    pub_b = _pub(http, _select(http, unbound, COMPANY_2_CLIENT_ID).json()["access_token"])
     _publish_synthetic(
         http, tmp_path, publisher=pub_a, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
     )

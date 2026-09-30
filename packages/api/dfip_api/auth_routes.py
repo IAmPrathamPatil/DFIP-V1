@@ -29,7 +29,11 @@ from dfip_api.auth import (
     token_matches,
 )
 from dfip_api.client_directory import overlay_session_clients
-from dfip_api.deps import PrincipalDep, get_principal
+from dfip_api.deps import (
+    PrincipalDep,
+    UncheckedPrincipalDep,
+    get_principal_unchecked,
+)
 from dfip_api.errors import (
     AuthenticationError,
     AuthorizationError,
@@ -42,11 +46,19 @@ from dfip_api.lifecycle import require_company_active
 from dfip_api.limits import bootstrap_attempt_keys, login_attempt_keys
 from dfip_api.membership import apply_identity, enrich_principal
 from dfip_api.password import dummy_password_hash, verify_password
+from dfip_api.publisher_session import (
+    PUBLISHER_SESSION_HEADER,
+    heartbeat_seconds,
+    register_publisher_session,
+    release_publisher_sessions,
+    renew_publisher_session,
+)
 from dfip_api.roles import ADMIN_ROLES, can_inspect
 from dfip_api.schemas import (
     ErrorResponse,
     LoginRequest,
     LoginResponse,
+    PublisherSessionResponse,
     PublisherSetupRequest,
     PublisherSetupResponse,
     PublisherSetupStatusResponse,
@@ -65,9 +77,21 @@ ERROR_RESPONSES = {
 }
 
 auth_public_router = APIRouter(responses=ERROR_RESPONSES)
-auth_session_router = APIRouter(
-    dependencies=[Depends(get_principal)],
-    responses=ERROR_RESPONSES,
+# Per-route dependencies, not a router-level one: POST /auth/logout must keep
+# working from a tab whose Publisher session was already replaced, while
+# POST /auth/select-client is a gated Publisher mutation.
+auth_session_router = APIRouter(responses=ERROR_RESPONSES)
+# Publisher session establishment and its lease heartbeat are the only
+# Publisher routes that are not themselves gated on a live session, otherwise
+# a replaced tab could never learn that it was replaced.
+auth_publisher_session_router = APIRouter(
+    dependencies=[Depends(get_principal_unchecked)],
+    responses={
+        401: {"model": ErrorResponse, "description": "Authentication failed."},
+        403: {"model": ErrorResponse, "description": "Authorization failed."},
+        429: {"model": ErrorResponse, "description": "Too many requests."},
+        503: {"model": ErrorResponse, "description": "Persistence is unavailable."},
+    },
 )
 
 _INVALID = "Invalid authentication credentials."
@@ -332,7 +356,7 @@ def login(body: LoginRequest, request: Request) -> LoginResponse:
     tags=["Auth"],
     response_class=Response,
 )
-def logout(request: Request, principal: PrincipalDep) -> Response:
+def logout(request: Request, principal: UncheckedPrincipalDep) -> Response:
     store = request.app.state.identity_store
     user_id = principal.user_id
     if user_id is None and principal.auth_mode == "jwt":
@@ -341,6 +365,13 @@ def logout(request: Request, principal: PrincipalDep) -> Response:
             user_id = identity.user_id
     if user_id:
         store.increment_token_version(user_id)
+        # Logout is always permitted, including from a tab whose Publisher
+        # session was already replaced, so the lease is released here rather
+        # than rejected. The token_version bump above already invalidates every
+        # website JWT for this user, so no session can outlive it.
+        release_publisher_sessions(
+            getattr(request.app.state, "publisher_session_store", None), user_id
+        )
     return Response(status_code=204)
 
 
@@ -436,3 +467,87 @@ def select_client(
     return _login_response(
         settings, bound, identity, getattr(request.app.state, "client_directory", None)
     )
+
+
+def _publisher_session_payload(request: Request, session) -> PublisherSessionResponse:
+    return PublisherSessionResponse(
+        session_id=session.session_id,
+        created_at=session.created_at,
+        expires_at=session.expires_at,
+        heartbeat_seconds=heartbeat_seconds(request.app.state.settings),
+    )
+
+
+@auth_publisher_session_router.post(
+    "/auth/publisher-session",
+    response_model=PublisherSessionResponse,
+    summary="Establish this browser instance as the one active Publisher session",
+    description=(
+        "The access JWT is shared by every tab, so it cannot identify one "
+        "Publisher browser instance. This returns an opaque session id and "
+        "revokes any previous Publisher session of the same account, so the "
+        "newest tab or browser wins. Send the id in "
+        f"{PUBLISHER_SESSION_HEADER} on protected Publisher requests. "
+        "A caller that presents a session id which is no longer the active one "
+        "has been replaced: it is refused with PUBLISHER_SESSION_REPLACED and "
+        "must not retry, so a replaced tab cannot take the session back. "
+        "Client/reader callers receive 403; Client access is not limited."
+    ),
+    tags=["Auth"],
+)
+def open_publisher_session(
+    request: Request, principal: UncheckedPrincipalDep
+) -> PublisherSessionResponse:
+    # Reuse the existing lifecycle rule rather than a second one: a publisher
+    # bound to an inactive company cannot take a publisher lease.
+    if principal.client_id:
+        require_company_active(
+            getattr(request.app.state, "client_directory", None), principal.client_id
+        )
+    limiter = request.app.state.publisher_session_limiter
+    limit_key = f"publisher-session:user:{principal.user_id or principal.subject}"
+    if limiter.is_blocked(limit_key):
+        raise TooManyRequests()
+    limiter.record(limit_key)
+    session = register_publisher_session(
+        getattr(request.app.state, "publisher_session_store", None),
+        request.app.state.settings,
+        principal,
+        presented_session_id=request.headers.get(PUBLISHER_SESSION_HEADER),
+        user_agent=request.headers.get("user-agent"),
+    )
+    write_audit_event(
+        getattr(request.app.state, "db_pool", None),
+        actor=principal.subject,
+        action="auth.publisher_session_opened",
+        entity_type="app_user",
+        entity_id=principal.user_id,
+        client_id=principal.client_id,
+        after={"role": principal.role},
+    )
+    return _publisher_session_payload(request, session)
+
+
+@auth_publisher_session_router.post(
+    "/auth/publisher-session/heartbeat",
+    response_model=PublisherSessionResponse,
+    summary="Extend the lease on the active Publisher session",
+    description=(
+        "Renews expires_at for the session named in "
+        f"{PUBLISHER_SESSION_HEADER}. A browser that dies without logging out "
+        "therefore releases the Publisher once the lease lapses. A replaced or "
+        "expired session is rejected with PUBLISHER_SESSION_REPLACED and is "
+        "never resurrected."
+    ),
+    tags=["Auth"],
+)
+def heartbeat_publisher_session(
+    request: Request, principal: UncheckedPrincipalDep
+) -> PublisherSessionResponse:
+    session = renew_publisher_session(
+        getattr(request.app.state, "publisher_session_store", None),
+        request.app.state.settings,
+        principal,
+        request.headers.get(PUBLISHER_SESSION_HEADER),
+    )
+    return _publisher_session_payload(request, session)

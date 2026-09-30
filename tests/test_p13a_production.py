@@ -27,6 +27,7 @@ from dfip_db.connection import dsn_is_local_host, dsn_sslmode, redact_dsn
 from dfip_db.local_demo_guard import DEMO_PUBLISHER_SUBJECT
 from fastapi.testclient import TestClient
 
+from publisher_session_support import publisher_headers
 from test_company_management_acceptance import (
     OPERATOR_PASS,
     OPERATOR_USER,
@@ -36,7 +37,6 @@ from test_company_management_acceptance import (
 from test_company_registry import (
     DEFAULT_CLIENT_ID,
     PUBLISHER_PASSWORD,
-    _bearer,
     _memory_app,
     _token,
 )
@@ -85,6 +85,10 @@ def _prod_setup_app(**overrides):
     app.state.settings = production_settings(**overrides)
     return app
 
+
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    return publisher_headers(http, token)
 
 def test_unknown_dfip_env_is_rejected() -> None:
     with pytest.raises(AuthConfigurationError, match="Unsupported DFIP_ENV"):
@@ -391,7 +395,9 @@ def test_production_refuses_demo_username_and_fixture_password() -> None:
 def test_production_client_user_refuses_demo_username() -> None:
     http = TestClient(_memory_app())
     http.app.state.settings = production_settings()
-    publisher = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
     refused = http.post(
         f"/api/v1/clients/{DEFAULT_CLIENT_ID}/users",
         headers=publisher,

@@ -21,6 +21,7 @@ from dfip_api.membership import enrich_principal
 from dfip_db.identity import MembershipRow
 from fastapi.testclient import TestClient
 
+from publisher_session_support import publisher_headers
 from test_p5_api import CLIENT_ID, JWT_SECRET, _encode_jwt, make_settings
 from test_p7_client_auth import (
     ALICE,
@@ -36,6 +37,17 @@ from test_security_hardening import CLIENT_B
 
 PUBLISHER = "pub.inspector"
 PUBLISHER_SOLO = "pub.solo"
+
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    """Headers for a Publisher login JWT.
+
+    Only a Publisher login JWT needs this. An Excel grant token
+    (``typ="excel"``) resolves to a client principal and is deliberately left
+    on plain bearer headers, so the Excel-grant authorization behaviour these
+    tests assert is unaffected.
+    """
+    return publisher_headers(http, token)
 
 
 def _excel_app(*, access_ttl: int = 1, grant_ttl: int = 3600) -> tuple[TestClient, object]:
@@ -285,7 +297,7 @@ def test_publisher_refreshable_download_mints_client_excel_grant() -> None:
     assert _claims(session)["role"] == "publisher"
     downloaded = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
-        headers=_bearer(session),
+        headers=_pub(http, session),
     )
     assert downloaded.status_code == 200, downloaded.text[:300]
     stamped = _settings_value(downloaded.content, "BearerToken")
@@ -293,7 +305,7 @@ def test_publisher_refreshable_download_mints_client_excel_grant() -> None:
     assert claims.get("sub") == PUBLISHER
     static = http.get(
         "/api/v1/publications/current/client-report.xlsx",
-        headers=_bearer(session),
+        headers=_pub(http, session),
     )
     assert static.status_code == 200
     assert _settings_value(static.content, "BearerToken") in {None, ""}
@@ -331,7 +343,7 @@ def test_publisher_excel_grant_renews_after_expiry_and_stays_client() -> None:
     session = _login(http, PUBLISHER, PASSWORD, CLIENT_ID).json()["access_token"]
     downloaded = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
-        headers=_bearer(session),
+        headers=_pub(http, session),
     )
     assert downloaded.status_code == 200, downloaded.text[:300]
     stamped = _settings_value(downloaded.content, "BearerToken")
@@ -373,7 +385,7 @@ def test_publisher_cannot_mint_excel_grant_for_unauthorized_company() -> None:
     session = _login(http, PUBLISHER_SOLO, PASSWORD, CLIENT_ID).json()["access_token"]
     denied = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
-        headers=_bearer(session),
+        headers=_pub(http, session),
         params={"client_id": CLIENT_B},
     )
     assert denied.status_code == 403
@@ -381,14 +393,14 @@ def test_publisher_cannot_mint_excel_grant_for_unauthorized_company() -> None:
     bound_other = _login(http, PUBLISHER, PASSWORD, CLIENT_ID).json()["access_token"]
     cross = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
-        headers=_bearer(bound_other),
+        headers=_pub(http, bound_other),
         params={"client_id": CLIENT_B},
     )
     assert cross.status_code == 403
     selected = _login(http, PUBLISHER, PASSWORD, CLIENT_B).json()["access_token"]
     allowed = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
-        headers=_bearer(selected),
+        headers=_pub(http, selected),
     )
     assert allowed.status_code == 200
     _assert_client_excel_stamp(
@@ -414,7 +426,7 @@ def test_publisher_logout_does_not_revoke_minted_excel_grant() -> None:
     session = _login(http, PUBLISHER, PASSWORD, CLIENT_ID).json()["access_token"]
     downloaded = http.get(
         "/api/v1/publications/current/refreshable-client-report.xlsx",
-        headers=_bearer(session),
+        headers=_pub(http, session),
     )
     assert downloaded.status_code == 200
     stamped = _settings_value(downloaded.content, "BearerToken")

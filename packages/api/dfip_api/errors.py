@@ -17,6 +17,7 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 VALIDATION_ERROR = "VALIDATION_ERROR"
 AUTHENTICATION_FAILED = "AUTHENTICATION_FAILED"
 AUTHORIZATION_FAILED = "AUTHORIZATION_FAILED"
+PUBLISHER_SESSION_REPLACED = "PUBLISHER_SESSION_REPLACED"
 NOT_FOUND = "NOT_FOUND"
 CONFLICT = "CONFLICT"
 INVALID_PAGINATION = "INVALID_PAGINATION"
@@ -59,6 +60,18 @@ class AuthenticationError(ApiError):
 class AuthorizationError(ApiError):
     def __init__(self, message: str = "Not authorized to access this resource.") -> None:
         super().__init__(403, AUTHORIZATION_FAILED, message)
+
+
+class PublisherSessionReplacedError(ApiError):
+    """The caller is not the currently active Publisher session.
+
+    401 rather than 403: the credential is well formed but this browser
+    instance is no longer the live Publisher session and must sign in again.
+    The message never names the session, the user, or a database detail.
+    """
+
+    def __init__(self, message: str = "Publisher session is no longer active.") -> None:
+        super().__init__(401, PUBLISHER_SESSION_REPLACED, message)
 
 
 class NotFoundError(ApiError):

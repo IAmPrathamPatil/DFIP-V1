@@ -33,6 +33,7 @@ from openpyxl import load_workbook
 from openpyxl.utils import get_column_letter
 
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_company_registry import (
     CLIENT2_PASSWORD,
     CLIENT_PASSWORD,
@@ -160,6 +161,10 @@ def _assert_filename(disposition: str, client_code: str, published_at: str | Non
         assert stamp in disposition
 
 
+
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    return publisher_headers(http, token)
+
 def test_filename_helper_uses_code_not_display_name() -> None:
     published = datetime(2026, 9, 1, 12, 0, tzinfo=UTC)
     name = client_report_download_filename("default", published)
@@ -200,8 +205,8 @@ def test_row_cap_returns_explicit_error() -> None:
 
 def test_company_a_and_b_workbooks_are_isolated(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
-    pub_a = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
-    pub_b = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    pub_a = _pub(http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
+    pub_b = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     first = _publish_synthetic(
         http, tmp_path, publisher=pub_a, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
     )
@@ -274,7 +279,9 @@ def test_company_a_and_b_workbooks_are_isolated(tmp_path: Path) -> None:
 
 def test_redownload_after_new_publication_is_new_snapshot(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
-    publisher = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
     first = _publish_synthetic(
         http, tmp_path, publisher=publisher, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
     )
@@ -309,8 +316,8 @@ def test_bound_publisher_cannot_download_other_company_while_selected(tmp_path: 
     token = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
     selected = _select(http, token, DEFAULT_CLIENT_ID)
     assert selected.status_code == 200, selected.text
-    publisher = _bearer(selected.json()["access_token"])
-    other = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    publisher = _pub(http, selected.json()["access_token"])
+    other = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     _publish_synthetic(
         http, tmp_path, publisher=publisher, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
     )
@@ -330,7 +337,7 @@ def test_bound_publisher_cannot_download_other_company_while_selected(tmp_path: 
 
 def test_new_company_workbook_after_publication(tmp_path: Path) -> None:
     http = TestClient(_memory_app())
-    publisher = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
+    publisher = _pub(http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
     created = http.post("/api/v1/clients", headers=publisher, json={"name": "Gamma Co"})
     assert created.status_code == 201, created.text
     new_id = created.json()["client_id"]
@@ -341,7 +348,7 @@ def test_new_company_workbook_after_publication(tmp_path: Path) -> None:
         json={"client_id": new_id},
     )
     assert selected.status_code == 200, selected.text
-    bound = _bearer(selected.json()["access_token"])
+    bound = _pub(http, selected.json()["access_token"])
     missing = http.get("/api/v1/publications/current/client-report.xlsx", headers=bound)
     assert missing.status_code == 404
     assert _error(missing)["message"] == NO_PUBLICATION_WORKBOOK_MESSAGE
@@ -419,8 +426,10 @@ def test_postgres_company_workbook_isolation(pg_conn, postgres_url: str, tmp_pat
         )
     )
     with TestClient(app) as http:
-        pub_a = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID))
-        pub_b = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        pub_a = _pub(
+            http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+        )
+        pub_b = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
         _publish_synthetic(
             http, tmp_path, publisher=pub_a, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_A
         )

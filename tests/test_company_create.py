@@ -40,6 +40,7 @@ from test_company_registry import (
     _ids,
     _memory_app,
     _names,
+    _pub,
     _publish_synthetic,
     _select,
     _token,
@@ -54,7 +55,7 @@ CREATED_RENAME = "DFIP-004B2 synthetic tenant renamed"
 
 def test_publisher_creates_company_with_new_immutable_id() -> None:
     http = TestClient(_memory_app())
-    headers = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
+    headers = _pub(http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
     created = http.post("/api/v1/clients", headers=headers, json={"name": CREATED})
     assert created.status_code == 201, created.text
     body = created.json()
@@ -81,7 +82,7 @@ def test_publisher_creates_company_with_new_immutable_id() -> None:
 
     renamed = http.post(
         f"/api/v1/clients/{new_id}/rename",
-        headers=_bearer(selected.json()["access_token"]),
+        headers=_pub(http, selected.json()["access_token"]),
         json={"name": CREATED_RENAME},
     )
     assert renamed.status_code == 200
@@ -102,7 +103,7 @@ def test_client_and_reader_cannot_create_company() -> None:
 
 def test_create_validation_and_duplicate_display_name() -> None:
     http = TestClient(_memory_app())
-    headers = _bearer(_token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
+    headers = _pub(http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD))
     empty = http.post("/api/v1/clients", headers=headers, json={"name": "   "})
     assert empty.status_code == 422
     missing = http.post("/api/v1/clients", headers=headers, json={"name": ""})
@@ -117,11 +118,11 @@ def test_create_validation_and_duplicate_display_name() -> None:
 
 def test_created_company_is_not_visible_to_other_publisher() -> None:
     http = TestClient(_memory_app())
-    creator = _bearer(_token(http, SOLO_PUBLISHER, SOLO_PASSWORD))
+    creator = _pub(http, _token(http, SOLO_PUBLISHER, SOLO_PASSWORD))
     created = http.post("/api/v1/clients", headers=creator, json={"name": CREATED})
     assert created.status_code == 201
     new_id = created.json()["client_id"]
-    other = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+    other = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
     listed = http.get("/api/v1/clients", headers=other)
     assert new_id not in _ids(listed.json())
     selected = _select(http, other["Authorization"].split(" ", 1)[1], new_id)

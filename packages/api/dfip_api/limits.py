@@ -135,6 +135,62 @@ def bootstrap_attempt_keys(request: Request, username: str) -> tuple[str, str]:
     return f"bootstrap:ip:{peer}", f"bootstrap:user:{normalize_username(username)}"
 
 
+PUBLISHER_SESSION_MAX_OPENS = 12
+PUBLISHER_SESSION_WINDOW_SECONDS = 300
+
+
+class RateWindowLimiter:
+    """Sliding-window attempt counter, not a failure counter.
+
+    Used to bound Publisher session establishment. Establishment is destructive
+    (it revokes the caller's previous session), so it needs a rate cap on
+    attempts rather than only on failures. Process-local, like AttemptLimiter;
+    distributed limiting is not implemented.
+    """
+
+    def __init__(
+        self,
+        *,
+        max_attempts: int = PUBLISHER_SESSION_MAX_OPENS,
+        window_seconds: float = PUBLISHER_SESSION_WINDOW_SECONDS,
+        clock: Callable[[], float] | None = None,
+    ) -> None:
+        self.max_attempts = max(1, max_attempts)
+        self.window_seconds = window_seconds
+        self._clock = clock if clock is not None else time.monotonic
+        self._lock = threading.Lock()
+        self._events: dict[str, list[float]] = {}
+
+    def _prune_unlocked(self, key: str, now: float) -> list[float]:
+        cutoff = now - self.window_seconds
+        events = [stamp for stamp in self._events.get(key, ()) if stamp > cutoff]
+        if events:
+            self._events[key] = events
+        else:
+            self._events.pop(key, None)
+        return events
+
+    def is_blocked(self, key: str) -> bool:
+        if not key:
+            return False
+        now = self._clock()
+        with self._lock:
+            return len(self._prune_unlocked(key, now)) >= self.max_attempts
+
+    def record(self, key: str) -> None:
+        if not key:
+            return
+        now = self._clock()
+        with self._lock:
+            events = self._prune_unlocked(key, now)
+            events.append(now)
+            self._events[key] = events
+
+    def clear(self, key: str) -> None:
+        with self._lock:
+            self._events.pop(key, None)
+
+
 def _header_map(scope: Scope) -> dict[str, str]:
     headers: dict[str, str] = {}
     for key, value in scope.get("headers") or ():

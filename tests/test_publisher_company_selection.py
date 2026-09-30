@@ -29,6 +29,7 @@ from fastapi.testclient import TestClient
 
 from http_ingest_support import source_row, upload_workbook, workbook_bytes
 from postgres_support import postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_p5_api import JWT_SECRET, _encode_jwt, make_settings
 from test_p9_authz import _error
 
@@ -100,10 +101,15 @@ def _bearer(token: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def _select(http: TestClient, token: str, client_id: str):
+def _pub(http: TestClient, token: str) -> dict[str, str]:
+    """A Publisher must hold a live session before any gated route answers."""
+    return publisher_headers(http, token)
+
+
+def _select(http: TestClient, token: str, client_id: str, headers=None):
     return http.post(
         "/api/v1/auth/select-client",
-        headers=_bearer(token),
+        headers=headers if headers is not None else _pub(http, token),
         json={"client_id": client_id},
     )
 
@@ -182,12 +188,12 @@ def test_universal_publisher_login_is_unbound_until_select() -> None:
     codes = {item["code"] for item in session["clients"]}
     assert codes == {"default", "company-2"}
     assert "client_id" not in _claims(token)
-    denied = http.get("/api/v1/source-files", headers=_bearer(token))
+    denied = http.get("/api/v1/source-files", headers=_pub(http, token))
     assert denied.status_code == 403
     assert _error(denied)["code"] == "AUTHORIZATION_FAILED"
     skipped = http.get(
         "/api/v1/facts",
-        headers=_bearer(token),
+        headers=_pub(http, token),
         params={"client_id": DEFAULT_CLIENT_ID},
     )
     assert skipped.status_code == 403
@@ -208,7 +214,9 @@ def test_publisher_selects_authorized_company_1_and_company_2() -> None:
     assert first.json()["session"]["client_id"] == DEFAULT_CLIENT_ID
     assert second.json()["session"]["client_id"] == COMPANY_2_CLIENT_ID
     assert _claims(second.json()["access_token"])["client_id"] == COMPANY_2_CLIENT_ID
-    stale = http.get("/api/v1/session", headers=_bearer(first.json()["access_token"]))
+    stale = http.get(
+        "/api/v1/session", headers=_pub(http, first.json()["access_token"])
+    )
     assert stale.status_code == 200
     assert stale.json()["client_id"] == DEFAULT_CLIENT_ID
 
@@ -227,7 +235,7 @@ def test_client_cannot_select_inspect_or_publish() -> None:
     http = TestClient(_memory_app())
     client_token = _login(http, DEMO_CLIENT_SUBJECT, CLIENT_PASSWORD).json()["access_token"]
     headers = _bearer(client_token)
-    select = _select(http, client_token, DEFAULT_CLIENT_ID)
+    select = _select(http, client_token, DEFAULT_CLIENT_ID, headers=headers)
     inspect = http.get("/api/v1/source-files", headers=headers)
     publish = http.post(
         "/api/v1/publications",
@@ -256,7 +264,7 @@ def test_switch_upload_and_publish_use_selected_company_without_leakage(
 ) -> None:
     http = TestClient(_memory_app())
     unbound = _login(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD).json()["access_token"]
-    company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+    company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
     first, upload1 = _publish_synthetic(
         http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
     )
@@ -264,7 +272,7 @@ def test_switch_upload_and_publish_use_selected_company_without_leakage(
     assert first["publication"]["client_id"] == DEFAULT_CLIENT_ID
 
     switched = _select(http, company1["Authorization"].split(" ", 1)[1], COMPANY_2_CLIENT_ID)
-    company2 = _bearer(switched.json()["access_token"])
+    company2 = _pub(http, switched.json()["access_token"])
     current_as_c2 = http.get("/api/v1/publications/current", headers=company2)
     assert current_as_c2.status_code == 200
     assert current_as_c2.json()["publication"] is None
@@ -310,7 +318,7 @@ def test_switch_upload_and_publish_use_selected_company_without_leakage(
     assert steal.status_code == 403
 
     back = _select(http, switched.json()["access_token"], DEFAULT_CLIENT_ID)
-    company1_again = _bearer(back.json()["access_token"])
+    company1_again = _pub(http, back.json()["access_token"])
     current_again = http.get("/api/v1/publications/current", headers=company1_again)
     assert (
         current_again.json()["publication"]["publication_id"]
@@ -391,12 +399,12 @@ def test_postgres_universal_publisher_selects_both_companies_without_leakage(
         assert http.get("/api/v1/source-files", headers=_bearer(unbound)).status_code == 403
         assert _select(http, unbound, UNAUTHORIZED_CLIENT_ID).status_code == 403
 
-        company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+        company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
         first, _upload1 = _publish_synthetic(
             http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
         )
         token1 = company1["Authorization"].split(" ", 1)[1]
-        company2 = _bearer(_select(http, token1, COMPANY_2_CLIENT_ID).json()["access_token"])
+        company2 = _pub(http, _select(http, token1, COMPANY_2_CLIENT_ID).json()["access_token"])
         current_as_c2 = http.get("/api/v1/publications/current", headers=company2)
         assert current_as_c2.status_code == 200
         assert current_as_c2.json()["publication"] is None
