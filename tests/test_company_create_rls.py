@@ -20,6 +20,7 @@ from psycopg.errors import InsufficientPrivilege
 from psycopg.rows import dict_row
 
 from postgres_support import CLIENT_A, CLIENT_B, requires_postgres, seed_identity
+from publisher_session_support import with_publisher_session
 from test_login_rls import _ensure_app_login_role, _login_app
 from test_p5_api import _encode_jwt
 from test_p9_authz import _error
@@ -145,6 +146,12 @@ def _bearer(subject: str, *, role: str, client_id: str) -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
+def _pub(http, subject: str, *, role: str, client_id: str) -> dict[str, str]:
+    """Publisher headers plus this caller's active Publisher session."""
+    headers = _bearer(subject, role=role, client_id=client_id)
+    return with_publisher_session(headers, http, headers["Authorization"].split(" ", 1)[1])
+
+
 @pytest.mark.postgres
 @requires_postgres
 def test_postgres_create_company_from_pool_fails_closed(pg_pool) -> None:
@@ -244,7 +251,7 @@ def test_postgres_create_company_uses_inspector_rls_without_table_grants(
 
         created = http.post(
             "/api/v1/clients",
-            headers=_bearer(PUBLISHER_A, role="publisher", client_id=CLIENT_A),
+            headers=_pub(http, PUBLISHER_A, role="publisher", client_id=CLIENT_A),
             json={"name": CREATED_NAME},
         )
         assert created.status_code == 201, created.text
@@ -290,7 +297,7 @@ def test_postgres_create_company_uses_inspector_rls_without_table_grants(
 
         listed_a = http.get(
             "/api/v1/clients",
-            headers=_bearer(PUBLISHER_A, role="publisher", client_id=CLIENT_A),
+            headers=_pub(http, PUBLISHER_A, role="publisher", client_id=CLIENT_A),
         )
         assert listed_a.status_code == 200, listed_a.text
         ids_a = {item["client_id"] for item in listed_a.json()["items"]}
@@ -298,7 +305,7 @@ def test_postgres_create_company_uses_inspector_rls_without_table_grants(
 
         listed_b = http.get(
             "/api/v1/clients",
-            headers=_bearer(PUBLISHER_B, role="publisher", client_id=CLIENT_B),
+            headers=_pub(http, PUBLISHER_B, role="publisher", client_id=CLIENT_B),
         )
         assert listed_b.status_code == 200, listed_b.text
         ids_b = {item["client_id"] for item in listed_b.json()["items"]}

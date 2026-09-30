@@ -396,7 +396,8 @@ def test_postgres_universal_publisher_selects_both_companies_without_leakage(
         client_ids = {item["client_id"] for item in session["clients"]}
         assert client_ids == {DEFAULT_CLIENT_ID, COMPANY_2_CLIENT_ID}
         unbound = login.json()["access_token"]
-        assert http.get("/api/v1/source-files", headers=_bearer(unbound)).status_code == 403
+        unbound_headers = _pub(http, unbound)
+        assert http.get("/api/v1/source-files", headers=unbound_headers).status_code == 403
         assert _select(http, unbound, UNAUTHORIZED_CLIENT_ID).status_code == 403
 
         company1 = _pub(http, _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
@@ -424,9 +425,11 @@ def test_postgres_universal_publisher_selects_both_companies_without_leakage(
         client2 = _bearer(
             _login(http, DEMO_CLIENT_2_SUBJECT, CLIENT2_PASSWORD).json()["access_token"]
         )
+        client1_token = client1["Authorization"].split(" ", 1)[1]
+        # Client identity: exercise select-client authorization, not a Publisher session.
         assert (
             _select(
-                http, client1["Authorization"].split(" ", 1)[1], COMPANY_2_CLIENT_ID
+                http, client1_token, COMPANY_2_CLIENT_ID, headers=_bearer(client1_token)
             ).status_code
             == 403
         )

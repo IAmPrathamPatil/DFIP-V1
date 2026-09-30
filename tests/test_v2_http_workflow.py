@@ -24,6 +24,7 @@ from postgres_support import (
     requires_postgres,
     seed_identity,
 )
+from publisher_session_support import with_publisher_session
 from test_p5_api import JWT_SECRET, make_settings
 from test_v2_http_ingest import XLSX_TYPE, _error
 from test_v2_phase2a_reporting import _as_api
@@ -41,6 +42,12 @@ def _jwt(*, role: str, sub: str, client_id: str | None = None) -> dict[str, str]
         payload["client_id"] = client_id
     token = jwt.encode(payload, JWT_SECRET, algorithm="HS256")
     return {"Authorization": f"Bearer {token}"}
+
+
+def _pub(http: TestClient, headers: dict[str, str]) -> dict[str, str]:
+    """Attach this caller's active Publisher session to publisher headers."""
+    token = headers["Authorization"].split(" ", 1)[1]
+    return with_publisher_session(headers, http, token)
 
 
 def _app(postgres_url: str) -> TestClient:
@@ -77,6 +84,8 @@ def test_http_upload_publish_download_isolation_and_republish(
     reader_b = _jwt(role="reader", sub="reader-b", client_id=CLIENT_B)
 
     with _app(postgres_url) as http:
+        publisher_a = _pub(http, publisher_a)
+        publisher_b = _pub(http, publisher_b)
         assert (
             http.post("/api/v1/uploads", files={"file": ("a.xlsx", b"PK", XLSX_TYPE)}).status_code
             == 401

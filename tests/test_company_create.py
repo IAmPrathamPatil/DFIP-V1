@@ -185,12 +185,14 @@ def test_postgres_create_keeps_existing_tenants_and_publications(
     )
     with TestClient(app) as http:
         unbound = _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD)
-        company1 = _bearer(_select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"])
+        bound1 = _select(http, unbound, DEFAULT_CLIENT_ID).json()["access_token"]
+        company1 = _pub(http, bound1)
         first = _publish_synthetic(
             http, tmp_path, publisher=company1, client_id=DEFAULT_CLIENT_ID, campaign_id=CAMP_1
         )
         token1 = company1["Authorization"].split(" ", 1)[1]
-        company2 = _bearer(_select(http, token1, COMPANY_2_CLIENT_ID).json()["access_token"])
+        bound2 = _select(http, token1, COMPANY_2_CLIENT_ID).json()["access_token"]
+        company2 = _pub(http, bound2)
         second = _publish_synthetic(
             http, tmp_path, publisher=company2, client_id=COMPANY_2_CLIENT_ID, campaign_id=CAMP_2
         )
@@ -267,7 +269,7 @@ def test_postgres_create_keeps_existing_tenants_and_publications(
         assert selected.status_code == 200, selected.text
         assert selected.json()["session"]["client_id"] == new_id
 
-        other = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        other = _pub(http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
         assert new_id not in _ids(http.get("/api/v1/clients", headers=other).json())
         client1 = _bearer(_token(http, DEMO_CLIENT_SUBJECT, CLIENT_PASSWORD))
         client2 = _bearer(_token(http, DEMO_CLIENT_2_SUBJECT, CLIENT2_PASSWORD))

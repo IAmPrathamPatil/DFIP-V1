@@ -36,6 +36,7 @@ from fastapi.testclient import TestClient
 from catalog_support import V2C_CAMPAIGN, V2C_FL1, labels_xlsx, logic_xlsx
 from http_ingest_support import source_row, upload_workbook, workbook_bytes
 from postgres_support import CLIENT_B, postgres_only, requires_postgres
+from publisher_session_support import publisher_headers
 from test_company2_isolation import (
     CLIENT2_PASSWORD,
     PUBLISHER2_PASSWORD,
@@ -425,8 +426,9 @@ def test_postgres_default_client_keeps_owned_packaged_ids(
 ) -> None:
     _seed_two_tenants(pg_conn)
     with TestClient(_pg_app(postgres_url)) as http:
-        headers = _bearer(
-            _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+        headers = publisher_headers(
+            http,
+            _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID),
         )
         uploaded = upload_workbook(
             http,
@@ -461,7 +463,9 @@ def test_postgres_company2_packaged_fallback_nulls_foreign_ids(
 ) -> None:
     _seed_two_tenants(pg_conn)
     with TestClient(_pg_app(postgres_url)) as http:
-        headers = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        headers = publisher_headers(
+            http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD)
+        )
         uploaded = upload_workbook(
             http,
             workbook_bytes(
@@ -500,8 +504,9 @@ def test_postgres_new_tenant_packaged_fallback_nulls_foreign_ids(
 ) -> None:
     _seed_two_tenants(pg_conn)
     with TestClient(_pg_app(postgres_url)) as http:
-        creator = _bearer(
-            _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+        creator = publisher_headers(
+            http,
+            _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID),
         )
         created = http.post(
             "/api/v1/clients",
@@ -511,7 +516,7 @@ def test_postgres_new_tenant_packaged_fallback_nulls_foreign_ids(
         assert created.status_code == 201, created.text
         new_id = created.json()["client_id"]
         selected = _select(http, creator["Authorization"].split(" ", 1)[1], new_id)
-        headers = _bearer(selected.json()["access_token"])
+        headers = publisher_headers(http, selected.json()["access_token"])
         uploaded = upload_workbook(
             http,
             workbook_bytes(
@@ -561,7 +566,9 @@ def test_postgres_new_tenant_packaged_fallback_nulls_foreign_ids(
 def test_postgres_company2_logic_overlay_wins(pg_conn, postgres_url: str, tmp_path: Path) -> None:
     _seed_two_tenants(pg_conn)
     with TestClient(_pg_app(postgres_url)) as http:
-        headers = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        headers = publisher_headers(
+            http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD)
+        )
         logic = http.post(
             "/api/v1/catalogs/logic",
             headers=headers,
@@ -604,7 +611,9 @@ def test_postgres_company2_logic_overlay_wins(pg_conn, postgres_url: str, tmp_pa
 def test_postgres_company2_labels_overlay_wins(pg_conn, postgres_url: str, tmp_path: Path) -> None:
     _seed_two_tenants(pg_conn)
     with TestClient(_pg_app(postgres_url)) as http:
-        headers = _bearer(_token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD))
+        headers = publisher_headers(
+            http, _token(http, DEMO_PUBLISHER_2_SUBJECT, PUBLISHER2_PASSWORD)
+        )
         labels = http.post(
             "/api/v1/catalogs/labels",
             headers=headers,

@@ -62,9 +62,7 @@ def publisher_headers(http: TestClient, token: str) -> dict[str, str]:
     return {**_bearer(token), PUBLISHER_SESSION_HEADER: _cached_session_id(http, token)}
 
 
-def with_publisher_session(
-    headers: dict[str, str], http: TestClient, token: str
-) -> dict[str, str]:
+def with_publisher_session(headers: dict[str, str], http: TestClient, token: str) -> dict[str, str]:
     return {**headers, PUBLISHER_SESSION_HEADER: _cached_session_id(http, token)}
 
 

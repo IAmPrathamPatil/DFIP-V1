@@ -37,10 +37,17 @@ from postgres_support import (
     seed_identity,
     seed_working_set,
 )
+from publisher_session_support import with_publisher_session
 from test_p5_api import JWT_SECRET, _encode_jwt, make_settings, production_settings
 
 AUTH_A = {"Authorization": f"Bearer {_encode_jwt(role='publisher', client_id=CLIENT_A)}"}
 AUTH_B = {"Authorization": f"Bearer {_encode_jwt(role='publisher', client_id=CLIENT_B)}"}
+
+
+def _pub(http: TestClient, headers: dict[str, str]) -> dict[str, str]:
+    """Attach this caller's active Publisher session to publisher headers."""
+    token = headers["Authorization"].split(" ", 1)[1]
+    return with_publisher_session(headers, http, token)
 
 
 def _memory_app(source_store=None, **overrides):
@@ -333,7 +340,7 @@ def test_postgres_restart_sweep_and_staged_retry(tmp_path: Path, pg_conn, postgr
     seed_identity(pg_conn, subject="publisher-1", role="publisher", client_id=CLIENT_A)
     archive = tmp_path / "source-archive"
     first = _pg_app(postgres_url, archive)
-    headers = _pg_auth("publisher-1", CLIENT_A)
+    headers = _pub(first, _pg_auth("publisher-1", CLIENT_A))
     content = workbook_bytes(tmp_path / "pg.xlsx", [source_row()])
     uploaded = upload_workbook(first, content, "pg.xlsx", headers=headers)
     assert uploaded.status_code == 201
@@ -409,7 +416,7 @@ def test_postgres_received_same_batch_and_missing_archive(
     seed_identity(pg_conn, subject="publisher-1", role="publisher", client_id=CLIENT_A)
     archive = tmp_path / "source-archive-b"
     http = _pg_app(postgres_url, archive)
-    headers = _pg_auth("publisher-1", CLIENT_A)
+    headers = _pub(http, _pg_auth("publisher-1", CLIENT_A))
     content = workbook_bytes(tmp_path / "recv.xlsx", [source_row()])
     uploaded = upload_workbook(http, content, "recv.xlsx", headers=headers)
     batch_id = uploaded.json()["batch"]["batch_id"]
@@ -458,8 +465,8 @@ def test_postgres_tenant_isolation_on_retry(tmp_path: Path, pg_conn, postgres_ur
     seed_identity(pg_conn, subject="publisher-b", role="publisher", client_id=CLIENT_B)
     archive = tmp_path / "source-archive-c"
     http = _pg_app(postgres_url, archive)
-    headers_a = _pg_auth("publisher-a", CLIENT_A)
-    headers_b = _pg_auth("publisher-b", CLIENT_B)
+    headers_a = _pub(http, _pg_auth("publisher-a", CLIENT_A))
+    headers_b = _pub(http, _pg_auth("publisher-b", CLIENT_B))
     uploaded = upload_workbook(
         http,
         workbook_bytes(tmp_path / "a.xlsx", [source_row()]),

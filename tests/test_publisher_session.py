@@ -90,9 +90,7 @@ def _app(**overrides):
 
 
 def _login(http: TestClient, username: str) -> str:
-    response = http.post(
-        "/api/v1/auth/login", json={"username": username, "password": PASSWORD}
-    )
+    response = http.post("/api/v1/auth/login", json={"username": username, "password": PASSWORD})
     assert response.status_code == 200, response.text
     return str(response.json()["access_token"])
 
@@ -136,17 +134,13 @@ def test_publisher_without_a_session_is_refused() -> None:
 def test_session_id_is_opaque_and_carries_no_user_information() -> None:
     http = TestClient(_app())
     token = _login(http, PUBLISHER)
-    body = http.post(
-        "/api/v1/auth/publisher-session", headers=_bearer(token)
-    ).json()
+    body = http.post("/api/v1/auth/publisher-session", headers=_bearer(token)).json()
     session_id = body["session_id"]
     assert len(session_id) >= 40
     assert PUBLISHER not in session_id
     assert CLIENT_ID not in session_id
     assert token not in session_id
-    assert PUBLISHER not in http.post(
-        "/api/v1/auth/publisher-session", headers=_bearer(token)
-    ).text
+    assert PUBLISHER not in http.post("/api/v1/auth/publisher-session", headers=_bearer(token)).text
 
 
 # --- b/c. second session replaces first, old one stops working --------------
@@ -185,9 +179,12 @@ def test_replaced_session_is_refused_on_every_publisher_surface() -> None:
     assert http.get("/api/v1/publications/current/facts.csv", headers=stale).status_code == 401
     assert http.get("/api/v1/facts/history", headers=stale).status_code == 401
     assert http.post("/api/v1/publications", json={}, headers=stale).status_code == 401
-    assert http.post(
-        "/api/v1/auth/select-client", json={"client_id": CLIENT_ID}, headers=stale
-    ).status_code == 401
+    assert (
+        http.post(
+            "/api/v1/auth/select-client", json={"client_id": CLIENT_ID}, headers=stale
+        ).status_code
+        == 401
+    )
     # The session that replaced it keeps working.
     assert http.get("/api/v1/facts", headers=_publisher_headers(token, new)).status_code == 200
 
@@ -205,10 +202,13 @@ def test_heartbeat_cannot_resurrect_a_replaced_session() -> None:
     assert beat.status_code == 401
     assert _error(beat)["code"] == PUBLISHER_SESSION_REPLACED
     # The live session is untouched by the stale heartbeat.
-    assert http.post(
-        "/api/v1/auth/publisher-session/heartbeat",
-        headers=_publisher_headers(token, new),
-    ).status_code == 200
+    assert (
+        http.post(
+            "/api/v1/auth/publisher-session/heartbeat",
+            headers=_publisher_headers(token, new),
+        ).status_code
+        == 200
+    )
 
 
 # --- d. foreign / forged session ids ---------------------------------------
@@ -225,13 +225,19 @@ def test_a_publisher_cannot_use_another_users_session_id() -> None:
     assert _error(stolen)["code"] == PUBLISHER_SESSION_REPLACED
 
     # ...and presenting a foreign id does not let them take over that user.
-    assert http.post(
-        "/api/v1/auth/publisher-session",
-        headers=_publisher_headers(other_token, first_session),
-    ).status_code == 401
-    assert http.get(
-        "/api/v1/facts", headers=_publisher_headers(first_token, first_session)
-    ).status_code == 200
+    assert (
+        http.post(
+            "/api/v1/auth/publisher-session",
+            headers=_publisher_headers(other_token, first_session),
+        ).status_code
+        == 401
+    )
+    assert (
+        http.get(
+            "/api/v1/facts", headers=_publisher_headers(first_token, first_session)
+        ).status_code
+        == 200
+    )
 
 
 def test_unknown_and_forged_session_ids_are_refused_identically() -> None:
@@ -279,9 +285,7 @@ def test_clients_create_no_publisher_session_rows() -> None:
 
 def test_client_cannot_open_a_publisher_session() -> None:
     http = TestClient(_app())
-    response = http.post(
-        "/api/v1/auth/publisher-session", headers=_bearer(_login(http, CLIENT_A))
-    )
+    response = http.post("/api/v1/auth/publisher-session", headers=_bearer(_login(http, CLIENT_A)))
     assert response.status_code == 403
     assert _error(response)["code"] == AUTHORIZATION_FAILED
 
@@ -308,9 +312,7 @@ def test_clients_are_unaffected_when_the_session_store_is_missing() -> None:
     app.state.publisher_session_store = None
 
     assert http.get("/api/v1/session", headers=_bearer(client_token)).status_code == 200
-    assert http.get(
-        "/api/v1/analytics/overview", headers=_bearer(client_token)
-    ).status_code == 200
+    assert http.get("/api/v1/analytics/overview", headers=_bearer(client_token)).status_code == 200
 
 
 def test_opening_a_session_without_a_store_is_an_outage_not_a_bypass() -> None:
@@ -335,9 +337,7 @@ def test_a_replaced_tab_cannot_take_the_session_back() -> None:
 
     # The replaced tab retries establishment while still holding its dead id.
     for _ in range(3):
-        retry = http.post(
-            "/api/v1/auth/publisher-session", headers=_publisher_headers(token, old)
-        )
+        retry = http.post("/api/v1/auth/publisher-session", headers=_publisher_headers(token, old))
         assert retry.status_code == 401
         assert _error(retry)["code"] == PUBLISHER_SESSION_REPLACED
 
@@ -347,9 +347,7 @@ def test_a_replaced_tab_cannot_take_the_session_back() -> None:
 
 def test_establishment_is_rate_limited() -> None:
     app = _app()
-    app.state.publisher_session_limiter = RateWindowLimiter(
-        max_attempts=2, window_seconds=600
-    )
+    app.state.publisher_session_limiter = RateWindowLimiter(max_attempts=2, window_seconds=600)
     http = TestClient(app)
     token = _login(http, PUBLISHER)
 
@@ -379,9 +377,7 @@ def test_expired_lease_is_inactive_and_can_be_replaced() -> None:
     store = InMemoryPublisherSessionStore()
     start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     session_id = new_session_id()
-    store.register(
-        user_id="u1", session_id=session_id, lease_seconds=60, now=start
-    )
+    store.register(user_id="u1", session_id=session_id, lease_seconds=60, now=start)
 
     assert store.get_active(session_id, now=start + timedelta(seconds=30)) is not None
     assert store.get_active(session_id, now=start + timedelta(seconds=61)) is None
@@ -407,14 +403,24 @@ def test_renewal_refuses_an_expired_lease() -> None:
     session_id = new_session_id()
     store.register(user_id="u1", session_id=session_id, lease_seconds=60, now=start)
 
-    assert store.renew(
-        session_id=session_id, user_id="u1", lease_seconds=60,
-        now=start + timedelta(seconds=30),
-    ) is not None
-    assert store.renew(
-        session_id=session_id, user_id="u1", lease_seconds=60,
-        now=start + timedelta(seconds=600),
-    ) is None
+    assert (
+        store.renew(
+            session_id=session_id,
+            user_id="u1",
+            lease_seconds=60,
+            now=start + timedelta(seconds=30),
+        )
+        is not None
+    )
+    assert (
+        store.renew(
+            session_id=session_id,
+            user_id="u1",
+            lease_seconds=60,
+            now=start + timedelta(seconds=600),
+        )
+        is None
+    )
 
 
 def test_enforcement_fails_on_an_expired_lease() -> None:
@@ -425,15 +431,11 @@ def test_enforcement_fails_on_an_expired_lease() -> None:
     start = datetime(2026, 1, 1, 12, 0, tzinfo=UTC)
     session_id = new_session_id()
     store.register(user_id="u1", session_id=session_id, lease_seconds=60, now=start)
-    principal = Principal(
-        subject="ops", auth_mode="jwt", role="publisher", user_id="u1"
-    )
+    principal = Principal(subject="ops", auth_mode="jwt", role="publisher", user_id="u1")
 
     enforce_publisher_session(store, principal, session_id, now=start + timedelta(seconds=10))
     try:
-        enforce_publisher_session(
-            store, principal, session_id, now=start + timedelta(seconds=120)
-        )
+        enforce_publisher_session(store, principal, session_id, now=start + timedelta(seconds=120))
     except PublisherSessionReplacedError as exc:
         assert exc.status_code == 401
         assert exc.code == PUBLISHER_SESSION_REPLACED
@@ -453,9 +455,7 @@ def test_concurrent_registration_leaves_exactly_one_active_session() -> None:
     def attempt() -> None:
         try:
             barrier.wait(timeout=5)
-            session = store.register(
-                user_id="u1", session_id=new_session_id(), lease_seconds=600
-            )
+            session = store.register(user_id="u1", session_id=new_session_id(), lease_seconds=600)
             results.append(session.session_id)
         except BaseException as exc:  # pragma: no cover - surfaced below
             errors.append(exc)
@@ -513,13 +513,17 @@ def test_logout_only_affects_the_calling_user() -> None:
     first_session = _open_session(http, first)
     second_session = _open_session(http, second)
 
-    assert http.post(
-        "/api/v1/auth/logout", headers=_publisher_headers(first, first_session)
-    ).status_code == 204
+    assert (
+        http.post(
+            "/api/v1/auth/logout", headers=_publisher_headers(first, first_session)
+        ).status_code
+        == 204
+    )
 
-    assert http.get(
-        "/api/v1/facts", headers=_publisher_headers(second, second_session)
-    ).status_code == 200
+    assert (
+        http.get("/api/v1/facts", headers=_publisher_headers(second, second_session)).status_code
+        == 200
+    )
 
 
 def test_session_responses_do_not_leak_internals() -> None:

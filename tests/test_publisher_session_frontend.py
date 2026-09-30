@@ -295,7 +295,7 @@ def test_sign_out_resets_the_module(tmp_path: Path) -> None:
 def test_api_client_injects_the_header_only_on_authenticated_requests() -> None:
     source = API_CLIENT.read_text(encoding="utf-8")
     assert "getPublisherSession" in source
-    assert 'headers[publisherSession.name] = publisherSession.value' in source
+    assert "headers[publisherSession.name] = publisherSession.value" in source
     # The injector is inside the `if (auth)` branch, never for public routes.
     auth_block = source[
         source.index("if (auth) {") : source.index("const options = { method, headers")
@@ -386,7 +386,7 @@ def test_generic_401_handling_is_unchanged() -> None:
     app = APP.read_text(encoding="utf-8")
     handler = app[app.index("function handleError(") : app.index("function saveBlob(")]
     assert "clearToken()" in handler
-    assert 'credentialView({' in handler
+    assert "credentialView({" in handler
     assert handler.count("isPublisherSessionReplacedError(error)") == 1
 
 

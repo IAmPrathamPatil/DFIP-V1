@@ -144,9 +144,7 @@ class InMemoryPublisherSessionStore:
         moment = now if now is not None else _utcnow()
         expires_at = moment + timedelta(seconds=max(1, int(lease_seconds)))
         with self._lock:
-            revoked = [
-                key for key, item in self._by_id.items() if _is_claimable(item, user_id)
-            ]
+            revoked = [key for key, item in self._by_id.items() if _is_claimable(item, user_id)]
             for key in revoked:
                 self._by_id[key] = _with_revoked(self._by_id[key], moment)
             session = PublisherSession(
@@ -432,9 +430,7 @@ def renew_publisher_session(
     return renewed
 
 
-def release_publisher_sessions(
-    store: PublisherSessionStore | None, user_id: str | None
-) -> int:
+def release_publisher_sessions(store: PublisherSessionStore | None, user_id: str | None) -> int:
     """Revoke a session on logout. Never raises; logout is always allowed."""
     if store is None or not str(user_id or "").strip():
         return 0

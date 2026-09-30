@@ -53,6 +53,7 @@ _TENANT_TABLES = (
     "client_membership",
     "excel_workbook_grant",
     "analytics_saved_analysis",
+    "publisher_session",
     "app_user",
     "audit_log",
 )
