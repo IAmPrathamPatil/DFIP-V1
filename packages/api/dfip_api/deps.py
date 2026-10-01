@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Iterator
+from collections.abc import AsyncIterator
 from dataclasses import replace
 from typing import Annotated
 
@@ -96,10 +96,10 @@ def publisher_session_id(request: Request) -> str | None:
     return request.headers.get(PUBLISHER_SESSION_HEADER)
 
 
-def get_principal(
+async def get_principal(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> Iterator[Principal]:
+) -> AsyncIterator[Principal]:
     principal = _authenticate(request, credentials)
     # One active Publisher session per app_user. This runs before any route
     # body, so a replaced tab or a direct API call with a stolen JWT is
@@ -115,10 +115,10 @@ def get_principal(
         reset_rls()
 
 
-def get_principal_unchecked(
+async def get_principal_unchecked(
     request: Request,
     credentials: HTTPAuthorizationCredentials | None = Depends(bearer_scheme),
-) -> Iterator[Principal]:
+) -> AsyncIterator[Principal]:
     """Authenticate without requiring a live Publisher session.
 
     Only for the routes that must work precisely when a Publisher session is
