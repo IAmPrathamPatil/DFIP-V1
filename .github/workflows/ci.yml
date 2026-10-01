@@ -27,9 +27,11 @@ jobs:
         run: python -m ruff check packages tests
 
       - name: Format
+        if: always()
         run: python -m ruff format --check packages tests
 
       - name: Test
+        if: always()
         run: python -m pytest --junitxml=pytest-report.xml
 
   postgres-phase1:
