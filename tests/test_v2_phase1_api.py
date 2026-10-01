@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal
 
 import jwt
@@ -23,6 +23,51 @@ from publisher_session_support import with_publisher_session
 from test_p5_api import JWT_SECRET, make_settings
 
 pytestmark = [postgres_only, requires_postgres]
+
+# Local CLIENT_B working set. ``postgres_support.seed_working_set`` only seeds
+# CLIENT_A, and this file must not change shared seed helpers for one contract
+# test. ``pg_conn`` re-inserts the CLIENT_B company row before every test.
+FILE_B = "b0000000-0000-4000-8000-000000000002"
+BATCH_B = "c0000000-0000-4000-8000-000000000002"
+RUN_B = "d0000000-0000-4000-8000-000000000002"
+
+
+def _seed_client_b_failed_run(conn) -> None:
+    """A CLIENT_B processing run in a non-succeeded state."""
+    ts = datetime(2025, 8, 1, 1, tzinfo=UTC)
+    conn.execute(
+        """
+        INSERT INTO source_file (
+            id, client_id, sha256, original_filename, byte_size, source_kind, uploaded_at
+        )
+        VALUES (%s, %s, %s, 'beta.xlsx', 10, 'native_export', %s)
+        """,
+        (FILE_B, CLIENT_B, "b" * 64, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO batch (
+            id, source_file_id, client_id, status, row_count_declared, row_count_staged,
+            row_count_rejected, observed_day_min, observed_day_max, created_at, completed_at,
+            worksheet_name, header_row, source_start_column, empty_row_count
+        )
+        VALUES (
+            %s, %s, %s, 'failed', 3, 0, 3, %s, %s, %s, %s,
+            'Web-Engage Raw', 1, 'K', 0
+        )
+        """,
+        (BATCH_B, FILE_B, CLIENT_B, date(2025, 8, 1), date(2025, 8, 3), ts, ts),
+    )
+    conn.execute(
+        """
+        INSERT INTO processing_run (
+            id, batch_id, client_id, engine_version, started_at, finished_at, status
+        )
+        VALUES (%s, %s, %s, '0.4.0', %s, %s, 'failed')
+        """,
+        (RUN_B, BATCH_B, CLIENT_B, ts, ts),
+    )
+    conn.commit()
 
 
 def _jwt(*, role: str, sub: str, client_id: str | None = None) -> dict[str, str]:
@@ -207,7 +252,24 @@ def test_facts_decimal_and_restart_entities(pg_conn, pg_stores, postgres_url) ->
     assert run.client_id == CLIENT_A
 
 
-def test_jwt_mismatch_is_403_run_mismatch_is_422(pg_conn, pg_stores, postgres_url) -> None:
+def test_jwt_mismatch_is_403_and_cross_tenant_run_is_404(pg_conn, pg_stores, postgres_url) -> None:
+    """A conflicting JWT client_id is 403; another tenant's run is 404.
+
+    Two different contracts, deliberately in one test. The 403 is the
+    caller's own token contradicting their own request body, so it is
+    decided before any resource is read.
+
+    The 404 is the tenant boundary. ``get_principal`` binds the request RLS
+    context, so ``processing_run`` for CLIENT_A is filtered out of the
+    lookup for a publisher whose membership is CLIENT_B, and
+    ``PublicationService.create`` never reaches its
+    "Processing run does not belong to this client." branch. 404 rather
+    than 422 is required: 422 would be distinguishable from 404 for a run
+    that does not exist at all, which is an existence oracle for other
+    tenants' processing_run ids. The 422 branch is still exercised for a
+    principal authorized for both tenants by
+    ``test_platform_admin_cross_tenant_run_is_422``.
+    """
     _ingest, facts, _pubs, _read = pg_stores
     seed_working_set(pg_conn)
     seed_identity(pg_conn, subject="publisher-a", role="publisher", client_id=CLIENT_A)
@@ -220,11 +282,91 @@ def test_jwt_mismatch_is_403_run_mismatch_is_422(pg_conn, pg_stores, postgres_ur
         json={"client_id": CLIENT_B, "processing_run_id": RUN_A},
     )
     assert jwt_mismatch.status_code == 403
-    integrity = client.post(
+    cross_tenant = client.post(
         "/api/v1/publications",
         headers=_pub(client, _jwt(role="publisher", sub="publisher-b")),
         json={"client_id": CLIENT_B, "processing_run_id": RUN_A},
     )
+    assert cross_tenant.status_code == 404
+    assert cross_tenant.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_platform_admin_cross_tenant_run_is_422(pg_conn, pg_stores, postgres_url) -> None:
+    """The documented run-mismatch 422 stays reachable, for platform admins.
+
+    ``platform_admin`` comes from ``app_user.is_platform_admin``, never from a
+    JWT claim, and the RLS policies honor ``dfip_is_platform_admin()``. Such a
+    caller is authorized for every tenant by design, so naming the mismatch
+    discloses nothing they could not already read. This is the only principal
+    for which the "does not belong to this client" branch is reachable under
+    real tenant filtering.
+    """
+    _ingest, facts, _pubs, _read = pg_stores
+    seed_working_set(pg_conn)
+    seed_identity(pg_conn, subject="publisher-pa", role="publisher", platform_admin=True)
+    facts.upsert(sample_fact())
+    client = _app(postgres_url)
+    integrity = client.post(
+        "/api/v1/publications",
+        headers=_pub(client, _jwt(role="publisher", sub="publisher-pa")),
+        json={"client_id": CLIENT_B, "processing_run_id": RUN_A},
+    )
     assert integrity.status_code == 422
     assert integrity.json()["error"]["code"] == "VALIDATION_ERROR"
-    assert "does not belong" in integrity.json()["error"]["message"]
+    assert "does not belong to this client" in integrity.json()["error"]["message"]
+
+
+def test_cross_tenant_run_is_indistinguishable_from_absent_run(
+    pg_conn, pg_stores, postgres_url
+) -> None:
+    """A run owned by another tenant must answer exactly like a missing run.
+
+    Guards the 404 contract against a future "helpful" 422 that would confirm
+    whether a guessed processing_run id exists in some other tenant.
+    """
+    _ingest, facts, _pubs, _read = pg_stores
+    seed_working_set(pg_conn)
+    seed_identity(pg_conn, subject="publisher-probe", role="publisher", client_id=CLIENT_B)
+    facts.upsert(sample_fact())
+    client = _app(postgres_url)
+    headers = _pub(client, _jwt(role="publisher", sub="publisher-probe"))
+
+    other_tenant = client.post(
+        "/api/v1/publications",
+        headers=headers,
+        json={"client_id": CLIENT_B, "processing_run_id": RUN_A},
+    )
+    never_existed = client.post(
+        "/api/v1/publications",
+        headers=headers,
+        json={
+            "client_id": CLIENT_B,
+            "processing_run_id": "d0000000-0000-4000-8000-000000009999",
+        },
+    )
+
+    assert other_tenant.status_code == never_existed.status_code == 404
+    assert other_tenant.json() == never_existed.json()
+    assert other_tenant.json()["error"]["code"] == "NOT_FOUND"
+
+
+def test_same_tenant_non_succeeded_run_is_422(pg_conn, pg_stores, postgres_url) -> None:
+    """A visible run in the wrong state is still a 422, not a 404.
+
+    Confirms the 422 validation path is not dead for ordinary tenant-scoped
+    publishers: the run belongs to the caller's own tenant, so RLS does not
+    hide it, and only its status is rejected.
+    """
+    _ingest, facts, _pubs, _read = pg_stores
+    seed_working_set(pg_conn)
+    _seed_client_b_failed_run(pg_conn)
+    seed_identity(pg_conn, subject="publisher-b-run", role="publisher", client_id=CLIENT_B)
+    client = _app(postgres_url)
+    wrong_state = client.post(
+        "/api/v1/publications",
+        headers=_pub(client, _jwt(role="publisher", sub="publisher-b-run")),
+        json={"client_id": CLIENT_B, "processing_run_id": RUN_B},
+    )
+    assert wrong_state.status_code == 422
+    assert wrong_state.json()["error"]["code"] == "VALIDATION_ERROR"
+    assert "succeeded" in wrong_state.json()["error"]["message"]
