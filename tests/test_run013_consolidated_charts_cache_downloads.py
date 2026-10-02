@@ -73,6 +73,7 @@ def _publish_month(ingest, store, run_id: str, month: str, *, sent: int, clicks:
     _add_run(ingest, run_id)
     _publish_snapshot(store, _month_facts(month, sent=sent, clicks=clicks), run_id=run_id)
 
+
 # O:S is the Click-Through group, T:X is the Overall group. Both live outside
 # the PivotTable (B9:L10) precisely so a pivot rewrite cannot drop them.
 CLICK_THROUGH_FIRST_COL = "O"
@@ -294,9 +295,7 @@ def test_cache_round_trips_and_replaces_stale_artifact(tmp_path: Path) -> None:
 
 def test_cache_keeps_one_artifact_per_company(tmp_path: Path) -> None:
     root = cache_root(tmp_path)
-    for index, fingerprint in enumerate(
-        [FP_A, FP_B, FP_C]
-    ):
+    for index, fingerprint in enumerate([FP_A, FP_B, FP_C]):
         cache_store(root, CLIENT_ID, fingerprint, _minimal_xlsx(str(index)))
         assert len(list((root / CLIENT_ID).glob("*.xlsx"))) == 1
 
@@ -385,9 +384,7 @@ def test_republished_month_is_not_duplicated_by_the_cache() -> None:
     )
 
     workbook = load_workbook(io.BytesIO(_download(http)))
-    sheet = next(
-        ws for ws in workbook.worksheets if ws.title not in {"PublishedFacts", "Facts"}
-    )
+    sheet = next(ws for ws in workbook.worksheets if ws.title not in {"PublishedFacts", "Facts"})
     months = [str(cell.value) for cell in sheet["A"] if cell.value in {"Jan-25"}]
     assert len(months) <= 2  # header plus at most one newest-wins row set
 

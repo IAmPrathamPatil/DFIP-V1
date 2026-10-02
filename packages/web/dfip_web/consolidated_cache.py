@@ -104,9 +104,7 @@ def load(root: Path, client_id: str, fingerprint: Sequence[str]) -> bytes | None
     return body
 
 
-def store(
-    root: Path, client_id: str, fingerprint: Sequence[str], body: bytes
-) -> None:
+def store(root: Path, client_id: str, fingerprint: Sequence[str], body: bytes) -> None:
     """Persist a generated workbook and drop the company's previous artifact.
 
     Writes to a temporary file first and renames it into place so a concurrent

@@ -248,9 +248,7 @@ def create_app(
         # build there would delay every later upload for a cache refresh that
         # nobody is blocked on. One warm worker also caps peak memory at a
         # single render, so a burst of publishes cannot stack large builds.
-        warm_executor: Executor = ThreadPoolExecutor(
-            max_workers=1, thread_name_prefix="dfip-warm"
-        )
+        warm_executor: Executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="dfip-warm")
         atexit.register(upload_executor.shutdown, wait=False, cancel_futures=True)
         atexit.register(warm_executor.shutdown, wait=False, cancel_futures=True)
     else:
