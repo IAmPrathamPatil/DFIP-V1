@@ -101,6 +101,7 @@ let overviewClientId = "";
 let overviewKpiData = null;
 let refreshableWorkbookDownloadInFlight = false;
 const REFRESHABLE_DOWNLOAD_LABEL = "Download Refreshable Workbook";
+let consolidatedWorkbookDownloadInFlight = false;
 let overviewSparklineData = null;
 let overviewTrendsData = null;
 let overviewDrillMode = "breakdown";
@@ -3126,6 +3127,32 @@ root.addEventListener("click", (event) => {
         });
       })
       .catch((error) => handleError(error, path));
+    return;
+  }
+  const consolidatedReport = event.target.closest("[data-download-consolidated-client-report]");
+  if (consolidatedReport) {
+    event.preventDefault();
+    if (consolidatedWorkbookDownloadInFlight || consolidatedReport.disabled) return;
+    const path = currentLocation().path;
+    consolidatedWorkbookDownloadInFlight = true;
+    const idleLabel = consolidatedReport.textContent;
+    consolidatedReport.disabled = true;
+    consolidatedReport.textContent = "Generating…";
+    api
+      .downloadConsolidatedClientReport(publishedParams(queryObject(currentLocation().query)))
+      .then((payload) => {
+        saveBlob(payload.blob, payload.filename || "Client_Report_Consolidated.xlsx");
+        showToast({
+          tone: "success",
+          title: "Consolidated company workbook downloaded.",
+        });
+      })
+      .catch((error) => handleError(error, path))
+      .finally(() => {
+        consolidatedWorkbookDownloadInFlight = false;
+        consolidatedReport.disabled = false;
+        consolidatedReport.textContent = idleLabel;
+      });
     return;
   }
   const refreshableReport = event.target.closest("[data-download-refreshable-client-report]");

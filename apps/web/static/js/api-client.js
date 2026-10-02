@@ -316,6 +316,13 @@ export class DfipApiClient {
     return this.request("GET", path, { params, blob: true });
   }
 
+  async downloadConsolidatedClientReport(params) {
+    return this.request("GET", `${this.prefix}/publications/current/consolidated-client-report.xlsx`, {
+      params,
+      blob: true,
+    });
+  }
+
   async downloadRefreshableClientReport(params, { onHeaders } = {}) {
     return this.request("GET", `${this.prefix}/publications/current/refreshable-client-report.xlsx`, {
       params,

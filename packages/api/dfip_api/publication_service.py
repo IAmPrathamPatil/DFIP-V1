@@ -9,6 +9,7 @@ from dfip_core.ingest.ports import IngestStore
 from dfip_core.transform.fact import FactRecord
 from dfip_core.transform.ports import FactStore
 from dfip_web.client_report_download import (
+    ARTIFACT_CONSOLIDATED,
     ARTIFACT_REFRESHABLE,
     ARTIFACT_STATIC,
     CLIENT_REPORT_MACRO_MEDIA_TYPE,
@@ -520,6 +521,93 @@ class PublicationService:
             publication_id=publication_id,
         )
         return body, filename, CLIENT_REPORT_MEDIA_TYPE
+
+    def download_consolidated_client_report(
+        self,
+        *,
+        principal: Principal,
+        requested_client_id: str | None,
+    ) -> tuple[bytes, str, str]:
+        """Return the nine-sheet Client_Report for the company's whole history.
+
+        Static workbook, cumulative rows: the same template, renderer, tenant
+        scoping and snapshot rules as the current Company Workbook, but the row
+        set is the newest-wins published history instead of one publication
+        snapshot, so the file never needs Excel Refresh All.
+
+        Reuses list_published_history, which already restricts the union to
+        complete snapshots, keeps the newest publication per
+        campaign/variation/day grain, and orders by day. That is what prevents
+        duplicate reporting periods and excludes failed, incomplete or working
+        set runs. Deduplication, aggregation and derived metrics stay in the
+        existing renderer and PivotCaches.
+
+        Does not process, publish, or move publication_current. No cumulative
+        history raises the same 404 as the static download rather than
+        returning an empty workbook.
+        """
+        client_id = _resolve_client_id(principal, requested_client_id)
+        if client_id is None:
+            raise ValidationFailed("client_id is required.")
+        require_company_active(self._clients, client_id)
+        try:
+            records = self._load_cumulative_items(client_id=client_id)
+        except ValidationFailed as exc:
+            if "exceeds the download row limit" in str(exc):
+                raise ValidationFailed(ROW_CAP_WORKBOOK_MESSAGE) from None
+            raise
+        if not records:
+            raise NotFoundError(NO_PUBLICATION_WORKBOOK_MESSAGE)
+        code, name = self._company_identity(client_id)
+        current, _pointer = self._publications.get_current(client_id)
+        published_at = current.published_at if current is not None else None
+        payloads = [fact_to_response(record).model_dump() for record in records]
+        try:
+            body = render_client_report_xlsx(
+                payloads,
+                published_at=published_at,
+                client_id=client_id,
+                client_code=code,
+                client_name=name,
+                artifact=ARTIFACT_CONSOLIDATED,
+            )
+        except ApiError:
+            raise
+        except Exception:
+            raise ApiError(
+                500,
+                INTERNAL_ERROR,
+                "Client report could not be generated.",
+            ) from None
+        filename = client_report_download_filename(
+            code,
+            published_at,
+            artifact=ARTIFACT_CONSOLIDATED,
+        )
+        return body, filename, CLIENT_REPORT_MEDIA_TYPE
+
+    def _load_cumulative_items(self, *, client_id: str) -> list[FactRecord]:
+        """Newest-wins published history for the company, oldest day first.
+
+        Pages the same store method the refresh CSV uses. The cumulative set is
+        routinely far larger than one publication, so the cap is
+        HISTORY_FACTS_MAX_PAGE_LIMIT, the limit the codebase already uses for
+        current cumulative tenants. Never truncates: over the cap is an error.
+        """
+        records: list[FactRecord] = []
+        offset = 0
+        while True:
+            page, total = self._publications.list_published_history(
+                client_id,
+                limit=HISTORY_FACTS_MAX_PAGE_LIMIT,
+                offset=offset,
+            )
+            if total > HISTORY_FACTS_MAX_PAGE_LIMIT:
+                raise ValidationFailed("Cumulative history exceeds the download row limit.")
+            records.extend(page)
+            offset += len(page)
+            if not page or offset >= total:
+                return records
 
     def _company_identity(self, client_id: str) -> tuple[str, str]:
         record = self._clients.get(client_id) if self._clients is not None else None

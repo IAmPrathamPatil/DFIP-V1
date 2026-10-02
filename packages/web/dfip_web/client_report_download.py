@@ -92,9 +92,14 @@ from dfip_web.slicer_defaults import (
 CLIENT_REPORT_DOWNLOAD_SUFFIX = "Client_Report.xlsx"
 CLIENT_REPORT_DOWNLOAD_NAME = CLIENT_REPORT_DOWNLOAD_SUFFIX
 CLIENT_REPORT_REFRESHABLE_SUFFIX = "Client_Report_Refreshable.xlsm"
+CLIENT_REPORT_CONSOLIDATED_SUFFIX = "Client_Report_Consolidated.xlsx"
 ARTIFACT_STATIC = "static"
 ARTIFACT_REFRESHABLE = "refreshable"
-ALLOWED_ARTIFACTS = frozenset({ARTIFACT_STATIC, ARTIFACT_REFRESHABLE})
+# Static template and renderer, populated with the company's whole cumulative
+# published history instead of one publication snapshot. Never refreshable, so
+# it never needs Excel Refresh All.
+ARTIFACT_CONSOLIDATED = "consolidated"
+ALLOWED_ARTIFACTS = frozenset({ARTIFACT_STATIC, ARTIFACT_REFRESHABLE, ARTIFACT_CONSOLIDATED})
 QUERY_TABLE_PART = "xl/queryTables/queryTable1.xml"
 DEFAULT_REFRESH_API_BASE_URL = "http://127.0.0.1:8000"
 CLIENT_REPORT_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
@@ -217,6 +222,7 @@ def client_report_download_filename(
     Current static and refreshable names omit the publication short id (RUN 005B/005C).
     Historical static downloads include the short id so same-day republishes do not
     collide. Uses client_code, never the company display name.
+    Consolidated is a current-company artifact, so it also omits the short id.
     """
     token = _safe_filename_token(client_code)
     if published_at is None:
@@ -225,12 +231,13 @@ def client_report_download_filename(
         day = published_at.date()
     else:
         day = published_at.astimezone(UTC).date()
-    suffix = (
-        CLIENT_REPORT_REFRESHABLE_SUFFIX
-        if artifact == ARTIFACT_REFRESHABLE
-        else CLIENT_REPORT_DOWNLOAD_SUFFIX
-    )
-    if artifact != ARTIFACT_REFRESHABLE and publication_id:
+    if artifact == ARTIFACT_REFRESHABLE:
+        suffix = CLIENT_REPORT_REFRESHABLE_SUFFIX
+    elif artifact == ARTIFACT_CONSOLIDATED:
+        suffix = CLIENT_REPORT_CONSOLIDATED_SUFFIX
+    else:
+        suffix = CLIENT_REPORT_DOWNLOAD_SUFFIX
+    if artifact == ARTIFACT_STATIC and publication_id:
         short = publication_short_id(publication_id)
         return f"DFIP_{token}_{day.isoformat()}_{short}_{suffix}"
     return f"DFIP_{token}_{day.isoformat()}_{suffix}"
@@ -251,9 +258,11 @@ def render_client_report_xlsx(
 ) -> bytes:
     """Return a complete nine-sheet workbook for one publication snapshot.
 
-    ``rows`` are FactResponse-shaped mappings for that publication only.
-    Raises ValueError if the template is missing/invalid or the result is not a
-    complete workbook. Never returns a truncated zip.
+    ``rows`` are FactResponse-shaped mappings. For the static and consolidated
+    artifacts that is the company's published data set; consolidated passes the
+    whole cumulative history instead of a single publication. Raises ValueError
+    if the template is missing/invalid or the result is not a complete workbook.
+    Never returns a truncated zip.
 
     Static artifacts clear Settings B2–B4. Refreshable artifacts write
     ApiBaseUrl and, when ``refresh_bearer_token`` is provided (website/API
@@ -262,7 +271,9 @@ def render_client_report_xlsx(
     BearerToken empty. Company identity is inert provenance.
     """
     if artifact not in ALLOWED_ARTIFACTS:
-        raise ValueError("Client report artifact must be static or refreshable.")
+        raise ValueError("Client report artifact must be static, refreshable, or consolidated.")
+    # Consolidated deliberately takes the static path: same template, same
+    # formulas, no query table and no DataMashup, so no Excel Refresh All.
     refreshable = artifact == ARTIFACT_REFRESHABLE
     src = resolve_client_report_template(template_path)
     if not src.is_file():

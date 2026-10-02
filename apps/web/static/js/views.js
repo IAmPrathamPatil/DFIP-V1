@@ -354,6 +354,10 @@ function companyRefreshableWorkbookButton() {
   return html`<button type="button" class="secondary" data-download-refreshable-client-report="current">Download Refreshable Workbook</button>`;
 }
 
+function companyConsolidatedWorkbookButton() {
+  return html`<button type="button" class="secondary" data-download-consolidated-client-report="current">Download Consolidated Workbook</button>`;
+}
+
 function refreshableDownloadErrorHost() {
   return html`<p class="banner warn" data-refreshable-download-error="true" hidden role="alert"></p>`;
 }
@@ -4592,11 +4596,12 @@ export function clientHomeView({ session, currentPublication, publications }) {
         <a class="btn" href="/client/facts" style="display:inline-flex;align-items:center;">Open published data</a>
         <button type="button" data-download-client-report="current">Download Client Report</button>
         ${companyRefreshableWorkbookButton()}
+        ${companyConsolidatedWorkbookButton()}
         <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
         <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
       </p>
       ${refreshableDownloadErrorHost()}
-      <p class="muted">The Client Report is the nine-sheet static snapshot of the current publication. The refreshable workbook uses the same pivots and follows cumulative published history after Excel Refresh All. It includes the current session token for Refresh All (not a permanent secret). Historical files do not update themselves.</p>
+      <p class="muted">The Client Report is the nine-sheet static snapshot of the current publication. The Consolidated Workbook is also static, but it already contains every successfully processed month currently available for this company in one file, so it never needs Excel Refresh All. The refreshable workbook uses the same pivots and follows cumulative published history after Excel Refresh All. It includes the current session token for Refresh All (not a permanent secret). Historical files do not update themselves.</p>
     </section>
     ${
       historyItems.length
@@ -5597,6 +5602,7 @@ export function clientFactListView(model) {
     <p>
       <button type="button" data-download-client-report="current">Download Client Report</button>
       ${companyRefreshableWorkbookButton()}
+      ${companyConsolidatedWorkbookButton()}
       <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
       <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
     </p>

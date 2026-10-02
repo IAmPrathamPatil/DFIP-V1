@@ -350,6 +350,48 @@ def download_current_client_report(
 
 
 @publication_router.get(
+    "/publications/current/consolidated-client-report.xlsx",
+    summary="Download the consolidated nine-sheet client report for the company",
+    description=(
+        "Returns the native Client_Report workbook populated with the company's "
+        "whole cumulative published history instead of a single publication "
+        "snapshot. Same template, sheet names, formulas and report organization "
+        "as the static Company Workbook, and static: it does not require Excel "
+        "Refresh All and carries no query table, DataMashup or bearer token. "
+        "Rows are the same newest-wins complete-snapshot union served by "
+        "GET /publications/history/facts, ordered oldest day first, so "
+        "republished months replace rather than duplicate and unpublished or "
+        "incomplete runs are excluded. Same tenant isolation as "
+        "GET /publications/current/facts. Filename is "
+        "DFIP_<client_code>_<YYYY-MM-DD>_Client_Report_Consolidated.xlsx. "
+        "No published history returns 404. Exceeding "
+        "HISTORY_FACTS_MAX_PAGE_LIMIT rows returns 422 rather than truncating. "
+        "Does not process or publish."
+    ),
+    tags=["Publications"],
+    response_class=Response,
+)
+def download_current_consolidated_client_report(
+    service: PublicationServiceDep,
+    principal: PrincipalDep,
+    settings: SettingsDep,
+    client_id: OptionalUuid = None,
+) -> Response:
+    def build() -> Response:
+        body, filename, media_type = service.download_consolidated_client_report(
+            principal=principal,
+            requested_client_id=str(client_id) if client_id else None,
+        )
+        return Response(
+            content=body,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        )
+
+    return _with_report_generation_limit(build)
+
+
+@publication_router.get(
     "/publications/current/refreshable-client-report.xlsx",
     summary="Download the current refreshable nine-sheet client report",
     description=(
