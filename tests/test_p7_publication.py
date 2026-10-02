@@ -7,7 +7,7 @@ from pathlib import Path
 from uuid import UUID
 from zipfile import ZipFile
 
-from dfip_api.app import create_app
+from dfip_api.app import InlineExecutor, create_app
 from dfip_api.publication_store import InMemoryPublicationStore
 from dfip_api.roles import can_publish
 from dfip_config.settings import Settings
@@ -95,6 +95,9 @@ def publisher_app(**settings_overrides: object):
         ingest_store=ingest,
         fact_store=facts,
         publication_store=store,
+        # Background work runs inline so a post-publish consolidated warm is
+        # observable immediately and downloads are deterministic.
+        executor=InlineExecutor(),
     )
     return app, ingest, facts, store
 
@@ -107,6 +110,7 @@ def jwt_app(role: str = "reader", client_id: str | None = CLIENT_ID):
         ingest_store=ingest,
         fact_store=facts,
         publication_store=store,
+        executor=InlineExecutor(),
     )
     token = _encode_jwt(role=role, client_id=client_id)
     return app, store, facts, {"Authorization": f"Bearer {token}"}

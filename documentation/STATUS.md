@@ -440,6 +440,9 @@ Phase 2B canvas). Repo P9 authorization is already locked and is not this work.
   semaphore(1); a busy generator returns 429. Download row cap remains 75,000.
 - The upload `ThreadPoolExecutor` queue is still unbounded. V1 remains one API
   process (`deploy/systemd/dfip-api.service`). P13B same-SHA 202, completed replay 200, and retry remain.
+- Consolidated workbook cache warming runs on its own `ThreadPoolExecutor(
+  max_workers=1)`, not the upload pool, so a multi-second render cannot delay
+  ingest. Upload concurrency (`DFIP_WORKER_CONCURRENCY`) is unchanged.
 - Pagination max remains 200. Database pool max 8 is unchanged. No Redis, WAF,
   API gateway, CAPTCHA, or tenant QPS system.
 

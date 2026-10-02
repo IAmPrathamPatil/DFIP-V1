@@ -70,13 +70,14 @@ from dfip_web.pivot_report import (
     PIVOT_CACHE_QUERY_NAME,
     apply_page_filter_defaults_into,
     apply_refreshable_conversion_layout_into,
+    apply_snapshot_conversion_layout_into,
     assert_native_pivot_package,
+    assert_published_facts_mashup,
     assert_renewal_enabled_mashup,
     bind_pivot_cache_for_refreshable,
     bind_pivot_cache_for_snapshot,
     bind_refreshable_query_defined_name,
     mashup_is_renewal_enabled,
-    assert_published_facts_mashup,
 )
 from dfip_web.report_format import (
     apply_reference_formatting_into,
@@ -186,6 +187,13 @@ _DEC_FIELDS = frozenset(
 )
 
 _TEMPLATE_SETTINGS_CLIENT_ID = "a0000000-0000-4000-8000-000000000001"
+# Cell L5 of the refreshable stamp row. First-time Excel opening a download
+# needs an anonymous access rule for this API URL only; the token still expires
+# and the workbook is re-downloaded for a fresh JWT.
+_AUTH_CELL_NOTE = (
+    "Session JWT in Settings B3. First-time Excel: Anonymous for this API URL. "
+    "Never Windows or Basic. Token expires; re-download for a fresh JWT."
+)
 
 _EMPTY_RELS_XML = (
     '<?xml version="1.0" encoding="UTF-8" standalone="yes"?>\r\n'
@@ -395,6 +403,13 @@ def render_client_report_xlsx(
     if refreshable:
         apply_refreshable_conversion_layout_into(parts)
         embed_measure_restore_vba_into(parts)
+    elif artifact == ARTIFACT_CONSOLIDATED:
+        # Static template ships the row 8 Click-Through / Overall banners with
+        # no rows beneath them, so both conversion charts render blank. Same
+        # sections, styles and formulas as the refreshable layout, without
+        # rebinding the PivotTables: there is no Power Query here, so no
+        # calculated dataField is dropped and nothing needs the re-add.
+        apply_snapshot_conversion_layout_into(parts)
     apply_slicer_layout_into(parts)
     apply_title_banners_into(parts, report_workbook_title(client_name or "", rows))
     body = write_xlsx_parts(infos, parts)
@@ -643,7 +658,7 @@ def _facts_settings_xml(
             f"{_inline('I5', 'STATUS')}"
             f"{_inline('J5', 'REFRESH REQUIRED')}"
             f"{_inline('K5', 'AUTH')}"
-            f"{_inline('L5', 'Session JWT in Settings B3. First-time Excel: Anonymous for this API URL. Never Windows or Basic. Token expires; re-download for a fresh JWT.')}"
+            f"{_inline('L5', _AUTH_CELL_NOTE)}"
         )
     stamp_row = (
         f'<row r="5" spans="1:45">'

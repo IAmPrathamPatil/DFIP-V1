@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import threading
 from typing import Annotated, Literal
 from uuid import UUID
@@ -366,10 +367,17 @@ def download_current_client_report(
         "DFIP_<client_code>_<YYYY-MM-DD>_Client_Report_Consolidated.xlsx. "
         "No published history returns 404. Exceeding "
         "HISTORY_FACTS_MAX_PAGE_LIMIT rows returns 422 rather than truncating. "
+        "The artifact is cached per company and warmed in the background when a "
+        "publication completes, so the first download after a publish returns 202 "
+        "with status 'preparing' and a Retry-After header while the workbook is "
+        "built, rather than blocking for minutes. Retry until it returns 200. "
         "Does not process or publish."
     ),
     tags=["Publications"],
     response_class=Response,
+    responses={
+        202: {"description": "Workbook is being prepared; retry after Retry-After."},
+    },
 )
 def download_current_consolidated_client_report(
     service: PublicationServiceDep,
@@ -377,10 +385,15 @@ def download_current_consolidated_client_report(
     settings: SettingsDep,
     client_id: OptionalUuid = None,
 ) -> Response:
+    cache_dir = getattr(settings, "dfip_consolidated_cache_dir", "") or None
+    cache_enabled = bool(getattr(settings, "dfip_consolidated_cache_enabled", True))
+
     def build() -> Response:
         body, filename, media_type = service.download_consolidated_client_report(
             principal=principal,
             requested_client_id=str(client_id) if client_id else None,
+            cache_dir=cache_dir,
+            cache_enabled=cache_enabled,
         )
         return Response(
             content=body,
@@ -388,6 +401,31 @@ def download_current_consolidated_client_report(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
+    if not cache_enabled:
+        return _with_report_generation_limit(build)
+    # Never make a client wait out a multi-minute first build. Ask the service
+    # whether the artifact is ready; if it is not, it has just been queued and
+    # the caller is told to retry rather than silently falling back to the slow
+    # synchronous render.
+    state, _client = service.consolidated_download_state(
+        principal=principal,
+        requested_client_id=str(client_id) if client_id else None,
+        cache_dir=cache_dir,
+        cache_enabled=cache_enabled,
+    )
+    if state == "preparing":
+        return Response(
+            status_code=202,
+            media_type="application/json",
+            headers={"Retry-After": str(CONSOLIDATED_PREPARING_RETRY_SECONDS)},
+            content=json.dumps(
+                {
+                    "status": "preparing",
+                    "message": CONSOLIDATED_PREPARING_MESSAGE,
+                    "retry_after_seconds": CONSOLIDATED_PREPARING_RETRY_SECONDS,
+                }
+            ),
+        )
     return _with_report_generation_limit(build)
 
 
@@ -542,6 +580,13 @@ _REPORT_GENERATION = threading.Semaphore(1)
 REPORT_GENERATION_BUSY_MESSAGE = (
     "A workbook is already being generated. Wait for it to finish, then try again."
 )
+# Returned instead of blocking on a first consolidated build. The artifact is
+# already being generated in the background; the caller retries until it lands.
+CONSOLIDATED_PREPARING_MESSAGE = (
+    "The consolidated company workbook is being prepared for the latest published "
+    "months. It will be ready shortly; retry this download in a moment."
+)
+CONSOLIDATED_PREPARING_RETRY_SECONDS = 5
 
 
 def _with_report_generation_limit(builder):

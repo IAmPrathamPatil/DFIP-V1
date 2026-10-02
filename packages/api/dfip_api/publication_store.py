@@ -387,8 +387,8 @@ class InMemoryPublicationStore:
         from collections import defaultdict
 
         from dfip_analytics.aggregate import sum_additive_measures
-        from dfip_analytics.filters import matches_text_filter
         from dfip_analytics.drill import DRILL_DIMENSIONS_BY_KEY
+        from dfip_analytics.filters import matches_text_filter
 
         if dimension not in DRILL_DIMENSIONS_BY_KEY:
             return []
@@ -473,6 +473,37 @@ class InMemoryPublicationStore:
             )
             for (pvalue, svalue), group in grouped.items()
         ]
+
+    def consolidated_history_fingerprint(self, client_id: str) -> tuple[str, ...] | None:
+        """Cheap change token for a client's cumulative published history.
+
+        Mirrors the Postgres store so the consolidated workbook cache behaves
+        identically against the in-memory store used by tests and local runs.
+        Publication identity leads deliberately: rows only change because a
+        publication was written, so any publish, republish or snapshot-status
+        change moves this token. Counts alone are not enough, because
+        republishing the same months with different rows leaves row count,
+        latest day and month count unchanged.
+        """
+        publications = [
+            item
+            for item in self.publications.values()
+            if item.client_id == client_id and item.snapshot_status == SNAPSHOT_STATUS_COMPLETE
+        ]
+        records, _total = self.list_published_history(client_id, limit=10_000_000, offset=0)
+        if not records or not publications:
+            return None
+        days = [record.day for record in records]
+        months = {(record.day.year, record.day.month) for record in records}
+        published_at = [item.published_at for item in publications if item.published_at]
+        return (
+            str(len(publications)),
+            max(item.id for item in publications),
+            max(published_at).isoformat() if published_at else "",
+            str(len(records)),
+            max(days).isoformat(),
+            str(len(months)),
+        )
 
     def _history_facts(self, client_id: str) -> list[FactRecord]:
         records, _total = self.list_published_history(client_id, limit=10_000_000, offset=0)

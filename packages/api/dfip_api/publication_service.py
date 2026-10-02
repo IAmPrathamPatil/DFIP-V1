@@ -2,12 +2,17 @@
 
 from __future__ import annotations
 
+import logging
+import threading
+from concurrent.futures import Executor
+from contextlib import contextmanager
 from datetime import date
 
 from dfip_analytics.qa import PUBLISHABLE_QA_VERDICTS, QA_VERDICT_FAIL, QA_VERDICT_UNAVAILABLE
 from dfip_core.ingest.ports import IngestStore
 from dfip_core.transform.fact import FactRecord
 from dfip_core.transform.ports import FactStore
+from dfip_db.rls import current_rls
 from dfip_web.client_report_download import (
     ARTIFACT_CONSOLIDATED,
     ARTIFACT_REFRESHABLE,
@@ -17,6 +22,9 @@ from dfip_web.client_report_download import (
     client_report_download_filename,
     render_client_report_xlsx,
 )
+from dfip_web.consolidated_cache import cache_root
+from dfip_web.consolidated_cache import load as consolidated_cache_load
+from dfip_web.consolidated_cache import store as consolidated_cache_store
 from dfip_web.refreshable_xlsm_stamp import (
     resolve_refreshable_xlsm_template,
     stamp_refreshable_xlsm_file,
@@ -49,6 +57,7 @@ from dfip_api.published_download import (
     render_published_csv,
     render_published_xlsx,
 )
+from dfip_api.qa_workflow import processing_rls
 from dfip_api.roles import can_publish
 from dfip_api.schemas import (
     HISTORY_FACTS_MAX_PAGE_LIMIT,
@@ -64,6 +73,7 @@ from dfip_api.schemas import (
 )
 from dfip_api.service import fact_to_response, facts_to_table_page
 
+logger = logging.getLogger(__name__)
 SUCCEEDED_RUN_STATUS = "succeeded"
 SNAPSHOT_READ_PAGE = 1000
 NO_PUBLICATION_WORKBOOK_MESSAGE = (
@@ -116,12 +126,29 @@ class PublicationService:
         fact_store: FactStore,
         publication_store: PublicationStore,
         client_directory: ClientDirectory | None = None,
+        executor: Executor | None = None,
+        cache_dir: str | None = None,
+        cache_enabled: bool = True,
+        warm_executor: Executor | None = None,
     ) -> None:
         self._ingest = ingest_store
         self._facts = fact_store
         self._publications = publication_store
         self._clients = client_directory
         self._progress = PublicationProgressRegistry()
+        # Cache warming is the only background work this service submits, so it
+        # takes a dedicated pool rather than the upload one. A consolidated
+        # build is measured in tens of seconds, while the upload pool is one
+        # deliberately serialized thread with an unbounded FIFO queue; sharing
+        # it would park every later upload behind a cache warm that no user is
+        # waiting on. The app hands in a one-worker warm pool, which also caps
+        # peak memory at a single render. Falls back to `executor` for tests and
+        # single-shot callers that inject one pool. None means "run inline".
+        self._executor = warm_executor if warm_executor is not None else executor
+        self._cache_dir = cache_dir
+        self._cache_enabled = cache_enabled
+        self._warming: set[str] = set()
+        self._warming_lock = threading.Lock()
 
     def has_in_flight_publish(self, client_id: str) -> bool:
         return self._progress.has_running_for_client(client_id)
@@ -218,6 +245,11 @@ class PublicationService:
                 on_progress=on_progress,
             )
             self._progress.succeed(processing_run_id, publication.id)
+            # A new or republished month is exactly the event that makes the
+            # cached consolidated workbook stale. Warm it off the request
+            # thread so the publisher is not held for minutes and the next
+            # client download is served from cache.
+            self.request_consolidated_warm(scoped)
             return state_to_response(publication, pointer)
         except Exception:
             self._progress.fail(processing_run_id, "Publication failed.")
@@ -527,6 +559,8 @@ class PublicationService:
         *,
         principal: Principal,
         requested_client_id: str | None,
+        cache_dir: str | None = None,
+        cache_enabled: bool = True,
     ) -> tuple[bytes, str, str]:
         """Return the nine-sheet Client_Report for the company's whole history.
 
@@ -545,11 +579,138 @@ class PublicationService:
         Does not process, publish, or move publication_current. No cumulative
         history raises the same 404 as the static download rather than
         returning an empty workbook.
+
+        The row set and the render are the expensive part, so the rendered
+        artifact is cached per company, warmed in the background when a
+        publication completes, and reused until the eligible published history
+        changes. The cache is consulted only after the same tenant,
+        company-active and current-publication checks the uncached path used,
+        and any cache problem falls back to a full render.
         """
         client_id = _resolve_client_id(principal, requested_client_id)
         if client_id is None:
             raise ValidationFailed("client_id is required.")
         require_company_active(self._clients, client_id)
+        # Company identity and the filename depend only on cheap lookups, so
+        # they are resolved before the cache is consulted and stay identical on
+        # a hit and a miss.
+        code, name = self._company_identity(client_id)
+        current, _pointer = self._publications.get_current(client_id)
+        published_at = current.published_at if current is not None else None
+        filename = client_report_download_filename(
+            code,
+            published_at,
+            artifact=ARTIFACT_CONSOLIDATED,
+        )
+        # Authorization is already settled above; a cache hit never bypasses it.
+        root = cache_root(cache_dir) if cache_enabled else None
+        fingerprint = self._consolidated_fingerprint(client_id)
+        if root is not None and fingerprint is not None:
+            cached = consolidated_cache_load(root, client_id, fingerprint)
+            if cached is not None:
+                return cached, filename, CLIENT_REPORT_MEDIA_TYPE
+        return self._render_consolidated(
+            client_id=client_id,
+            cache_dir=cache_dir,
+            cache_enabled=cache_enabled,
+        )
+
+    def request_consolidated_warm(self, client_id: str) -> bool:
+        """Queue a consolidated workbook build for one company.
+
+        Fired from the publication-completion hook and from a download that
+        finds no usable artifact. Idempotent per company: a warm already in
+        flight for this company is left alone rather than duplicated. Returns
+        True when a build is now in flight for this company.
+
+        With no executor the build runs inline, which keeps tests and
+        single-shot callers working without changing behaviour.
+        """
+        if not self._cache_enabled:
+            return False
+        with self._warming_lock:
+            if client_id in self._warming:
+                return True
+            self._warming.add(client_id)
+        if self._executor is None:
+            try:
+                self._warm_consolidated_cache(client_id)
+            finally:
+                with self._warming_lock:
+                    self._warming.discard(client_id)
+            return False
+        self._executor.submit(self._warm_consolidated_cache, client_id)
+        return True
+
+    def is_consolidated_warming(self, client_id: str) -> bool:
+        with self._warming_lock:
+            return client_id in self._warming
+
+    def _warm_consolidated_cache(self, client_id: str) -> None:
+        """Build and persist the consolidated workbook for one company.
+
+        Runs on a pool thread, so it must bind tenant RLS itself: the request
+        context does not survive the 202. Every failure is swallowed. A failed
+        warm must never surface on a publisher's publish call, and the download
+        path still produces a correct workbook on its own if this did not run.
+        """
+        try:
+            with self._worker_rls(client_id):
+                fingerprint = self._consolidated_fingerprint(client_id)
+                if fingerprint is None:
+                    return
+                root = cache_root(self._cache_dir)
+                if consolidated_cache_load(root, client_id, fingerprint) is not None:
+                    return
+                body, _filename, _media_type = self._render_consolidated(
+                    client_id=client_id,
+                    cache_dir=None,
+                    cache_enabled=False,
+                )
+                consolidated_cache_store(root, client_id, fingerprint, body)
+        except Exception:  # noqa: BLE001 - warming is best effort
+            logger.warning(
+                "consolidated cache warm failed for client %s",
+                client_id,
+                exc_info=True,
+            )
+        finally:
+            with self._warming_lock:
+                self._warming.discard(client_id)
+
+    @contextmanager
+    def _worker_rls(self, client_id: str):
+        """Bind tenant worker RLS when this thread has no RLS context.
+
+        Same contract as the upload worker's helper: a detached pool thread
+        inherits no request context, so the read must bind its own tenant.
+        """
+        if current_rls() is not None or not client_id:
+            yield
+            return
+        with processing_rls(client_id):
+            yield
+
+    def _render_consolidated(
+        self,
+        *,
+        client_id: str,
+        cache_dir: str | None,
+        cache_enabled: bool,
+    ) -> tuple[bytes, str, str]:
+        """Load the cumulative row set and render the consolidated workbook.
+
+        The single place the workbook is built. Cache warming and the download
+        fallback both call this, so there is exactly one rendering path.
+        """
+        code, name = self._company_identity(client_id)
+        current, _pointer = self._publications.get_current(client_id)
+        published_at = current.published_at if current is not None else None
+        filename = client_report_download_filename(
+            code,
+            published_at,
+            artifact=ARTIFACT_CONSOLIDATED,
+        )
         try:
             records = self._load_cumulative_items(client_id=client_id)
         except ValidationFailed as exc:
@@ -558,9 +719,6 @@ class PublicationService:
             raise
         if not records:
             raise NotFoundError(NO_PUBLICATION_WORKBOOK_MESSAGE)
-        code, name = self._company_identity(client_id)
-        current, _pointer = self._publications.get_current(client_id)
-        published_at = current.published_at if current is not None else None
         payloads = [fact_to_response(record).model_dump() for record in records]
         try:
             body = render_client_report_xlsx(
@@ -579,12 +737,84 @@ class PublicationService:
                 INTERNAL_ERROR,
                 "Client report could not be generated.",
             ) from None
-        filename = client_report_download_filename(
-            code,
-            published_at,
-            artifact=ARTIFACT_CONSOLIDATED,
-        )
+        root = cache_root(cache_dir) if cache_enabled else None
+        fingerprint = self._consolidated_fingerprint(client_id)
+        if root is not None and fingerprint is not None:
+            consolidated_cache_store(root, client_id, fingerprint, body)
         return body, filename, CLIENT_REPORT_MEDIA_TYPE
+
+    def consolidated_download_state(
+        self,
+        *,
+        principal: Principal,
+        requested_client_id: str | None,
+        cache_dir: str | None,
+        cache_enabled: bool,
+    ) -> tuple[str, str]:
+        """Classify a consolidated download as cached, preparing or ready.
+
+        Runs the same authorization the download does, before reporting state,
+        so a caller cannot learn anything about a company it may not read.
+        """
+        client_id = _resolve_client_id(principal, requested_client_id)
+        if client_id is None:
+            raise ValidationFailed("client_id is required.")
+        require_company_active(self._clients, client_id)
+        if not cache_enabled:
+            return "ready", client_id
+        fingerprint = self._consolidated_fingerprint(client_id)
+        if fingerprint is None:
+            return "ready", client_id
+        # The fingerprint already carries the eligible grain row count, so an
+        # over-cap company is refused up front. Without this a warm could never
+        # succeed and the caller would retry "preparing" forever instead of
+        # being told the real reason.
+        if self._consolidated_over_cap(fingerprint):
+            raise ValidationFailed(ROW_CAP_WORKBOOK_MESSAGE)
+        root = cache_root(cache_dir)
+        if consolidated_cache_load(root, client_id, fingerprint) is not None:
+            return "cached", client_id
+        if self._executor is None:
+            return "ready", client_id
+        self.request_consolidated_warm(client_id)
+        # A warm that already finished must not cost the caller a retry. With
+        # the real pool this is still a miss and the caller gets 'preparing';
+        # with inline execution the artifact is already here.
+        if consolidated_cache_load(root, client_id, fingerprint) is not None:
+            return "cached", client_id
+        return "preparing", client_id
+
+    def _consolidated_over_cap(self, fingerprint: tuple[str, ...]) -> bool:
+        """True when the fingerprint's grain row count exceeds the history cap.
+
+        Mirrors the check ``_load_cumulative_items`` performs, reading the row
+        count the fingerprint already carries so the refusal costs nothing.
+        """
+        if len(fingerprint) < 4:
+            return False
+        try:
+            rows = int(fingerprint[3])
+        except (TypeError, ValueError):
+            return False
+        return rows > HISTORY_FACTS_MAX_PAGE_LIMIT
+
+    def _consolidated_fingerprint(self, client_id: str) -> tuple[str, ...] | None:
+        """Cheap change token for the company's cumulative published history.
+
+        ``None`` means the store cannot compute it cheaply, so the caller must
+        treat any cached artifact as invalid and regenerate. Correctness never
+        depends on the cache being present.
+        """
+        getter = getattr(self._publications, "consolidated_history_fingerprint", None)
+        if getter is None:
+            return None
+        try:
+            fingerprint = getter(client_id)
+        except Exception:
+            return None
+        if not fingerprint:
+            return None
+        return tuple(str(component) for component in fingerprint)
 
     def _load_cumulative_items(self, *, client_id: str) -> list[FactRecord]:
         """Newest-wins published history for the company, oldest day first.

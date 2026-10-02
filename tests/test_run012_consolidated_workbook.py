@@ -345,7 +345,7 @@ def test_frontend_exposes_a_third_download_button() -> None:
     app_js = (web_static / "js" / "app.js").read_text(encoding="utf-8")
     client_js = (web_static / "js" / "api-client.js").read_text(encoding="utf-8")
 
-    assert "Download Consolidated Workbook" in views
+    assert "Download Consolidated Company Workbook" in views
     assert "data-download-consolidated-client-report" in views
     # The two existing buttons are untouched.
     assert "Download Company Workbook" in views

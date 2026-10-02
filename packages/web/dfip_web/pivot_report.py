@@ -1104,8 +1104,18 @@ def _inject_conversion_formulas(
     return sheet_xml.replace("</sheetData>", fill_xml + "</sheetData>", 1)
 
 
-def apply_refreshable_conversion_layout_into(parts: dict[str, bytes]) -> None:
-    """Keep conversion sections populated after Power Query Refresh All."""
+def apply_refreshable_conversion_layout_into(
+    parts: dict[str, bytes], *, bind_pivot: bool = True
+) -> None:
+    """Keep conversion sections populated after Power Query Refresh All.
+
+    ``bind_pivot=False`` writes the same Click-Through (O:S) and Overall (T:X)
+    sections, number styles and fill-down formulas but leaves each PivotTable's
+    dataFields alone. That is the correct shape for a snapshot workbook
+    (static/consolidated), which has no Power Query and no ExternalData_1
+    rebuild, so no calculated dataField is ever dropped and nothing needs the
+    re-add that ``_bind_refreshable_sum_pivot`` performs.
+    """
     workbook_xml = parts["xl/workbook.xml"].decode("utf-8")
     rels_xml = parts["xl/_rels/workbook.xml.rels"].decode("utf-8")
     bindings = bindings_from_workbook(workbook_xml, rels_xml)
@@ -1115,14 +1125,27 @@ def apply_refreshable_conversion_layout_into(parts: dict[str, bytes]) -> None:
     parts["xl/styles.xml"] = styles_xml.encode("utf-8")
     fill = _conversion_fill_rows_xml(conv_styles)
     for binding in bindings:
-        parts[binding.pivot_part] = _bind_refreshable_sum_pivot(
-            parts[binding.pivot_part].decode("utf-8")
-        ).encode("utf-8")
+        if bind_pivot:
+            parts[binding.pivot_part] = _bind_refreshable_sum_pivot(
+                parts[binding.pivot_part].decode("utf-8")
+            ).encode("utf-8")
         parts[binding.sheet_part] = _inject_conversion_formulas(
             parts[binding.sheet_part].decode("utf-8"),
             conv_styles,
             fill,
         ).encode("utf-8")
+
+
+def apply_snapshot_conversion_layout_into(parts: dict[str, bytes]) -> None:
+    """Populate the conversion sections on a snapshot workbook.
+
+    Same Click-Through / Overall columns, styles and formulas as the
+    refreshable layout, without touching the PivotTables. Used by the
+    consolidated artifact, whose static template otherwise ships the row 8
+    group banners with nothing beneath them, leaving both conversion charts
+    blank.
+    """
+    apply_refreshable_conversion_layout_into(parts, bind_pivot=False)
 
 
 def apply_refreshable_conversion_layout_xml(body: bytes) -> bytes:

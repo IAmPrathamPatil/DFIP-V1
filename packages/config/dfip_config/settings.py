@@ -154,6 +154,12 @@ class Settings(BaseSettings):
     # False keeps the original per-page DISTINCT ON query. Publish still rebuilds
     # the serving table so the flag can be switched without a backfill.
     dfip_history_serving_table: bool = True
+    # Reusable cache for generated consolidated company workbooks. The download
+    # renders the company's whole cumulative history, so it regenerates the
+    # artifact only when the cheap history fingerprint moves. Empty dir means
+    # the system temp directory. False disables caching entirely.
+    dfip_consolidated_cache_enabled: bool = True
+    dfip_consolidated_cache_dir: str = ""
 
     # D8 Contextual Ask. Default none keeps template explanations only.
     # Optional wording providers: openai (chat completions), gemini (generateContent).

@@ -320,6 +320,7 @@ export class DfipApiClient {
     return this.request("GET", `${this.prefix}/publications/current/consolidated-client-report.xlsx`, {
       params,
       blob: true,
+      acceptStatuses: [202],
     });
   }
 
@@ -424,6 +425,25 @@ export class DfipApiClient {
       throw apiError;
     }
     if (blob) {
+      // An accepted non-200 status on a blob request means there is no file
+      // yet. The consolidated workbook uses 202 to say "being prepared", so
+      // report that to the caller instead of handing back the JSON body as if
+      // it were a workbook.
+      if (response.status !== 200) {
+        let detail = null;
+        try {
+          const text = await response.text();
+          detail = text ? JSON.parse(text) : null;
+        } catch (error) {
+          detail = null;
+        }
+        return {
+          preparing: true,
+          status: response.status,
+          message: (detail && detail.message) || "The workbook is being prepared.",
+          retryAfterSeconds: Number(response.headers.get("Retry-After")) || 5,
+        };
+      }
       let blobBody;
       try {
         blobBody = await response.blob();
