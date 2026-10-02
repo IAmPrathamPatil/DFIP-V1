@@ -6,7 +6,7 @@ import atexit
 import logging
 import os
 from collections.abc import AsyncIterator
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Executor, Future, ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
 from dfip_config.catalog import CatalogStore, InMemoryCatalogStore
@@ -147,6 +147,26 @@ async def database_unavailable_handler(
     return error_response(503, PERSISTENCE_UNAVAILABLE, "Persistence is unavailable.")
 
 
+class InlineExecutor(Executor):
+    """Run submitted background work immediately on the calling thread.
+
+    Same ``Executor`` contract as the real pool, minus the deferral. Used by
+    tests and single-shot callers that need to observe the result of a
+    background job deterministically instead of racing a pool thread.
+    """
+
+    def submit(self, fn, /, *args, **kwargs):  # type: ignore[override]
+        future: Future = Future()
+        try:
+            future.set_result(fn(*args, **kwargs))
+        except BaseException as exc:  # noqa: BLE001 - mirror Future semantics
+            future.set_exception(exc)
+        return future
+
+    def shutdown(self, wait: bool = True, *, cancel_futures: bool = False) -> None:
+        return None
+
+
 def create_app(
     settings: Settings | None = None,
     ingest_store: IngestStore | None = None,
@@ -158,12 +178,18 @@ def create_app(
     source_store: SourceObjectStore | None = None,
     identity_store: IdentityStore | None = None,
     client_directory: ClientDirectory | None = None,
+    executor: Executor | None = None,
 ) -> FastAPI:
     """Build the API. Empty DATABASE_URL keeps the V1 in-memory stores.
 
     Injected stores always win so existing tests stay on memory even when a
     placeholder DATABASE_URL is present on settings. The pool is lazy and
     health never probes PostgreSQL.
+
+    ``executor`` injects the background pool. Omit it to create the process
+    pool this app owns and shuts down. Passing one (an inline executor, for
+    example) makes background work synchronous and leaves ownership to the
+    caller, which is what makes pool-dependent behaviour testable.
     """
     resolved_settings = settings if settings is not None else load_settings()
     validate_auth_settings(resolved_settings)
@@ -212,8 +238,27 @@ def create_app(
 
     service = ReadService(resolved_repository)
     worker_count = max(1, min(int(resolved_settings.dfip_worker_concurrency or 1), 4))
-    upload_executor = ThreadPoolExecutor(max_workers=worker_count, thread_name_prefix="dfip-upload")
-    atexit.register(upload_executor.shutdown, wait=False, cancel_futures=True)
+    if executor is None:
+        upload_executor: Executor = ThreadPoolExecutor(
+            max_workers=worker_count, thread_name_prefix="dfip-upload"
+        )
+        # Consolidated workbook warming gets its own single-worker pool instead
+        # of the upload one. The upload pool is deliberately one serialized
+        # thread behind an unbounded FIFO queue, so a tens-of-seconds workbook
+        # build there would delay every later upload for a cache refresh that
+        # nobody is blocked on. One warm worker also caps peak memory at a
+        # single render, so a burst of publishes cannot stack large builds.
+        warm_executor: Executor = ThreadPoolExecutor(
+            max_workers=1, thread_name_prefix="dfip-warm"
+        )
+        atexit.register(upload_executor.shutdown, wait=False, cancel_futures=True)
+        atexit.register(warm_executor.shutdown, wait=False, cancel_futures=True)
+    else:
+        # Caller-supplied pool. The app does not own it and never shuts it down.
+        upload_executor = executor
+        # Tests and single-shot callers inject a single pool and expect warming
+        # to run through it, so no separate warm pool is created for them.
+        warm_executor = executor
     resolved_source = (
         source_store if source_store is not None else build_source_object_store(resolved_settings)
     )
@@ -268,6 +313,9 @@ def create_app(
         resolved_facts,
         resolved_publications,
         resolved_clients,
+        warm_executor=warm_executor,
+        cache_dir=resolved_settings.dfip_consolidated_cache_dir or None,
+        cache_enabled=bool(resolved_settings.dfip_consolidated_cache_enabled),
     )
 
     prefix = resolved_settings.dfip_api_prefix.strip() or "/api/v1"
@@ -282,6 +330,7 @@ def create_app(
             if os.environ.get("PYTEST_CURRENT_TEST") is None:
                 upload_service.resume_orphaned_work()
         yield
+        warm_executor.shutdown(wait=True, cancel_futures=False)
         upload_executor.shutdown(wait=True, cancel_futures=False)
         close_pool(db_pool)
 
@@ -312,6 +361,7 @@ def create_app(
     application.state.upload_service = upload_service
     application.state.source_store = resolved_source
     application.state.upload_executor = upload_executor
+    application.state.warm_executor = warm_executor
     application.state.catalog_service = catalog_service
     application.state.catalog_store = resolved_catalog
     application.state.qa_store = resolved_qa

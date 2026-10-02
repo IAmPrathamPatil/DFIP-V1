@@ -402,6 +402,66 @@ class PostgresPublicationStore:
             facts.append(fact_from_row(row))
         return facts, total
 
+    def consolidated_history_fingerprint(self, client_id: str) -> tuple[str, ...] | None:
+        """Cheap change token for a client's cumulative published history.
+
+        Returns ``(publication_count, max_publication_id, max_published_at,
+        grain_row_count, max_day, month_count)``. Publication identity leads
+        deliberately: rows only change because a publication was written, so
+        any publish, republish or snapshot-status change moves this token. The
+        grain aggregates then catch anything the publication view cannot see.
+
+        Counts alone are not sufficient. Republishing the same months with
+        different rows leaves row count, latest day and month count identical,
+        so a count-only key would keep serving a stale artifact.
+
+        All parts are aggregates over client-scoped tables, so this stays cheap
+        and never materializes the rows the download actually fetches.
+
+        ``None`` means "cannot be computed cheaply here" and the caller must
+        treat the artifact as invalid. The DISTINCT ON fallback has no cheap
+        equivalent because its union is what makes it correct, so it is
+        deliberately excluded rather than approximated.
+        """
+        if not self._use_history_serving_table:
+            return None
+        with self._tx() as conn:
+            publication_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS n,
+                    COALESCE(MAX(id)::text, '') AS max_id,
+                    COALESCE(MAX(published_at)::text, '') AS max_published_at
+                FROM publication
+                WHERE client_id = %s AND snapshot_status = %s
+                """,
+                (client_id, SNAPSHOT_STATUS_COMPLETE),
+            ).fetchone()
+            grain_row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS n,
+                    COALESCE(MAX(day)::text, '') AS max_day,
+                    COUNT(DISTINCT date_trunc('month', day)) AS months
+                FROM publication_history_grain
+                WHERE client_id = %s
+                """,
+                (client_id,),
+            ).fetchone()
+        if publication_row is None or grain_row is None:
+            return None
+        fingerprint = (
+            str(int(publication_row["n"] or 0)),
+            str(publication_row["max_id"] or ""),
+            str(publication_row["max_published_at"] or ""),
+            str(int(grain_row["n"] or 0)),
+            str(grain_row["max_day"] or ""),
+            str(int(grain_row["months"] or 0)),
+        )
+        if fingerprint[3] == "0":
+            return None
+        return fingerprint
+
     def _list_published_history_serving(
         self,
         client_id: str,

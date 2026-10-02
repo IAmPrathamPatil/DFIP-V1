@@ -355,7 +355,7 @@ function companyRefreshableWorkbookButton() {
 }
 
 function companyConsolidatedWorkbookButton() {
-  return html`<button type="button" class="secondary" data-download-consolidated-client-report="current">Download Consolidated Workbook</button>`;
+  return html`<button type="button" class="secondary" data-download-consolidated-client-report="current" title="All successfully processed published months for the company in one workbook. Never needs Excel Refresh All.">Download Consolidated Company Workbook</button>`;
 }
 
 function refreshableDownloadErrorHost() {
@@ -2078,6 +2078,9 @@ export function downloadsView({ session, query, logicPage, labelsPage, currentPu
         load later published months for that same company. The download writes the current
         session JWT into Settings for Refresh All (it expires; re-download for a fresh token).
         Refreshable workbooks are current-only.
+        Download Consolidated Company Workbook is different: it contains every
+        successfully processed published month for the company in one static
+        workbook, so it never needs Excel Refresh All.
         Historical publication downloads stay on Publications history and do not update themselves.
       </p>
       ${activeCompanyCaption(session)}
@@ -2089,6 +2092,7 @@ export function downloadsView({ session, query, logicPage, labelsPage, currentPu
       <p>
         ${companyWorkbookButton()}
         ${companyRefreshableWorkbookButton()}
+        ${companyConsolidatedWorkbookButton()}
         <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
         <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
       </p>

@@ -401,6 +401,14 @@ Host log rotation is operator journald policy. Backup scheduling example:
 runs exactly one API process. Client Report generation uses a process-local
 semaphore(1) and returns 429 when busy.
 
+Consolidated company workbook cache warming uses a **separate**
+`ThreadPoolExecutor(max_workers=1)`, named `dfip-warm`. It is deliberately not
+on the upload pool: a consolidated build is measured in tens of seconds, and
+sharing the serialized upload worker would delay every later upload for a cache
+refresh no user is waiting on. One warm worker also caps peak memory at a
+single render. Warming is fire-and-forget and never fails a publish; when the
+artifact is not ready the download returns 202 with `Retry-After`.
+
 On API start with `DATABASE_URL`, leftover `pending`/`running` processing runs
 are marked failed so the publisher can retry. Startup logs
 `abandoned-run-sweep marked=N`. Authenticated readiness reports process-local

@@ -102,6 +102,9 @@ let overviewKpiData = null;
 let refreshableWorkbookDownloadInFlight = false;
 const REFRESHABLE_DOWNLOAD_LABEL = "Download Refreshable Workbook";
 let consolidatedWorkbookDownloadInFlight = false;
+// Bounded so a workbook that never becomes ready surfaces as a clear message
+// rather than an endless silent retry.
+const CONSOLIDATED_PREPARING_MAX_ATTEMPTS = 60;
 let overviewSparklineData = null;
 let overviewTrendsData = null;
 let overviewDrillMode = "breakdown";
@@ -3134,19 +3137,40 @@ root.addEventListener("click", (event) => {
     event.preventDefault();
     if (consolidatedWorkbookDownloadInFlight || consolidatedReport.disabled) return;
     const path = currentLocation().path;
+    const params = publishedParams(queryObject(currentLocation().query));
     consolidatedWorkbookDownloadInFlight = true;
     const idleLabel = consolidatedReport.textContent;
-    consolidatedReport.disabled = true;
-    consolidatedReport.textContent = "Generating…";
-    api
-      .downloadConsolidatedClientReport(publishedParams(queryObject(currentLocation().query)))
-      .then((payload) => {
+
+    // The first download after a publish is built in the background. The API
+    // answers 202 until it is ready, so retry on the server's cadence instead
+    // of blocking the user or reporting a failure.
+    const attemptConsolidatedDownload = (attempt) => {
+      consolidatedReport.disabled = true;
+      consolidatedReport.textContent =
+        attempt === 0 ? "Generating…" : `Preparing… retry ${attempt} of ${CONSOLIDATED_PREPARING_MAX_ATTEMPTS}`;
+      return api.downloadConsolidatedClientReport(params).then((payload) => {
+        if (payload && payload.preparing) {
+          if (attempt + 1 > CONSOLIDATED_PREPARING_MAX_ATTEMPTS) {
+            throw new ApiError(
+              202,
+              "CONSOLIDATED_PREPARING",
+              "The consolidated company workbook is still being prepared. Try again in a moment.",
+            );
+          }
+          return new Promise((resolve) => {
+            setTimeout(resolve, (payload.retryAfterSeconds || 5) * 1000);
+          }).then(() => attemptConsolidatedDownload(attempt + 1));
+        }
         saveBlob(payload.blob, payload.filename || "Client_Report_Consolidated.xlsx");
         showToast({
           tone: "success",
           title: "Consolidated company workbook downloaded.",
         });
-      })
+        return payload;
+      });
+    };
+
+    attemptConsolidatedDownload(0)
       .catch((error) => handleError(error, path))
       .finally(() => {
         consolidatedWorkbookDownloadInFlight = false;
