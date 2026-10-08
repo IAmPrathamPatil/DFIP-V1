@@ -81,6 +81,15 @@ This architecture document describes **what is in the DFIP-V1 git tree**, includ
 
 **This flow is not a separate worker process.** `apps/worker` is empty of code. Ingest/transform run **inside the API process** off the event loop.
 
+### Background pools (two, deliberately separate)
+
+| Pool | Concurrency | Work | Why separate |
+|---|---|---|---|
+| Upload pool | 1 default (`dfip_worker_concurrency`, clamped 1–4) | Transform work after upload | Separate from warm so a render never delays ingest; jobs overlap safely — see concurrency findings below |
+| Warm pool | 1 | Consolidated workbook cache warming | A multi-second workbook render must not occupy the upload worker and delay ingest |
+
+Both are process-local `ThreadPoolExecutor`s created in `create_app`; the warm pool uses `thread_name_prefix="dfip-warm"`. Warm concurrency is bounded at one worker, which also caps peak memory at a single render. Warming is deduplicated per company, binds its own tenant RLS context because a detached thread inherits no request context, and fails open — a failed warm is logged and never fails the publish that triggered it. Detailed behaviour: [CONSOLIDATED_WORKBOOK.md](CONSOLIDATED_WORKBOOK.md).
+
 ---
 
 ## Persistence modes
@@ -195,8 +204,10 @@ This architecture document describes **what is in the DFIP-V1 git tree**, includ
 
 ### 15. Production deployment package (`deploy/`)
 
-- Locked V1 host: one DigitalOcean Droplet (BLR1), colocated PostgreSQL 16, block-volume archive, Caddy HTTPS, systemd API+web.
-- **Does not** provision DigitalOcean or DNS. Runbook: `documentation/V1_DEPLOYMENT.md`.
+- **Current production host:** one Linux VM on **Oracle Cloud**, colocated PostgreSQL 16, persistent volume for the source archive, reverse proxy terminating TLS, systemd API + web. Deployed and running.
+- **Does not** provision cloud resources, DNS, or production secrets. Runbook: `documentation/V1_DEPLOYMENT.md`.
+- Historical note: the P13G phase documents originally specified a DigitalOcean Droplet. That was the design target at the time and is preserved in the phase records (`STATUS.md`, `V1_COMPLETION_AUDIT.md`); the deployed environment is Oracle Cloud.
+- The live host runs an **in-place working tree** with a shared application environment rather than the release-directory-plus-symlink layout in `deploy/scripts/deploy.sh`. Confirm the actual layout on the host before running any script in `deploy/scripts/`.
 
 ---
 
@@ -261,6 +272,22 @@ Excel Desktop        →  Settings ApiBaseUrl + BearerToken (live template only)
 ```
 
 Two processes. No reverse-proxy in repo. CORS must allow the web origin.
+
+---
+
+## Concurrency and ingest performance (V1 findings)
+
+Evidence from local benchmarks and prototypes on the development machine with in-memory stores. **These are not production measurements and not an SLA.**
+
+- Representative distinct-grain workloads (200 campaigns × 200 variations × 30 days): 10k rows ≈ 8.95s (≈1,117 rows/s), 50k ≈ 42.6s (≈1,175 rows/s), 100k ≈ 86.8s (≈1,152 rows/s); 0 rejections; peak RSS ≈ 53 / 219 / 438 MB.
+- XLSX parsing through openpyxl — row iteration in the reader — is the dominant ingest cost and is CPU-bound.
+- A reduced-allocation reader prototype was only ~5% faster; an XML-streaming prototype was semantically incompatible with the exact-preservation staging contract.
+- Upload jobs genuinely overlap: `tests/test_parallel_upload_concurrency.py` proves two jobs reach the same ingest gate concurrently, and `InMemoryIngestStore` / `InMemoryFactStore` pass concurrent stress tests. PostgreSQL stores need no such lock — each method opens its own transaction.
+- Additional Python threads do **not** materially scale the CPU-bound ingest workload (GIL).
+- A persistent `ProcessPoolExecutor` scaled better on the unrestricted multi-core development machine, but a process architecture would require replacing process-local upload/staging state with shared persistence or IPC.
+- A final benchmark under a 2-CPU affinity constraint was **inconclusive**: the sandbox enforced an aggregate CPU cap of ~1.3 effective cores (a pure-CPU two-process control scaled only 1.10–1.29×), so no executor conclusion could be drawn from it.
+
+**V1 decision:** retain the thread-based `ThreadPoolExecutor` worker model (`dfip_worker_concurrency` default 1, max 4). Do not redesign around processes yet. Future performance work should target XLSX parsing cost, or introduce a dedicated process-based ingestion service only when production workload justifies the shared-state/IPC migration.
 
 ---
 

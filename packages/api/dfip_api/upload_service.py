@@ -122,8 +122,8 @@ class UploadService:
         self._source_store = source_store or InMemorySourceObjectStore(settings.dfip_storage_bucket)
         self._clients = client_directory
         self._publications = publication_store
-        self._serialize = threading.Lock()
         self._in_flight_lock = threading.Lock()
+        self._state_lock = threading.RLock()
         self._in_flight: dict[tuple[str, str], str] = {}
         self._completed: dict[str, UploadResponse] = {}
         self._reprocess_in_flight: dict[str, str] = {}
@@ -174,7 +174,8 @@ class UploadService:
         total: int | None = None,
         message: str | None = None,
     ) -> None:
-        self._stages[batch_id] = stage
+        with self._state_lock:
+            self._stages[batch_id] = stage
         saver = getattr(self._ingest, "save_batch_progress", None)
         if saver is not None:
             saver(batch_id, stage=stage, current=current, total=total, message=message)
@@ -282,7 +283,8 @@ class UploadService:
             body = batch_to_response(batch, run)
             if body.error_summary:
                 body = body.model_copy(update={"error_summary": _public_text(body.error_summary)})
-        local = self._stages.get(body.batch_id)
+        with self._state_lock:
+            local = self._stages.get(body.batch_id)
         stuck = False
         cancelling = body.status == "cancelled" or body.stage in {
             STAGE_CANCELLING,
@@ -335,7 +337,8 @@ class UploadService:
             body = processing_run_to_response(run, batch)
             if body.error_summary:
                 body = body.model_copy(update={"error_summary": _public_text(body.error_summary)})
-        local = self._stages.get(body.batch_id)
+        with self._state_lock:
+            local = self._stages.get(body.batch_id)
         stuck = False
         if run is not None and run.status in {"pending", "running"}:
             stuck = not self._batch_is_locally_running(body.batch_id)
@@ -362,10 +365,12 @@ class UploadService:
             log.exception("poll-resume skipped batch_id=%s", batch_id)
 
     def completed_result(self, batch_id: str) -> UploadResponse | None:
-        return self._completed.get(batch_id)
+        with self._state_lock:
+            return self._completed.get(batch_id)
 
     def reprocess_result(self, processing_run_id: str) -> ReprocessResponse | None:
-        return self._reprocess_completed.get(processing_run_id)
+        with self._state_lock:
+            return self._reprocess_completed.get(processing_run_id)
 
     async def read_upload(self, upload, remaining_total_bytes: int | None = None) -> bytes:
         """Read the multipart file with a hard byte cap. Does not keep a disk path."""
@@ -411,7 +416,8 @@ class UploadService:
             if completed is not None:
                 existing = self._persist_source_bytes(existing, payload)
                 body = self._replay_response(existing, completed)
-                self._completed[completed.id] = body
+                with self._state_lock:
+                    self._completed[completed.id] = body
                 return body, 200
             inflight = self._inflight_batch(client_id, digest, existing)
             if inflight is not None:
@@ -451,7 +457,8 @@ class UploadService:
                 digest,
                 force,
             )
-            completed = self._completed.get(batch.id)
+            with self._state_lock:
+                completed = self._completed.get(batch.id)
             if completed is not None:
                 return completed, 200 if completed.replayed else 201
             return accepted, 202
@@ -695,7 +702,8 @@ class UploadService:
         self._remember_inflight(client_id, digest, batch.id)
         if self._executor is None:
             self._run_archive_job(dest, folder, batch.id, client_id, digest)
-            completed = self._completed.get(batch.id)
+            with self._state_lock:
+                completed = self._completed.get(batch.id)
             if completed is not None:
                 return completed, 200 if completed.replayed else 201
             return accepted, 202
@@ -741,7 +749,8 @@ class UploadService:
         accepted = self._reprocess_response(batch, run, None)
         if self._executor is None:
             self._run_reprocess(batch.id, run.id, client_id)
-            completed = self._reprocess_completed.get(run.id)
+            with self._state_lock:
+                completed = self._reprocess_completed.get(run.id)
             if completed is not None:
                 return completed, 200
             return accepted, 202
@@ -762,7 +771,7 @@ class UploadService:
         digest: str,
     ) -> None:
         try:
-            with processing_rls(client_id), self._serialize:
+            with processing_rls(client_id):
                 reserved = self._ingest.get_batch(batch_id)
                 if reserved is None:
                     raise KeyError(f"unknown batch {batch_id}")
@@ -774,7 +783,8 @@ class UploadService:
                     force=True,
                     reserved_batch=reserved,
                 )
-                self._completed[batch_id] = body
+                with self._state_lock:
+                    self._completed[batch_id] = body
         except ProcessingCancelled:
             self._finalize_cancel(batch_id, client_id=client_id)
         except Exception as exc:
@@ -801,7 +811,7 @@ class UploadService:
         force: bool,
     ) -> None:
         try:
-            with processing_rls(client_id), self._serialize:
+            with processing_rls(client_id):
                 reserved = self._ingest.get_batch(batch_id)
                 if reserved is None:
                     raise KeyError(f"unknown batch {batch_id}")
@@ -811,7 +821,8 @@ class UploadService:
                     force=force,
                     reserved_batch=reserved,
                 )
-                self._completed[batch_id] = body
+                with self._state_lock:
+                    self._completed[batch_id] = body
         except ProcessingCancelled:
             self._finalize_cancel(batch_id, client_id=client_id)
         except Exception as exc:
@@ -1183,9 +1194,10 @@ class UploadService:
         source = self._ingest.get_source_file(batch.source_file_id)
         latest = runs[0] if runs else None
         if source is not None:
-            self._completed[batch_id] = self._response_from_records(
-                source, batch, latest, None, False
-            )
+            with self._state_lock:
+                self._completed[batch_id] = self._response_from_records(
+                    source, batch, latest, None, False
+                )
 
     def cancel(
         self,
@@ -1269,8 +1281,9 @@ class UploadService:
                 )
             except Exception:
                 log.exception("source archive delete failed for batch_id=%s", batch.id)
-        self._stages.pop(batch.id, None)
-        self._completed.pop(batch.id, None)
+        with self._state_lock:
+            self._stages.pop(batch.id, None)
+            self._completed.pop(batch.id, None)
         with self._in_flight_lock:
             self._reprocess_in_flight.pop(batch.id, None)
         return BatchDeleteResponse(batch_id=batch.id, deleted=True)
@@ -1318,7 +1331,7 @@ class UploadService:
 
     def _run_reprocess(self, batch_id: str, run_id: str, client_id: str) -> None:
         try:
-            with processing_rls(client_id), self._serialize:
+            with processing_rls(client_id):
                 batch = self._ingest.get_batch(batch_id)
                 run = self._ingest.get_processing_run(run_id)
                 if batch is None or run is None:
@@ -1365,7 +1378,8 @@ class UploadService:
                     rejected=transformed.rejected,
                     status=run.status,
                 )
-                self._reprocess_completed[run_id] = self._reprocess_response(batch, run, summary)
+                with self._state_lock:
+                    self._reprocess_completed[run_id] = self._reprocess_response(batch, run, summary)
                 self._set_stage(batch_id, "succeeded" if run.status == "succeeded" else "failed")
                 self._stash_batch_completion(batch, run, summary)
         except ProcessingCancelled:
@@ -1439,7 +1453,8 @@ class UploadService:
                 self._ingest.save_processing_run(run)
             batch = self._ingest.get_batch(run.batch_id)
             if batch is not None:
-                self._reprocess_completed[run_id] = self._reprocess_response(batch, run, None)
+                with self._state_lock:
+                    self._reprocess_completed[run_id] = self._reprocess_response(batch, run, None)
                 self._stash_batch_completion(batch, run, None)
 
     def _stash_batch_completion(
@@ -1451,9 +1466,10 @@ class UploadService:
         source = self._ingest.get_source_file(batch.source_file_id)
         if source is None:
             return
-        self._completed[batch.id] = self._response_from_records(
-            source, batch, run, transform, False
-        )
+        with self._state_lock:
+            self._completed[batch.id] = self._response_from_records(
+                source, batch, run, transform, False
+            )
 
     def _reprocess_response(
         self,
@@ -1509,9 +1525,10 @@ class UploadService:
                 self._ingest.save_processing_run(run)
             source = self._ingest.get_source_file(batch.source_file_id)
             if source is not None:
-                self._completed[batch_id] = self._response_from_records(
-                    source, batch, run, None, False
-                )
+                with self._state_lock:
+                    self._completed[batch_id] = self._response_from_records(
+                        source, batch, run, None, False
+                    )
 
     def _replay_response(self, source, batch: BatchRecord) -> UploadResponse:
         run = self._ingest.processing_run_for_batch(batch.id)
@@ -1543,7 +1560,8 @@ class UploadService:
             batch_body = batch_body.model_copy(
                 update={"error_summary": _public_text(batch_body.error_summary)}
             )
-        local = self._stages.get(batch.id)
+        with self._state_lock:
+            local = self._stages.get(batch.id)
         if local:
             batch_body = batch_body.model_copy(update={"stage": local})
         run_body = processing_run_to_response(run, batch) if run is not None else None
