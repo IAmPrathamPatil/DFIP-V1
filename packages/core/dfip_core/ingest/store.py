@@ -277,9 +277,7 @@ class InMemoryIngestStore:
                 selected.append(batch)
                 continue
             if any(
-                (run.error_summary or "") in reasons
-                for run in runs
-                if run.batch_id == batch.id
+                (run.error_summary or "") in reasons for run in runs if run.batch_id == batch.id
             ):
                 selected.append(batch)
                 continue
@@ -598,7 +596,9 @@ class InMemoryIngestStore:
 
     def purge_client(self, client_id: str) -> None:
         with self._lock:
-            batch_ids = {batch.id for batch in self.batches.values() if batch.client_id == client_id}
+            batch_ids = {
+                batch.id for batch in self.batches.values() if batch.client_id == client_id
+            }
             file_ids = {
                 item.id for item in self.source_files_by_id.values() if item.client_id == client_id
             }
@@ -606,7 +606,9 @@ class InMemoryIngestStore:
                 key: batch for key, batch in self.batches.items() if batch.client_id != client_id
             }
             self.staged_rows = [row for row in self.staged_rows if row.batch_id not in batch_ids]
-            self.rejected_rows = [row for row in self.rejected_rows if row.batch_id not in batch_ids]
+            self.rejected_rows = [
+                row for row in self.rejected_rows if row.batch_id not in batch_ids
+            ]
             self.processing_runs = {
                 key: run
                 for key, run in self.processing_runs.items()

@@ -1379,7 +1379,9 @@ class UploadService:
                     status=run.status,
                 )
                 with self._state_lock:
-                    self._reprocess_completed[run_id] = self._reprocess_response(batch, run, summary)
+                    self._reprocess_completed[run_id] = self._reprocess_response(
+                        batch, run, summary
+                    )
                 self._set_stage(batch_id, "succeeded" if run.status == "succeeded" else "failed")
                 self._stash_batch_completion(batch, run, summary)
         except ProcessingCancelled:

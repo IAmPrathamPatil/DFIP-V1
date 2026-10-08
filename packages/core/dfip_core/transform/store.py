@@ -157,5 +157,7 @@ class InMemoryFactStore:
 
     def purge_client(self, client_id: str) -> None:
         with self._lock:
-            self.facts = {key: fact for key, fact in self.facts.items() if fact.client_id != client_id}
+            self.facts = {
+                key: fact for key, fact in self.facts.items() if fact.client_id != client_id
+            }
             self.history = [item for item in self.history if item.fact.client_id != client_id]
