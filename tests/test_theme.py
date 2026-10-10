@@ -43,7 +43,7 @@ def test_theme_tokens_are_centralized_and_not_duplicated_as_a_second_sheet() -> 
         assert token in css
     assert css.index("--bg-0: #0b0f14") < css.index('html[data-theme="light"]')
     light = css[css.index('html[data-theme="light"]') :]
-    assert "--bg-0: #f3f5f8" in light
+    assert "--bg-0: #f6f8fc" in light
     assert ".sidebar" in css
     assert ".topbar" in css
     assert ".metric-card" in css
