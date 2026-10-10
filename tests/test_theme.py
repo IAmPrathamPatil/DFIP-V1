@@ -63,13 +63,13 @@ def test_theme_boot_defaults_dark_and_persists_dfip_theme() -> None:
     assert 'localStorage.getItem("dfip.theme")' in index
     assert index.index("localStorage.getItem") < index.index('href="/css/app.css"')
     assert 'setAttribute("data-theme", "light")' in index
-    assert "colorScheme = \"dark\"" in index
+    assert 'colorScheme = "dark"' in index
     assert 'const THEME_KEY = "dfip.theme"' in theme
     assert "THEME_DARK" in theme
-    assert 'localStorage.getItem(THEME_KEY) === THEME_LIGHT' in theme
+    assert "localStorage.getItem(THEME_KEY) === THEME_LIGHT" in theme
     assert "removeAttribute" in theme
     assert 'closest("[data-theme-set]")' in theme
-    assert "addEventListener(\"click\"" in theme
+    assert 'addEventListener("click"' in theme
     assert "bootTheme()" in theme
     assert 'from "./theme.js"' not in app
     assert 'closest("[data-theme-set]")' not in app
