@@ -749,10 +749,11 @@ def test_d4_drawer_same_route_and_none_comparison() -> None:
     assert "getOverviewDrilldown" in refresh
     assert "unauthorizedView()" not in refresh
     assert 'name === "saved" || name === "drill"' in app
-    assert "justify-content: flex-end" in css
+    assert "justify-content: center" in css
+    assert "align-items: center" in css
     assert "data-drill-panel" in css or ".drill-panel" in css
     assert "@media (max-width: 720px)" in css
-    assert "min(92vh" in css or "92vh" in css
+    assert "min(90vh" in css or "90vh" in css
     assert "window.location.reload" not in app
     assert "window.location.href" not in app
 
@@ -1043,7 +1044,7 @@ def test_d4_rich_analytical_drawer_modes() -> None:
     assert ".drill-header-metrics" in css
     assert "overflow-x: hidden" in css[css.index(".drill-content") : css.index(".drill-section-title")]
     assert "@media (max-width: 720px)" in css
-    assert "92vh" in css
+    assert "min(90vh" in css or "90vh" in css
     kpi_card = (WEB_STATIC / "js" / "components.js").read_text(encoding="utf-8")
     card = kpi_card[kpi_card.index("export function overviewKpiCard") : kpi_card.index("export function metricCard")]
     assert "<button" not in card
@@ -1229,7 +1230,7 @@ def test_d4_trend_opens_in_centered_presentation() -> None:
     css = (WEB_STATIC / "css" / "app.css").read_text(encoding="utf-8")
     panel = views[views.index("export function overviewDrillPanel") : views.index("export function overviewFilterCompactBar")]
     pane = views[views.index("function drillTrendPane") : views.index("export function overviewDrillPanel")]
-    assert 'data-drill-layout="${view === "trend" ? "center" : "drawer"}"' in panel
+    assert 'data-drill-layout="center"' in panel
     assert 'data-drill-pane="breakdown"' in panel
     assert 'data-drill-pane="details"' in panel
     assert 'data-drill-pane="trend"' in panel
@@ -1242,9 +1243,9 @@ def test_d4_trend_opens_in_centered_presentation() -> None:
     assert "TREND_GRAIN_OPTIONS.find" in pane
     assert 'role="dialog"' in panel
     assert "aria-modal" in panel
-    assert '.drill-root[data-drill-layout="center"]' in css
-    assert "min(60rem" in css
-    assert "calc(100vw - 0.8rem)" in css
+    assert ".drill-panel" in css
+    assert "min(90vw" in css
+    assert "calc(100vw - 2.5rem)" in css or "calc(100vw - 1.5rem)" in css
     mode = app[app.index("function setOverviewDrillMode(") : app.index("function ensureOverviewDrillTrend(")]
     assert "navigate(" not in mode
     assert "trend_metric" not in mode
@@ -1255,6 +1256,40 @@ def test_d4_trend_opens_in_centered_presentation() -> None:
     d3 = views[views.index("export function overviewTrendSection") : views.index("export function overviewExplorerSection")]
     assert "renderTrendChart(trend)" in d3
     assert "tooltip: true" not in d3
+
+
+def test_d4_unified_centered_modal_for_all_tabs() -> None:
+    """All three drill tabs (Breakdown, Trend, Details) use the same centered modal layout."""
+    views = (WEB_STATIC / "js" / "views.js").read_text(encoding="utf-8")
+    css = (WEB_STATIC / "css" / "app.css").read_text(encoding="utf-8")
+    panel = views[
+        views.index("export function overviewDrillPanel")
+        : views.index("export function overviewFilterCompactBar")
+    ]
+
+    # All tabs use centered layout
+    assert 'data-drill-layout="center"' in panel
+    # No drawer layout
+    assert 'data-drill-layout="drawer"' not in panel
+
+    # All three panes present
+    assert 'data-drill-pane="breakdown"' in panel
+    assert 'data-drill-pane="trend"' in panel
+    assert 'data-drill-pane="details"' in panel
+
+    # CSS has centered modal styles
+    assert ".drill-panel" in css
+    assert "min(90vw" in css
+    assert "calc(100vw - 2.5rem)" in css or "calc(100vw - 1.5rem)" in css
+
+    # Details table uses full width and wraps names
+    assert "width: 100%" in css
+    assert "overflow-wrap: anywhere" in css
+    assert "white-space: normal" in css
+    assert "word-break: break-word" in css
+
+    # Trend chart has larger min-height
+    assert "min-height: 28rem" in css
 
 
 def test_d4_trend_tooltip_uses_existing_point_values() -> None:

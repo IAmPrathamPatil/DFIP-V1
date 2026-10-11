@@ -4154,7 +4154,7 @@ export function overviewDrillPanel({ query, data, drill, drillError, mode, trend
     (item) => item.value === (selection.dimension || parsed.dimension) || !usedParents.has(item.value),
   );
   return html`
-    <div class="drill-root" data-overview-drill="true" data-drill-layout="${view === "trend" ? "center" : "drawer"}">
+    <div class="drill-root" data-overview-drill="true" data-drill-layout="center" data-drill-open="true">
       <button type="button" class="modal-backdrop" data-drill-close="true" tabindex="-1" aria-label="Close drilldown"></button>
       <section class="drill-panel" data-drill-panel="true" data-drill-view="${view}" role="dialog" aria-modal="true" aria-labelledby="drill-title" tabindex="-1">
         <header class="drill-header">

@@ -929,7 +929,7 @@ function paintOverviewDrill(query, { trendLoading, data } = {}) {
   const active = document.activeElement;
   const restoreMode = active && active.closest && active.closest("[data-drill-mode]");
   const restoreClose = active && active.closest && active.closest("[data-drill-panel] [data-drill-close]");
-  setOverviewHost(
+  const host = setOverviewHost(
     "[data-overview-drill-host]",
     overviewDrillPanel({
       query,
@@ -948,6 +948,15 @@ function paintOverviewDrill(query, { trendLoading, data } = {}) {
   } else if (restoreClose) {
     const close = root && root.querySelector("[data-drill-panel] a[data-drill-close], [data-drill-panel] [data-drill-close]");
     if (close instanceof HTMLElement) close.focus({ preventScroll: true });
+  }
+  if (host) {
+    const drillRoot = host.querySelector(".drill-root");
+    if (drillRoot) {
+      drillRoot.removeAttribute("data-drill-open");
+      requestAnimationFrame(() => {
+        drillRoot.setAttribute("data-drill-open", "true");
+      });
+    }
   }
 }
 
@@ -3294,7 +3303,13 @@ root.addEventListener("click", (event) => {
   const drillClose = event.target.closest("[data-drill-close]");
   if (drillClose && !(drillClose instanceof HTMLAnchorElement)) {
     event.preventDefault();
-    navigate(overviewHref(stripDrill(currentLocation().query)));
+    const drillRoot = root && root.querySelector(".drill-root");
+    if (drillRoot) {
+      drillRoot.removeAttribute("data-drill-open");
+      setTimeout(() => navigate(overviewHref(stripDrill(currentLocation().query))), 180);
+    } else {
+      navigate(overviewHref(stripDrill(currentLocation().query)));
+    }
     return;
   }
   const filterCompact = event.target.closest("[data-overview-filter-compact]");
