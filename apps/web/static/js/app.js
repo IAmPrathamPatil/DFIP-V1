@@ -4,7 +4,7 @@ import { DfipApiClient, ApiError } from "./api-client.js";
 import { clearToken, getStoredToken, storeToken } from "./auth.js";
 import { layout } from "./components.js";
 import { confirmAction, showToast } from "./dialogs.js";
-import { errorBanner, html, loadingState, MIN_PASSWORD_LENGTH, toHtml } from "./format.js";
+import { errorBanner, html, loadingState, MIN_PASSWORD_LENGTH, CLIENT_PASSWORD_MIN_LENGTH, CLIENT_PASSWORD_MAX_LENGTH, toHtml } from "./format.js";
 import { currentLocation, matchRoute, navigate } from "./router.js";
 import {
   ensurePublisherSession,
@@ -55,6 +55,8 @@ import {
   overviewFilterPatchModel,
   syncFilterPickerSummary,
   overviewHostLoading,
+  loadingOverviewShell,
+  loadingStudioShell,
   overviewInsightsSection,
   overviewKpiCardsHtml,
   overviewPeriodLine,
@@ -71,6 +73,14 @@ import {
   runListView,
   sourceFileDetailView,
   sourceFileListView,
+  studioComboZone,
+  studioDetailZone,
+  studioDistributionZone,
+  studioNarrativeZone,
+  studioShareStackedZone,
+  studioStackedBarZone,
+  studioTrendZone,
+  studioZoneLoading,
   unauthorizedView,
   uploadCenterView,
   workspaceContextBar,
@@ -96,6 +106,7 @@ let runPollTimer = null;
 let batchPollTimer = null;
 let publishPollTimer = null;
 let overviewRefreshSeq = 0;
+let studioRefreshSeq = 0;
 let lastOverviewSearch = "";
 let overviewClientId = "";
 let overviewKpiData = null;
@@ -194,6 +205,38 @@ function withUploadLimit(viewArgs) {
 
 function render(body, path) {
   root.innerHTML = toHtml(layout({ path, session, body }));
+  restoreSidebarState();
+}
+
+function restoreSidebarState() {
+  try {
+    const stored = localStorage.getItem("dfip.sidebarCollapsed");
+    const isMobile = window.matchMedia("(max-width: 1024px)").matches;
+    const shell = document.querySelector(".shell");
+    const navToggle = document.querySelector("[data-nav-toggle]");
+    if (!shell || !navToggle) return;
+
+    if (isMobile) {
+      // Mobile: ignore desktop preference, drawer starts closed
+      shell.classList.remove("sidebar-collapsed");
+      shell.classList.remove("nav-open");
+      navToggle.setAttribute("aria-expanded", "false");
+      navToggle.setAttribute("aria-label", "Open navigation");
+    } else {
+      // Desktop: apply stored preference
+      if (stored === "true") {
+        shell.classList.add("sidebar-collapsed");
+        navToggle.setAttribute("aria-expanded", "false");
+        navToggle.setAttribute("aria-label", "Expand sidebar");
+      } else {
+        shell.classList.remove("sidebar-collapsed");
+        navToggle.setAttribute("aria-expanded", "true");
+        navToggle.setAttribute("aria-label", "Collapse sidebar");
+      }
+    }
+  } catch (e) {
+    // ignore
+  }
 }
 
 function isStudioRoute() {
@@ -653,6 +696,10 @@ function overviewShellMounted() {
   return Boolean(root && root.querySelector("[data-overview-shell]"));
 }
 
+function studioShellMounted() {
+  return Boolean(root && root.querySelector("[data-studio-shell]"));
+}
+
 function searchKey(query) {
   const keys = [...new Set([...query.keys()])].sort();
   return keys.map((key) => `${key}=${query.getAll(key).slice().sort().join("\0")}`).join("&");
@@ -677,6 +724,13 @@ const OVERVIEW_BUSY_HOSTS = [
 ];
 
 function setOverviewHost(selector, content) {
+  const host = root && root.querySelector(selector);
+  if (!host) return null;
+  host.innerHTML = toHtml(content);
+  return host;
+}
+
+function setStudioHost(selector, content) {
   const host = root && root.querySelector(selector);
   if (!host) return null;
   host.innerHTML = toHtml(content);
@@ -1695,6 +1749,489 @@ async function refreshOverviewInPlace(query, { force = [] } = {}) {
   }
 }
 
+async function loadOverviewProgressive(query) {
+  const token = ++overviewRefreshSeq;
+  const stillCurrent = () => token === overviewRefreshSeq && overviewShellMounted();
+
+  // Render initial shell with loading KPIs
+  render(loadingOverviewShell(), "/client/overview");
+  if (!stillCurrent()) return;
+
+  // Performance mark: navigation start
+  if (typeof performance !== "undefined" && performance.mark) {
+    performance.mark("overview-nav-start");
+  }
+
+  const params = overviewParamsFromQuery(query, publishedParams({}));
+
+  // Phase 1: Fetch KPIs first (highest priority)
+  let kpiData = null;
+  let kpiError = null;
+  try {
+    const kpiResult = await api.getOverviewKpis(params);
+    kpiData = kpiResult;
+  } catch (error) {
+    if (isAuthError(error)) throw error;
+    kpiError = error;
+  }
+  if (!stillCurrent()) return;
+
+  // Performance mark: KPIs ready
+  if (typeof performance !== "undefined" && performance.mark) {
+    performance.mark("overview-kpis-ready");
+  }
+
+  overviewKpiData = kpiData;
+  overviewClientId = (session && session.client_id) || "";
+  rememberOverviewState(query, kpiData);
+  refreshOverviewInPlace.previousQuery = new URLSearchParams(query);
+
+  if (kpiError) {
+    paintOverviewKpis(query, null, kpiError);
+    setOverviewHost("[data-overview-period-host]", kpiContextUnavailable());
+    setOverviewHost("[data-overview-comparison-host]", kpiContextUnavailable());
+    setOverviewHost("[data-overview-context-host]", workspaceContextBar({ session, data: null, query }));
+  } else {
+    paintOverviewKpis(query, kpiData, null);
+    setOverviewHost("[data-overview-period-host]", overviewPeriodLine(kpiData));
+    setOverviewHost("[data-overview-comparison-host]", overviewComparisonBanner(kpiData));
+    paintOverviewFilters(kpiData, false, query);
+    setOverviewHost("[data-overview-context-host]", workspaceContextBar({ session, data: kpiData, query }));
+  }
+
+  // Render full shell structure with placeholders for secondary sections
+  render(clientOverviewView({
+    session,
+    data: kpiData,
+    trend: null,
+    trendError: null,
+    explorer: null,
+    explorerError: null,
+    insights: null,
+    insightsError: null,
+    anomalies: null,
+    anomaliesError: null,
+    drill: null,
+    drillError: null,
+    drillMode: overviewDrillMode,
+    drillTrend: overviewDrillTrendData,
+    drillTrendError: overviewDrillTrendError,
+    saved: { items: [] },
+    savedError: null,
+    sparkline: null,
+    loading: false,
+    query,
+  }), "/client/overview");
+
+  if (!stillCurrent()) return;
+
+  // Performance mark: shell ready
+  if (typeof performance !== "undefined" && performance.mark) {
+    performance.mark("overview-shell-ready");
+  }
+
+  // Phase 2: Fetch secondary sections concurrently, but handle each independently
+  const secondaryJobs = [
+    {
+      name: "trends",
+      promise: api.getOverviewTrends(params),
+      onSuccess: (value) => {
+        overviewTrendsData = value;
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-trends-host]",
+            overviewTrendSection({ query, trend: value, trendError: null }),
+          );
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-trends-host]",
+            error && error.status !== 422
+              ? overviewSectionRetry("trends", error)
+              : overviewTrendSection({ query, trend: null, trendError: error }),
+          );
+        }
+      },
+    },
+    {
+      name: "explorer",
+      promise: api.getOverviewExplorer(explorerParamsFromQuery(query, publishedParams({}))),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-explorer-host]",
+            overviewExplorerSection({
+              query,
+              data: kpiData,
+              explorer: value,
+              explorerError: null,
+            }),
+          );
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-explorer-host]",
+            error && error.status !== 422
+              ? overviewSectionRetry("explorer", error)
+              : overviewExplorerSection({
+                  query,
+                  data: kpiData,
+                  explorer: null,
+                  explorerError: error,
+                }),
+          );
+        }
+      },
+    },
+    {
+      name: "insights",
+      promise: api.getOverviewInsights(insightsParamsFromQuery(query, publishedParams({}))),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-insights-host]",
+            overviewInsightsSection({
+              query,
+              data: kpiData,
+              insights: value,
+              insightsError: null,
+            }),
+          );
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-insights-host]",
+            error && error.status !== 422
+              ? overviewSectionRetry("insights", error)
+              : overviewInsightsSection({
+                  query,
+                  data: kpiData,
+                  insights: null,
+                  insightsError: error,
+                }),
+          );
+        }
+      },
+    },
+    {
+      name: "anomalies",
+      promise: api.getOverviewAnomalies(anomaliesParamsFromQuery(query, publishedParams({}))),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-anomalies-host]",
+            overviewAnomaliesSection({
+              query,
+              data: kpiData,
+              anomalies: value,
+              anomaliesError: null,
+            }),
+          );
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-anomalies-host]",
+            error && error.status !== 422
+              ? overviewSectionRetry("anomalies", error)
+              : overviewAnomaliesSection({
+                  query,
+                  data: kpiData,
+                  anomalies: null,
+                  anomaliesError: error,
+                }),
+          );
+        }
+      },
+    },
+    {
+      name: "saved",
+      promise: api.listSavedAnalyses(),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-saved-host]",
+            workspaceSavedPanel({ saved: value, savedError: null, query }),
+          );
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setOverviewHost(
+            "[data-overview-saved-host]",
+            workspaceSavedPanel({ saved: { items: [] }, savedError: error, query }),
+          );
+        }
+      },
+    },
+    {
+      name: "sparklines",
+      promise: api.getOverviewKpiSparklines(sparklineParamsFromQuery(query, publishedParams({}))),
+      onSuccess: (value) => {
+        overviewSparklineData = value;
+        if (stillCurrent() && kpiData) {
+          paintOverviewKpis(query, kpiData, null);
+        }
+      },
+      onError: (error) => {
+        overviewSparklineData = null;
+        // Sparkline error is non-fatal; KPIs remain usable
+      },
+    },
+  ];
+
+  const drillQuery = parseDrillQuery(query);
+  if (drillQuery) {
+    secondaryJobs.push({
+      name: "drill",
+      promise: api.getOverviewDrilldown(drillParamsFromQuery(query, publishedParams({}))),
+      onSuccess: (value) => {
+        overviewDrillPayload = { drill: value, drillError: null };
+        if (stillCurrent()) {
+          paintOverviewDrill(query, { data: kpiData });
+        }
+      },
+      onError: (error) => {
+        overviewDrillPayload = { drill: null, drillError: error };
+        if (stillCurrent()) {
+          paintOverviewDrill(query, { data: kpiData });
+        }
+      },
+    });
+  }
+
+  // Fire all secondary requests concurrently, handle each as it settles
+  const pending = secondaryJobs.map((job) => {
+    const p = job.promise.then(
+      (value) => {
+        if (!stillCurrent()) return;
+        job.onSuccess(value);
+      },
+      (error) => {
+        if (!stillCurrent()) return;
+        // Auth/inactive-company errors are handled by throwIfOverviewJobAuth for non-saved/drill
+        if (error && error.status === 401) throw error;
+        if (isInactiveCompanyError(error)) throw error;
+        job.onError(error);
+      },
+    );
+    return p;
+  });
+
+  // Wait for all to settle for the completion mark, but don't block section updates
+  Promise.allSettled(pending).then(() => {
+    if (!stillCurrent()) return;
+    if (typeof performance !== "undefined" && performance.mark) {
+      performance.mark("overview-complete");
+    }
+  });
+
+  observeStickyOffset();
+  syncOverviewDrillInert();
+  const drillQueryCheck = parseDrillQuery(query);
+  if (drillQueryCheck) {
+    const kpiId = query.get("kpi") || "";
+    if (kpiId && !overviewDrillReturnFocus) overviewDrillReturnFocus = `[data-overview-kpi="${cssEscape(kpiId)}"]`;
+    focusDrillPanel();
+  }
+}
+
+async function loadStudioProgressive(query) {
+  const token = ++studioRefreshSeq;
+  const stillCurrent = () => token === studioRefreshSeq && studioShellMounted();
+
+  // Render initial shell with loading states
+  render(loadingStudioShell(), "/client/studio");
+  if (!stillCurrent()) return;
+
+  // Performance mark: navigation start
+  if (typeof performance !== "undefined" && performance.mark) {
+    performance.mark("studio-nav-start");
+  }
+
+  const params = studioParamsFromQuery(query, publishedParams({}));
+  const trendParams = { ...params, secondary: "revenue_inr" };
+  const stackParams = { ...params, breakdown: "channel" };
+  const insightParams = insightsParamsFromQuery(query, publishedParams({}));
+  const anomalyParams = anomaliesParamsFromQuery(query, publishedParams({}));
+
+  // Phase 1: Fetch KPIs first (highest priority)
+  let kpiData = null;
+  let kpiError = null;
+  try {
+    const kpiResult = await api.getOverviewKpis(params);
+    kpiData = kpiResult;
+  } catch (error) {
+    if (isAuthError(error)) throw error;
+    kpiError = error;
+  }
+  if (!stillCurrent()) return;
+
+  // Performance mark: KPIs ready
+  if (typeof performance !== "undefined" && performance.mark) {
+    performance.mark("studio-kpis-ready");
+  }
+
+  // Render full shell with KPIs and placeholders for other sections
+  if (kpiError) {
+    render(clientStudioView({
+      session,
+      data: null,
+      kpiError,
+      trend: null,
+      trendError: null,
+      mix: null,
+      mixError: null,
+      stack: null,
+      stackError: null,
+      insights: null,
+      insightsError: null,
+      anomalies: null,
+      anomaliesError: null,
+      query,
+      loading: false,
+    }), "/client/studio");
+  } else {
+    render(clientStudioView({
+      session,
+      data: kpiData,
+      kpiError: null,
+      trend: null,
+      trendError: null,
+      mix: null,
+      mixError: null,
+      stack: null,
+      stackError: null,
+      insights: null,
+      insightsError: null,
+      anomalies: null,
+      anomaliesError: null,
+      query,
+      loading: false,
+    }), "/client/studio");
+  }
+
+  if (!stillCurrent()) return;
+
+  // Performance mark: shell ready
+  if (typeof performance !== "undefined" && performance.mark) {
+    performance.mark("studio-shell-ready");
+  }
+
+  // Phase 2: Fetch all other sections concurrently, handle each independently
+  const secondaryJobs = [
+    {
+      name: "trend",
+      promise: api.getOverviewTrends(trendParams),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-trend-zone]", studioTrendZone({ query, trend: value, trendError: null, loading: false }));
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-trend-zone]", studioTrendZone({ query, trend: null, trendError: error, loading: false }));
+        }
+      },
+    },
+    {
+      name: "mix",
+      promise: api.getOverviewExplorer(params),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-mix-zone]", studioDistributionZone({ query, mix: value, mixError: null, loading: false }));
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-mix-zone]", studioDistributionZone({ query, mix: null, mixError: error, loading: false }));
+        }
+      },
+    },
+    {
+      name: "stack",
+      promise: api.getOverviewTrends(stackParams),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-stacked-zone]", studioStackedBarZone({ query, stack: value, stackError: null, loading: false }));
+          setStudioHost("[data-studio-share-zone]", studioShareStackedZone({ query, stack: value, stackError: null, loading: false }));
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-stacked-zone]", studioStackedBarZone({ query, stack: null, stackError: error, loading: false }));
+          setStudioHost("[data-studio-share-zone]", studioShareStackedZone({ query, stack: null, stackError: error, loading: false }));
+        }
+      },
+    },
+    {
+      name: "insights",
+      promise: api.getOverviewInsights(insightParams),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-narrative-zone]", studioNarrativeZone({ query, insights: value, insightsError: null, anomalies: null, anomaliesError: null, loading: false }));
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-narrative-zone]", studioNarrativeZone({ query, insights: null, insightsError: error, anomalies: null, anomaliesError: null, loading: false }));
+        }
+      },
+    },
+    {
+      name: "anomalies",
+      promise: api.getOverviewAnomalies(anomalyParams),
+      onSuccess: (value) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-narrative-zone]", studioNarrativeZone({ query, insights: null, insightsError: null, anomalies: value, anomaliesError: null, loading: false }));
+        }
+      },
+      onError: (error) => {
+        if (stillCurrent()) {
+          setStudioHost("[data-studio-narrative-zone]", studioNarrativeZone({ query, insights: null, insightsError: null, anomalies: null, anomaliesError: error, loading: false }));
+        }
+      },
+    },
+  ];
+
+  // Fire all secondary requests concurrently, handle each as it settles
+  const pending = secondaryJobs.map((job) => {
+    const p = job.promise.then(
+      (value) => {
+        if (!stillCurrent()) return;
+        job.onSuccess(value);
+      },
+      (error) => {
+        if (!stillCurrent()) return;
+        if (error && error.status === 401) throw error;
+        if (isInactiveCompanyError(error)) throw error;
+        job.onError(error);
+      },
+    );
+    return p;
+  });
+
+  // Wait for all to settle for the completion mark
+  Promise.allSettled(pending).then(() => {
+    if (!stillCurrent()) return;
+    if (typeof performance !== "undefined" && performance.mark) {
+      performance.mark("studio-complete");
+    }
+  });
+
+  observeStickyOffset();
+  syncOverviewDrillInert();
+}
+
+
+
 async function renderRoute() {
   stopUploadPoll();
   stopRunPoll();
@@ -1755,6 +2292,16 @@ async function renderRoute() {
         if (!isInactiveCompanyError(error)) throw error;
         overviewClientId = "";
       }
+    }
+    // Progressive load for initial Overview page
+    if (route.name === "client-overview" && !overviewShellMounted()) {
+      await loadOverviewProgressive(query);
+      return;
+    }
+    // Progressive load for initial Studio page
+    if (route.name === "client-studio" && !studioShellMounted()) {
+      await loadStudioProgressive(query);
+      return;
     }
     overviewRefreshSeq += 1;
     if (route.name !== "client-overview") {
@@ -1830,6 +2377,7 @@ async function viewFor(name, ctx) {
   const scoped = clientScoped({});
   if (name === "credential") {
     let setupRequired = false;
+    const wantsSetup = query.get("setup") === "true";
     try {
       const status = await api.setupStatus();
       setupRequired = Boolean(status && status.publisher_setup_required);
@@ -1840,6 +2388,7 @@ async function viewFor(name, ctx) {
       nextPath: query.get("next") || "/client/overview",
       setupRequired,
       setupDone: publisherSetupDone && !setupRequired,
+      setupRequested: wantsSetup && !setupRequired,
     });
   }
   if (name === "unauthorized") return unauthorizedView();
@@ -2838,13 +3387,47 @@ root.addEventListener("click", (event) => {
   const navToggle = event.target.closest("[data-nav-toggle]");
   if (navToggle) {
     event.preventDefault();
-    document.querySelector(".shell")?.classList.toggle("nav-open");
+    const shell = document.querySelector(".shell");
+    if (!shell) return;
+    const isMobile = window.matchMedia("(max-width: 1024px)").matches;
+    if (isMobile) {
+      const isOpen = shell.classList.toggle("nav-open");
+      navToggle.setAttribute("aria-expanded", isOpen ? "true" : "false");
+      navToggle.setAttribute("aria-label", isOpen ? "Close navigation" : "Open navigation");
+    } else {
+      const isCollapsed = shell.classList.toggle("sidebar-collapsed");
+      navToggle.setAttribute("aria-expanded", isCollapsed ? "false" : "true");
+      navToggle.setAttribute("aria-label", isCollapsed ? "Expand sidebar" : "Collapse sidebar");
+      try {
+        localStorage.setItem("dfip.sidebarCollapsed", isCollapsed ? "true" : "false");
+      } catch (e) {
+        // ignore
+      }
+    }
     return;
   }
   const navClose = event.target.closest("[data-nav-close]");
   if (navClose) {
     event.preventDefault();
-    document.querySelector(".shell")?.classList.remove("nav-open");
+    const shell = document.querySelector(".shell");
+    if (shell) {
+      shell.classList.remove("nav-open");
+      const navToggle = document.querySelector("[data-nav-toggle]");
+      if (navToggle) {
+        navToggle.setAttribute("aria-expanded", "false");
+        navToggle.setAttribute("aria-label", "Open navigation");
+      }
+    }
+    return;
+  }
+  const focusCompanyCreate = event.target.closest("[data-focus-company-create]");
+  if (focusCompanyCreate) {
+    event.preventDefault();
+    const input = document.querySelector("#company-create-form [name='name']");
+    if (input instanceof HTMLInputElement) {
+      input.focus();
+      input.scrollIntoView({ behavior: "smooth", block: "center" });
+    }
     return;
   }
   const pickerOpen = event.target.closest("[data-filter-picker-open]");
@@ -3579,6 +4162,138 @@ root.addEventListener("change", (event) => {
   }
   const size = file.size < 1024 ? `${file.size} B` : `${Math.round(file.size / 1024)} KB`;
   meta.textContent = `${file.name} · ${file.type || "xlsx"} · ${size}`;
+  updateSelectedFilesUI(input);
+});
+
+// Upload Center drag-and-drop handlers
+root.addEventListener("dragenter", (event) => {
+  const dropzone = event.target.closest("[data-upload-dropzone]");
+  if (dropzone) {
+    event.preventDefault();
+    dropzone.classList.add("drag-active");
+  }
+});
+
+root.addEventListener("dragover", (event) => {
+  const dropzone = event.target.closest("[data-upload-dropzone]");
+  if (dropzone) {
+    event.preventDefault();
+    event.dataTransfer.dropEffect = "copy";
+    dropzone.classList.add("drag-active");
+  }
+});
+
+root.addEventListener("dragleave", (event) => {
+  const dropzone = event.target.closest("[data-upload-dropzone]");
+  if (dropzone && !dropzone.contains(event.relatedTarget)) {
+    dropzone.classList.remove("drag-active");
+  }
+});
+
+root.addEventListener("drop", (event) => {
+  const dropzone = event.target.closest("[data-upload-dropzone]");
+  if (!dropzone) return;
+  event.preventDefault();
+  dropzone.classList.remove("drag-active");
+  const files = event.dataTransfer.files;
+  if (!files.length) return;
+  const input = dropzone.querySelector("[data-file-input]");
+  if (input) {
+    input.files = files;
+    const event_ = new Event("change", { bubbles: true });
+    input.dispatchEvent(event_);
+  }
+});
+
+// Update selected-files UI and upload button state
+function updateSelectedFilesUI(input) {
+  const form = input.closest("form[data-upload-form]");
+  if (!form) return;
+  const files = input.files ? Array.from(input.files) : [];
+  const tbody = form.querySelector(".selected-files-table tbody");
+  const countEl = form.querySelector("[data-file-count]");
+  const selectedFilesDiv = form.querySelector("[data-selected-files]");
+  const removeAllBtn = form.querySelector("[data-remove-all-files]");
+  const uploadBtn = form.querySelector("button[type=submit]");
+  const life = form.querySelector("[data-upload-status-host]")?.textContent || "";
+
+  if (countEl) countEl.textContent = files.length;
+
+  if (tbody) {
+    if (files.length === 0) {
+      tbody.innerHTML = "";
+    } else {
+      tbody.innerHTML = files.map((file, idx) => {
+        const size = file.size < 1024 ? `${file.size} B` : `${Math.round(file.size / 1024)} KB`;
+        return `<tr data-file-index="${idx}">
+          <td>${file.name}</td>
+          <td>${size}</td>
+          <td><span class="badge pending">pending</span></td>
+          <td><button type="button" class="icon-btn" data-remove-file="${idx}" aria-label="Remove ${file.name}"><svg class="icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6L6 18M6 6l12 12"/></svg></button></td>
+        </tr>`;
+      }).join("");
+    }
+  }
+
+  if (selectedFilesDiv) {
+    selectedFilesDiv.hidden = files.length === 0;
+  }
+  if (removeAllBtn) {
+    removeAllBtn.hidden = files.length === 0;
+  }
+  if (uploadBtn) {
+    const isProcessing = life.includes("Processing") || life.includes("queued") || life.includes("processing");
+    uploadBtn.disabled = files.length === 0 || isProcessing;
+  }
+}
+
+// Upload Center file removal handlers
+root.addEventListener("click", (event) => {
+  const removeBtn = event.target.closest("[data-remove-file]");
+  if (removeBtn) {
+    event.preventDefault();
+    const form = removeBtn.closest("form[data-upload-form]");
+    const input = form?.querySelector("[data-file-input]");
+    const idx = parseInt(removeBtn.dataset.removeFile, 10);
+    if (input && input.files && input.files.length > idx) {
+      const dt = new DataTransfer();
+      Array.from(input.files).forEach((file, i) => {
+        if (i !== idx) dt.items.add(file);
+      });
+      input.files = dt.files;
+      const changeEvent = new Event("change", { bubbles: true });
+      input.dispatchEvent(changeEvent);
+    }
+    return;
+  }
+
+  const removeAllBtn = event.target.closest("[data-remove-all-files]");
+  if (removeAllBtn) {
+    event.preventDefault();
+    const form = removeAllBtn.closest("form[data-upload-form]");
+    const input = form?.querySelector("[data-file-input]");
+    if (input) {
+      input.files = new DataTransfer().files;
+      const changeEvent = new Event("change", { bubbles: true });
+      input.dispatchEvent(changeEvent);
+    }
+    return;
+  }
+
+  const validateBtn = event.target.closest("[data-validate-upload]");
+  if (validateBtn) {
+    event.preventDefault();
+    const form = validateBtn.closest("form[data-upload-form]");
+    if (!form) return;
+    const statusHost = document.querySelector("[data-upload-status-host]");
+    if (statusHost) {
+      statusHost.textContent = "Validating…";
+    }
+    showToast({ tone: "info", title: "Validation started", message: "Re-validating uploaded files. Results will appear shortly." });
+    // Trigger a reload of the upload view to show updated validation status
+    window.dispatchEvent(new Event("dfip:navigate"));
+    return;
+  }
 });
 
 root.addEventListener("submit", async (event) => {
@@ -3792,11 +4507,11 @@ root.addEventListener("submit", async (event) => {
       });
       return;
     }
-    if (password.length < MIN_PASSWORD_LENGTH) {
+    if (password.length < CLIENT_PASSWORD_MIN_LENGTH || password.length > CLIENT_PASSWORD_MAX_LENGTH) {
       showToast({
         tone: "error",
-        title: "Password is too short.",
-        message: `Client passwords must be at least ${MIN_PASSWORD_LENGTH} characters.`,
+        title: "Invalid password length.",
+        message: `Client passwords must be ${CLIENT_PASSWORD_MIN_LENGTH}–${CLIENT_PASSWORD_MAX_LENGTH} characters.`,
       });
       return;
     }
@@ -4013,7 +4728,6 @@ window.addEventListener("popstate", () => {
 window.addEventListener("dfip:navigate", () => {
   renderRoute();
 });
-
 async function boot() {
   try {
     const response = await fetch("/config.json", { credentials: "omit" });
@@ -4031,6 +4745,7 @@ async function boot() {
     return;
   }
   setAdminRoles(config.adminRoles);
+
   api = new DfipApiClient({
     baseUrl: config.apiBaseUrl,
     prefix: config.apiPrefix,
@@ -4040,6 +4755,7 @@ async function boot() {
   });
   setPublisherSessionReplacedHandler(() => enterPublisherSessionReplaced(currentLocation().path));
   await renderRoute();
+  restoreSidebarState();
 }
 
 boot();

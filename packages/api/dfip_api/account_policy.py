@@ -16,6 +16,8 @@ from dfip_db.local_demo_guard import (
 from dfip_api.errors import ValidationFailed
 
 MIN_PASSWORD_LENGTH = 12
+CLIENT_PASSWORD_MIN_LENGTH = 6
+CLIENT_PASSWORD_MAX_LENGTH = 12
 
 DEMO_SUBJECTS = frozenset(
     {
@@ -56,10 +58,20 @@ def is_demo_subject(subject: str) -> bool:
     return name.startswith("demo-")
 
 
-def validate_new_account(settings: Settings, *, username: str, password: str) -> None:
+def validate_new_account(
+    settings: Settings,
+    *,
+    username: str,
+    password: str,
+    for_client: bool = False,
+) -> None:
     """Refuse weak or demo identities at creation time. Login does not use this."""
-    if len(password) < MIN_PASSWORD_LENGTH:
+    min_len = CLIENT_PASSWORD_MIN_LENGTH if for_client else MIN_PASSWORD_LENGTH
+    max_len = CLIENT_PASSWORD_MAX_LENGTH if for_client else None
+    if len(password) < min_len:
         raise ValidationFailed("password does not meet the minimum length.")
+    if max_len is not None and len(password) > max_len:
+        raise ValidationFailed("password exceeds the maximum length.")
     if not settings.is_production_grade:
         return
     if is_demo_subject(username):

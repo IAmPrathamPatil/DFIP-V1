@@ -220,7 +220,7 @@ function batchActionButtons(batch, clientId) {
   const del = batchDeleteAction(batch);
   if (del) {
     parts.push(
-      html`<button type="button" class="danger" data-batch-delete="${batch.batch_id}" data-batch-client="${clientId || ""}">${del.label}</button>`,
+      html`<button type="button" class="btn-danger" data-batch-delete="${batch.batch_id}" data-batch-client="${clientId || ""}">${del.label}</button>`,
     );
   }
   return parts.length ? html`${parts}` : "";
@@ -351,11 +351,11 @@ function companyWorkbookButton() {
 }
 
 function companyRefreshableWorkbookButton() {
-  return html`<button type="button" class="secondary" data-download-refreshable-client-report="current">Download Refreshable Workbook</button>`;
+  return html`<button type="button" class="btn-secondary" data-download-refreshable-client-report="current">Download Refreshable Workbook</button>`;
 }
 
 function companyConsolidatedWorkbookButton() {
-  return html`<button type="button" class="secondary" data-download-consolidated-client-report="current" title="All successfully processed published months for the company in one workbook. Never needs Excel Refresh All.">Download Consolidated Company Workbook</button>`;
+  return html`<button type="button" class="btn-secondary" data-download-consolidated-client-report="current" title="All successfully processed published months for the company in one workbook. Never needs Excel Refresh All.">Download Consolidated Workbook</button>`;
 }
 
 function refreshableDownloadErrorHost() {
@@ -398,7 +398,7 @@ function publicationIdCell(item) {
 function historicalReportButton(item, current) {
   const id = item && item.publication_id ? String(item.publication_id) : "";
   const target = publicationIsCurrent(item, current) ? "current" : id;
-  return html`<button type="button" class="secondary" data-download-client-report="${target}">Download Client Report</button>`;
+  return html`<button type="button" class="btn-secondary" data-download-client-report="${target}">Download Client Report</button>`;
 }
 
 export function rawUploadLifecycle(uploadResult) {
@@ -680,14 +680,150 @@ function catalogErrors(error, uploadResult) {
   `;
 }
 
-export function credentialView({ error, nextPath, setupRequired, setupDone, standalone }) {
+export function credentialView({ error, nextPath, setupRequired, setupDone, standalone, setupRequested }) {
   const theme = standalone ? html`<div class="login-theme">${themeSwitcher()}</div>` : "";
+  const logoSvg = html`<svg class="login-logo" viewBox="0 0 64 64" width="56" height="56" aria-hidden="true" focusable="false">
+    <defs>
+      <linearGradient id="dfipGradientLogin" x1="0%" y1="0%" x2="100%" y2="100%">
+        <stop offset="0%" stop-color="#00d4ff"/>
+        <stop offset="50%" stop-color="#0088ff"/>
+        <stop offset="100%" stop-color="#1a3a8c"/>
+      </linearGradient>
+      <linearGradient id="dfipGradientAltLogin" x1="0%" y1="100%" x2="100%" y2="0%">
+        <stop offset="0%" stop-color="#00ffcc"/>
+        <stop offset="100%" stop-color="#0088ff"/>
+      </linearGradient>
+    </defs>
+    <circle cx="32" cy="32" r="30" fill="url(#dfipGradientLogin)" opacity="0.15"/>
+    <path d="M32 6 C17.6 6 6 17.6 6 32 s11.6 26 26 26 26-11.6 26-26 S46.4 6 32 6" 
+          stroke="url(#dfipGradientLogin)" stroke-width="2.5" fill="none" stroke-linecap="round" 
+          stroke-dasharray="12 8" opacity="0.8"/>
+    <path d="M32 14 C22.1 14 14 22.1 14 32 s8.1 18 18 18 18-8.1 18-18 S41.9 14 32 14" 
+          stroke="url(#dfipGradientAltLogin)" stroke-width="2" fill="none" stroke-linecap="round" 
+          stroke-dasharray="8 6" opacity="0.5"/>
+    <g>
+      <circle cx="32" cy="18" r="4" fill="url(#dfipGradientLogin)"/>
+      <circle cx="46" cy="32" r="4" fill="url(#dfipGradientAltLogin)"/>
+      <circle cx="32" cy="46" r="4" fill="url(#dfipGradientLogin)"/>
+      <circle cx="18" cy="32" r="4" fill="url(#dfipGradientAltLogin)"/>
+      <circle cx="32" cy="32" r="5" fill="url(#dfipGradientLogin)"/>
+    </g>
+    <g stroke="#00d4ff" stroke-width="1.5" fill="none" opacity="0.5" stroke-linecap="round">
+      <path d="M32 22 L32 27"/>
+      <path d="M32 37 L32 42"/>
+      <path d="M22 32 L27 32"/>
+      <path d="M37 32 L42 32"/>
+    </g>
+  </svg>`;
+  const loginBg = html`<div class="login-bg" aria-hidden="true">
+    <div class="login-bg-glow login-bg-glow-a"></div>
+    <div class="login-bg-glow login-bg-glow-b"></div>
+    <div class="login-bg-glow login-bg-glow-c"></div>
+    <svg class="login-bg-waves" viewBox="0 0 5760 900" preserveAspectRatio="xMidYMid slice" focusable="false">
+      <defs>
+        <radialGradient id="dfipNodeGlowCyan">
+          <stop offset="0%" stop-color="#00ffcc" stop-opacity="0.9"/>
+          <stop offset="40%" stop-color="#00d4ff" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="#00d4ff" stop-opacity="0"/>
+        </radialGradient>
+        <radialGradient id="dfipNodeGlowBlue">
+          <stop offset="0%" stop-color="#00d4ff" stop-opacity="0.9"/>
+          <stop offset="40%" stop-color="#0088ff" stop-opacity="0.35"/>
+          <stop offset="100%" stop-color="#0088ff" stop-opacity="0"/>
+        </radialGradient>
+        <path id="dfipWaveA" d="M 0 200 C 240 100, 480 100, 720 200 S 1200 300, 1440 200"/>
+        <path id="dfipWaveB" d="M 0 380 C 240 280, 480 280, 720 380 S 1200 480, 1440 380"/>
+        <path id="dfipWaveC" d="M 0 560 C 300 460, 600 460, 900 560 S 1140 660, 1440 560"/>
+        <path id="dfipWaveD" d="M 0 720 C 240 640, 480 640, 720 720 S 1200 800, 1440 720"/>
+        <path id="dfipWaveE" d="M 0 460 C 240 560, 480 560, 720 460 S 1200 360, 1440 460"/>
+      </defs>
+      <g class="wave-scroll">
+        <use href="#dfipWaveA" class="wave-line wave-a"/>
+        <use href="#dfipWaveB" class="wave-line wave-b"/>
+        <use href="#dfipWaveC" class="wave-line wave-c"/>
+        <use href="#dfipWaveD" class="wave-line wave-d"/>
+        <use href="#dfipWaveE" class="wave-line wave-e"/>
+        <use href="#dfipWaveA" class="wave-line wave-a" x="1440"/>
+        <use href="#dfipWaveB" class="wave-line wave-b" x="1440"/>
+        <use href="#dfipWaveC" class="wave-line wave-c" x="1440"/>
+        <use href="#dfipWaveD" class="wave-line wave-d" x="1440"/>
+        <use href="#dfipWaveE" class="wave-line wave-e" x="1440"/>
+        <use href="#dfipWaveA" class="wave-line wave-a" x="2880"/>
+        <use href="#dfipWaveB" class="wave-line wave-b" x="2880"/>
+        <use href="#dfipWaveC" class="wave-line wave-c" x="2880"/>
+        <use href="#dfipWaveD" class="wave-line wave-d" x="2880"/>
+        <use href="#dfipWaveE" class="wave-line wave-e" x="2880"/>
+        <use href="#dfipWaveA" class="wave-line wave-a" x="4320"/>
+        <use href="#dfipWaveB" class="wave-line wave-b" x="4320"/>
+        <use href="#dfipWaveC" class="wave-line wave-c" x="4320"/>
+        <use href="#dfipWaveD" class="wave-line wave-d" x="4320"/>
+        <use href="#dfipWaveE" class="wave-line wave-e" x="4320"/>
+        <use href="#dfipWaveA" class="wave-pulse wave-pulse-a"/>
+        <use href="#dfipWaveB" class="wave-pulse wave-pulse-b"/>
+        <use href="#dfipWaveA" class="wave-pulse wave-pulse-a" x="1440"/>
+        <use href="#dfipWaveB" class="wave-pulse wave-pulse-b" x="1440"/>
+        <use href="#dfipWaveA" class="wave-pulse wave-pulse-a" x="2880"/>
+        <use href="#dfipWaveB" class="wave-pulse wave-pulse-b" x="2880"/>
+        <use href="#dfipWaveA" class="wave-pulse wave-pulse-a" x="4320"/>
+        <use href="#dfipWaveB" class="wave-pulse wave-pulse-b" x="4320"/>
+        <use href="#dfipWaveC" class="wave-pulse wave-pulse-c"/>
+        <use href="#dfipWaveC" class="wave-pulse wave-pulse-c" x="2880"/>
+      </g>
+      <g class="wave-nodes">
+        <g class="wave-node wave-node-a">
+          <circle cx="2500" cy="180" r="17" fill="url(#dfipNodeGlowCyan)"/>
+          <circle cx="2500" cy="180" r="3.6" fill="#c9f7ff"/>
+        </g>
+        <g class="wave-node wave-node-b">
+          <circle cx="3100" cy="270" r="14" fill="url(#dfipNodeGlowBlue)"/>
+          <circle cx="3100" cy="270" r="3" fill="#d8f2ff"/>
+        </g>
+        <g class="wave-node wave-node-c">
+          <circle cx="2700" cy="380" r="15" fill="url(#dfipNodeGlowCyan)"/>
+          <circle cx="2700" cy="380" r="3.2" fill="#c9f7ff"/>
+        </g>
+        <g class="wave-node wave-node-d">
+          <circle cx="3300" cy="470" r="13" fill="url(#dfipNodeGlowBlue)"/>
+          <circle cx="3300" cy="470" r="2.8" fill="#d8f2ff"/>
+        </g>
+        <g class="wave-node wave-node-e">
+          <circle cx="2450" cy="560" r="16" fill="url(#dfipNodeGlowCyan)"/>
+          <circle cx="2450" cy="560" r="3.4" fill="#c9f7ff"/>
+        </g>
+        <g class="wave-node wave-node-f">
+          <circle cx="3150" cy="650" r="14" fill="url(#dfipNodeGlowBlue)"/>
+          <circle cx="3150" cy="650" r="3" fill="#d8f2ff"/>
+        </g>
+        <g class="wave-node wave-node-g">
+          <circle cx="2900" cy="440" r="13" fill="url(#dfipNodeGlowCyan)"/>
+          <circle cx="2900" cy="440" r="2.8" fill="#c9f7ff"/>
+        </g>
+        <g class="wave-node wave-node-h">
+          <circle cx="3400" cy="740" r="15" fill="url(#dfipNodeGlowBlue)"/>
+          <circle cx="3400" cy="740" r="3.2" fill="#d8f2ff"/>
+        </g>
+      </g>
+    </svg>
+    <div class="particle-layer">
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+      <div class="particle"></div>
+    </div>
+  </div>`;
   if (setupRequired) {
     return html`
       <div class="login-shell" id="main">
         ${theme}
+        ${loginBg}
         <section class="login-card">
-          <p class="brand">DFIP</p>
+          ${logoSvg}
           <p class="eyebrow">Initial setup</p>
           <h1>Create the publisher account</h1>
           <p class="lede">
@@ -719,8 +855,9 @@ export function credentialView({ error, nextPath, setupRequired, setupDone, stan
   return html`
     <div class="login-shell" id="main">
       ${theme}
+      ${loginBg}
       <section class="login-card">
-        <p class="brand">DFIP</p>
+        ${logoSvg}
         <p class="eyebrow">Publisher control center</p>
         <h1>Sign in</h1>
         <p class="lede">
@@ -731,6 +868,10 @@ export function credentialView({ error, nextPath, setupRequired, setupDone, stan
           setupDone
             ? html`<p class="banner success" data-publisher-setup-done="true">Publisher account created. Sign in with the username and password you entered. DFIP stored a password hash only.</p>`
             : ""
+        }
+        ${setupRequested
+          ? html`<p class="banner info" data-publisher-setup-already-done="true">Publisher setup has already been completed. Please sign in with your existing account.</p>`
+          : ""
         }
         ${errorBanner(error)}
         <form data-credential-form="true" class="stack">
@@ -745,6 +886,9 @@ export function credentialView({ error, nextPath, setupRequired, setupDone, stan
           </label>
           <button type="submit">Sign in</button>
         </form>
+        <p class="login-create-link">
+          <a href="/?setup=true" data-navigate>Create publisher account</a>
+        </p>
       </section>
     </div>
   `;
@@ -778,25 +922,46 @@ export function companySelectView({ session, error }) {
         description: "This publisher can operate more than one tenant. Choose an active company before upload, process, QA, or publish. Inactive companies stay in the registry for historical recovery and cannot be selected for live operations.",
       })}
       ${errorBanner(error)}
-      <div class="stack">
-        ${choices.map(
-          (item) => html`
-            <form data-company-select-form="true">
-              <input type="hidden" name="client_id" value="${item.client_id}" />
-              <button type="submit" data-company-select-button="${item.client_id}">
-                ${companyLabel(item)}
-              </button>
-              <p class="muted">${item.code || item.client_id}</p>
-            </form>
-          `,
-        )}
-        ${
-          inactive.length
-            ? html`<p class="muted">Inactive companies are listed on Companies. They cannot be selected for live operations. Deactivate, then Delete Company to permanently remove a tenant.</p>`
-            : ""
-        }
-        <p><a href="/admin/companies">Manage companies</a></p>
+      <div class="company-select-grid" data-company-select-grid="true">
+        ${choices.length === 0
+          ? html`
+              <div class="company-select-empty" data-company-select-empty="true">
+                <p class="muted">No active companies are available for selection.</p>
+                <p><a class="btn-secondary" href="/admin/companies">Manage companies</a></p>
+              </div>
+            `
+          : choices.map(
+              (item) => html`
+                <article class="company-select-card" data-company-select-card="${item.client_id}">
+                  <header class="company-select-card-head">
+                    <h3 class="company-select-name">${companyLabel(item)}</h3>
+                    ${item.code && item.code !== item.client_id ? html`<span class="company-select-code" aria-label="Company code">${item.code}</span>` : ""}
+                  </header>
+                  <div class="company-select-card-body">
+                    ${item.role ? html`<span class="company-select-role">${item.role}</span>` : ""}
+                  </div>
+                  <footer class="company-select-card-foot">
+                    <form data-company-select-form="true" action="/select-company" method="POST">
+                      <input type="hidden" name="client_id" value="${item.client_id}" />
+                      <button type="submit" class="btn" data-company-select-button="${item.client_id}">Select</button>
+                    </form>
+                  </footer>
+                </article>
+              `,
+            )}
       </div>
+      ${inactive.length > 0
+        ? html`
+            <div class="company-select-inactive" data-company-select-inactive="true">
+              <p class="muted">Inactive companies are listed on Companies. They cannot be selected for live operations. Deactivate, then Delete Company to permanently remove a tenant.</p>
+              <p><a class="btn-secondary" href="/admin/companies">Manage companies</a></p>
+            </div>
+          `
+        : html`
+            <div class="company-select-actions" data-company-select-actions="true">
+              <a class="btn-secondary" href="/admin/companies">Manage companies</a>
+            </div>
+          `}
     </section>
   `;
 }
@@ -805,102 +970,114 @@ export function companiesView({ session, companies, error }) {
   const rows = Array.isArray(companies) ? companies : [];
   const current = session && session.client_id ? session.client_id : "";
   return html`
-    <section class="panel" data-company-registry="true">
+    <section class="panel" data-companies-shell="true">
       ${pageHeader({
         title: "Companies",
         description: "Companies this publisher is authorized to operate. Add Company creates a new tenant id. Rename changes the display name only. Deactivate blocks new live work and keeps history. Delete Company permanently removes a deactivated company and its data.",
+        actions: html`
+          <a class="btn" href="/admin/upload">${icon("upload")} Upload New Dataset</a>
+          <a class="btn-secondary" href="/admin/processing-runs">${icon("play")} View Processing Runs</a>
+          <a class="btn-secondary" href="/admin/facts">${icon("search")} Review Current Facts</a>
+          <a class="btn-secondary" href="/admin/publications">${icon("downloads")} View Publications</a>
+        `,
       })}
       ${errorBanner(error)}
-      <div class="company-onboarding" data-company-onboarding="true">
+      <div class="companies-onboarding" data-companies-onboarding="true">
         <p><strong>Processing-ready</strong> after you add and select a company: upload, process, QA, and publish use packaged Logic, Labels, templates, and rate cards. Optional tenant Logic/Labels: upload and activate on <a href="/admin/logic">Logic</a> and <a href="/admin/labels">Labels</a> while this company is selected. Templates and rate cards stay packaged shared content; this tenant does not store another company's catalog UUIDs.</p>
         <p class="muted"><strong>Lifecycle:</strong> Deactivate keeps all data and memberships. Inactive companies cannot be selected for upload, process, publish, or client-portal use and are hidden from the normal company selector. Publisher historical publication downloads remain available while inactive. Delete Company permanently deletes the company and all company-owned application data. Direct SQL reporting views do not automatically hide inactive companies.</p>
       </div>
-      <form class="company-create" data-company-create-form="true">
+      <form class="company-create" id="company-create-form" data-company-create-form="true">
         <label>
           <span>Company name</span>
           <input name="name" maxlength="200" required data-company-create-name="true" placeholder="Display name" />
         </label>
         <button type="submit" data-company-create-button="true">+ Add Company</button>
       </form>
-      ${
-        rows.length
-          ? rows.map(
-              (item) => html`
-                <article class="company-row" data-company-id="${item.client_id}" data-company-status="${item.lifecycle_status || "active"}">
-                  <div>
-                    <p class="company-row-name" data-company-name="${item.client_id}">${item.name}</p>
-                    <p class="muted">${item.code || ""} · <span class="mono">${item.client_id}</span></p>
-                    <p>
-                      <span class="role-pill ${item.lifecycle_status === "inactive" ? "lifecycle-inactive" : "lifecycle-active"}" data-company-status-chip="${item.client_id}">${item.lifecycle_status === "inactive" ? "Inactive" : "Active"}</span>
-                    </p>
-                    ${
-                      item.lifecycle_status === "inactive"
+      ${rows.length
+        ? html`
+            <div class="companies-grid" data-companies-grid="true">
+              ${rows.map(
+                (item) => html`
+                  <article class="company-card" data-company-id="${item.client_id}" data-company-status="${item.lifecycle_status || "active"}">
+                    <header class="company-card-head">
+                      <h3 class="company-card-name">${item.name}</h3>
+                      <div class="company-card-meta">
+                        ${item.code && item.code !== item.client_id && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(item.code) ? html`<span class="company-card-code" aria-label="Company code">${item.code}</span>` : ""}
+                        <span class="company-status ${item.lifecycle_status === "inactive" ? "inactive" : "active"}">${item.lifecycle_status === "inactive" ? "Inactive" : "Active"}</span>
+                      </div>
+                    </header>
+                    <div class="company-card-body">
+                      <p class="company-card-id" aria-label="Company identifier">${item.client_id}</p>
+                      ${item.lifecycle_status === "inactive" ? html`
+                        <p class="company-deactivated">Deactivated ${item.deactivated_at || ""}</p>
+                        <p class="company-purge-eligible">Purge eligible after ${item.purge_eligible_after || "not clock-eligible (operator policy unset)"}</p>
+                      ` : ""}
+                      ${item.client_id === current && item.lifecycle_status !== "inactive" ? html`
+                        <p class="company-active-badge">Active company</p>
+                        ${companyConsolidatedWorkbookButton()}
+                        ${companyRefreshableWorkbookButton()}
+                        ${refreshableDownloadErrorHost()}
+                      ` : ""}
+                    </div>
+                    <footer class="company-card-actions">
+                      ${item.lifecycle_status === "inactive"
                         ? html`
-                            <p class="muted" data-company-deactivated="${item.client_id}">Deactivated ${item.deactivated_at || ""}</p>
-                            <p class="muted" data-company-purge-eligible="${item.client_id}">Purge eligible after ${item.purge_eligible_after || "not clock-eligible (operator policy unset)"}</p>
+                            <button type="button" class="btn-secondary" data-company-reactivate="${item.client_id}">${icon("rotate-ccw")} Reactivate</button>
+                            <button type="button" class="btn-danger" data-company-delete="${item.client_id}" data-company-delete-name="${item.name}">${icon("trash")} Delete Company</button>
                           `
-                        : ""
-                    }
-                    ${
-                      item.client_id === current && item.lifecycle_status !== "inactive"
-                        ? html`
-                            <p class="muted" data-company-active="${item.client_id}">Active company</p>
-                            ${companyWorkbookButton()}
-                            ${companyRefreshableWorkbookButton()}
-                            ${refreshableDownloadErrorHost()}
-                          `
-                        : ""
-                    }
-                    ${
-                      item.lifecycle_status === "inactive"
-                        ? html`
-                            <button type="button" class="secondary" data-company-reactivate="${item.client_id}">Reactivate</button>
-                            <button type="button" class="danger" data-company-delete="${item.client_id}" data-company-delete-name="${item.name}">Delete Company</button>
-                          `
-                        : html`<button type="button" class="secondary" data-company-deactivate="${item.client_id}">Deactivate</button>`
-                    }
-                  </div>
-                  <form data-company-rename-form="true">
-                    <input type="hidden" name="client_id" value="${item.client_id}" />
-                    <label>
-                      <span class="visually-hidden">Display name</span>
-                      <input name="name" value="${item.name}" maxlength="200" required data-company-rename-input="${item.client_id}" />
-                    </label>
-                    <button type="submit" data-company-rename-button="${item.client_id}">Rename</button>
-                  </form>
-                  ${
-                    item.lifecycle_status === "inactive"
-                      ? ""
-                      : html`
-                  <form class="company-client-create" data-company-client-form="true">
-                    <input type="hidden" name="client_id" value="${item.client_id}" />
-                    <p class="muted">Company: <strong>${item.name}</strong></p>
-                    <label>
-                      <span>Client username</span>
-                      <input name="username" maxlength="320" required autocomplete="off" data-company-client-username="${item.client_id}" />
-                    </label>
-                    <label>
-                      <span>Client password</span>
-                      <input name="password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password" data-company-client-password="${item.client_id}" />
-                      <span class="muted">At least 12 characters. DFIP stores a password hash only.</span>
-                    </label>
-                    <label>
-                      <span>Confirm password</span>
-                      <input name="confirm_password" type="password" minlength="12" maxlength="1024" required autocomplete="new-password" data-company-client-confirm="${item.client_id}" />
-                    </label>
-                    <button type="submit" data-company-client-button="${item.client_id}">Create Client Account</button>
-                  </form>
-                      `
-                  }
-                </article>
-              `,
-            )
-          : emptyState("No companies are assigned to this publisher.")
-      }
+                        : html`
+                            <button type="button" class="btn-secondary" data-company-deactivate="${item.client_id}">${icon("pause")} Deactivate</button>
+                          `}
+                      <form class="company-rename-form" data-company-rename-form="true">
+                        <input type="hidden" name="client_id" value="${item.client_id}" />
+                        <label>
+                          <span class="visually-hidden">Display name</span>
+                          <input name="name" value="${item.name}" maxlength="200" required data-company-rename-input="${item.client_id}" />
+                        </label>
+                        <button type="submit" data-company-rename-button="${item.client_id}">${icon("edit")} Rename</button>
+                      </form>
+                      ${item.lifecycle_status === "inactive"
+                        ? ""
+                        : html`
+                            <form class="company-client-create-form" data-company-client-form="true">
+                              <input type="hidden" name="client_id" value="${item.client_id}" />
+                              <div class="client-create-fields">
+                                <label>
+                                  <span>Client username</span>
+                                  <input name="username" maxlength="320" required autocomplete="off" data-company-client-username="${item.client_id}" />
+                                </label>
+                                <label>
+                                  <span>Client password</span>
+                                  <input name="password" type="password" minlength="6" maxlength="12" required autocomplete="new-password" data-company-client-password="${item.client_id}" />
+                                </label>
+                                <label>
+                                  <span>Confirm password</span>
+                                  <input name="confirm_password" type="password" minlength="6" maxlength="12" required autocomplete="new-password" data-company-client-confirm="${item.client_id}" />
+                                </label>
+                              </div>
+                              <span class="muted client-create-hint">Password must be 6–12 characters. DFIP stores a password hash only.</span>
+                              <button type="submit" data-company-client-button="${item.client_id}">${icon("user-plus")} Create Client Account</button>
+                            </form>
+                          `}
+                    </footer>
+                  </article>
+                `,
+              )}
+            </div>
+          `
+        : html`
+            <div class="companies-empty" data-companies-empty="true">
+              <p class="muted">No companies are assigned to this publisher.</p>
+              <p><button type="button" class="btn" data-focus-company-create="${icon("plus")} Add first company</button></p>
+            </div>
+          `}
+      <div class="companies-actions" data-companies-actions="true">
+        <a class="btn-secondary" href="/admin/logic">${icon("logic")} Manage Logic</a>
+        <a class="btn-secondary" href="/admin/labels">${icon("labels")} Manage Labels</a>
+      </div>
     </section>
   `;
 }
-
 export function notFoundView() {
   return html`
     <section class="panel">
@@ -983,98 +1160,111 @@ export function adminHomeView({
   const publication = currentPublication && currentPublication.publication;
   const latestStatus = latestRun ? latestRun.status : "Unknown";
   return html`
-    ${errorBanner(error)}
-    ${pageHeader({
-      eyebrow: "Publisher",
-      title: "Dashboard",
-      description: "Operational state from the live API. Values are not estimated.",
-      actions: html`
-        <a class="btn" href="/admin/upload" style="display:inline-flex;align-items:center;">Upload New Dataset</a>
-        <a class="btn-secondary" href="/admin/processing-runs" style="display:inline-flex;align-items:center;padding:0.5rem 0.85rem;border-radius:6px;">View Processing Runs</a>
-        <a class="btn-secondary" href="/admin/facts" style="display:inline-flex;align-items:center;padding:0.5rem 0.85rem;border-radius:6px;">Review Current Facts</a>
-        <a class="btn-secondary" href="/admin/publications" style="display:inline-flex;align-items:center;padding:0.5rem 0.85rem;border-radius:6px;">View Publications</a>
-      `,
-    })}
-    <div class="metrics">
-      ${metricCard({
-        label: "Latest processing",
-        value: latestRun ? latestStatus : "None",
-        hint: latestRun ? when(latestRun.started_at) : "No processing runs yet.",
-        href: latestRun ? `/admin/processing-runs/${latestRun.processing_run_id}` : "/admin/processing-runs",
-        tone: latestStatus === "succeeded" ? "ok" : latestStatus === "failed" ? "danger" : "",
+    <section class="dashboard-shell" data-admin-home-shell="true">
+      ${errorBanner(error)}
+      ${pageHeader({
+        eyebrow: "Publisher",
+        title: "Dashboard",
+        description: "Operational state from the live API. Values are not estimated.",
+        actions: html`
+          <div class="dashboard-actions">
+            <a class="btn" href="/admin/upload">
+              ${icon("upload")}
+              Upload New Dataset
+            </a>
+            <a class="btn-secondary" href="/admin/processing-runs">
+              ${icon("play")}
+              View Processing Runs
+            </a>
+            <a class="btn-secondary" href="/admin/facts">
+              ${icon("search")}
+              Review Current Facts
+            </a>
+            <a class="btn-secondary" href="/admin/publications">
+              ${icon("downloads")}
+              View Publications
+            </a>
+          </div>
+        `,
       })}
-      ${metricCard({
-        label: "Current publication",
-        value: publication ? "Published" : "None",
-        hint: publication ? shortId(publication.publication_id) : "No current publication.",
-        href: "/admin/publications",
-        tone: publication ? "ok" : "warn",
-      })}
-      ${metricCard({
-        label: "Working-set facts",
-        value: factCount == null ? "Unknown" : String(factCount),
-        hint: "Review slice, not published data.",
-        href: "/admin/facts",
-      })}
-      ${metricCard({
-        label: "QA findings",
-        value: latestRun ? (findingCount == null ? "Unknown" : String(findingCount)) : "—",
-        hint: latestRun ? "Findings for the latest run. Not a QA verdict." : "No run to inspect.",
-        href: latestRun ? `/admin/review?processing_run_id=${latestRun.processing_run_id}` : "/admin/review",
-        tone: findingCount > 0 ? "warn" : "",
-      })}
-    </div>
-    <div class="split">
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Recent activity</h2>
-        </div>
-        ${recentActivity({ files, runs, publications })}
-      </section>
-      <section class="panel">
-        <div class="panel-head">
-          <h2>Environment</h2>
-        </div>
-        ${
-          health
-            ? definitionList([
-                ["API liveness", displayCell(health.status)],
-                ["Application", displayCell(health.application)],
-                ["Environment", displayCell(health.environment)],
-              ])
-            : emptyState("Health is unavailable.")
-        }
-        ${
-          ready
-            ? definitionList([
-                ["Readiness", displayCell(ready.status)],
-                ["Database", displayCell(ready.database && ready.database.status)],
-                ["Source storage", displayCell(ready.storage && ready.storage.status)],
-                ["Worker", displayCell(ready.worker)],
-              ])
-            : html`<p class="muted" style="margin-top:0.9rem;">Readiness is unavailable. Public /health is liveness only and does not prove the database.</p>`
-        }
-        ${
-          session
-            ? html`<p class="muted" style="margin-top:0.9rem;">Signed in as ${session.subject} (${session.role}).</p>`
-            : ""
-        }
-        <p class="muted">
-          Latest upload:
-          ${
-            latestFile
-              ? html`<a href="/admin/source-files/${latestFile.source_file_id}">${latestFile.original_filename}</a>`
-              : fileCount === 0
-                ? "none yet"
-                : "unknown"
-          }.
-        </p>
-        ${runCount != null ? html`<p class="muted">${runCount} processing run(s) recorded.</p>` : ""}
-      </section>
-    </div>
+      <div class="metrics">
+        ${metricCard({
+          label: "Latest processing",
+          value: latestRun ? latestStatus : "None",
+          hint: latestRun ? when(latestRun.started_at) : "No processing runs yet.",
+          href: latestRun ? `/admin/processing-runs/${latestRun.processing_run_id}` : "/admin/processing-runs",
+          tone: latestStatus === "succeeded" ? "ok" : latestStatus === "failed" ? "danger" : "",
+        })}
+        ${metricCard({
+          label: "Current publication",
+          value: publication ? "Published" : "None",
+          hint: publication ? shortId(publication.publication_id) : "No current publication.",
+          href: "/admin/publications",
+          tone: publication ? "ok" : "warn",
+        })}
+        ${metricCard({
+          label: "Working-set facts",
+          value: factCount == null ? "Unknown" : String(factCount),
+          hint: "Review slice, not published data.",
+          href: "/admin/facts",
+        })}
+        ${metricCard({
+          label: "QA findings",
+          value: latestRun ? (findingCount == null ? "Unknown" : String(findingCount)) : "—",
+          hint: latestRun ? "Findings for the latest run. Not a QA verdict." : "No run to inspect.",
+          href: latestRun ? `/admin/review?processing_run_id=${latestRun.processing_run_id}` : "/admin/review",
+          tone: findingCount > 0 ? "warn" : "",
+        })}
+      </div>
+      <div class="split">
+        <section class="dashboard-panel">
+          <header class="dashboard-panel-head">
+            <h2>Recent activity</h2>
+          </header>
+          <div class="dashboard-panel-body">
+            ${recentActivity({ files, runs, publications })}
+          </div>
+        </section>
+        <section class="dashboard-panel">
+          <header class="dashboard-panel-head">
+            <h2>Environment</h2>
+          </header>
+          <div class="dashboard-panel-body">
+            ${
+              health
+                ? definitionList([
+                    ["API liveness", displayCell(health.status)],
+                    ["Application", displayCell(health.application)],
+                    ["Environment", displayCell(health.environment)],
+                  ])
+                : emptyState("Health is unavailable.")
+            }
+            ${
+              ready
+                ? definitionList([
+                    ["Readiness", displayCell(ready.status)],
+                    ["Database", displayCell(ready.database && ready.database.status)],
+                    ["Source storage", displayCell(ready.storage && ready.storage.status)],
+                    ["Worker", displayCell(ready.worker)],
+                  ])
+                : html`<div class="muted">Readiness is unavailable. Public /health is liveness only and does not prove the database.</div>`
+            }
+            ${session ? html`<div class="muted">Signed in as ${session.subject} (${session.role}).</div>` : ""}
+            <div class="muted">
+              Latest upload:
+              ${latestFile
+                ? html`<a href="/admin/source-files/${latestFile.source_file_id}">${latestFile.original_filename}</a>`
+                : fileCount === 0
+                  ? "none yet"
+                  : "unknown"}.
+            </div>
+            ${runCount != null ? html`<div class="muted">${runCount} processing run(s) recorded.</div>` : ""}
+          </div>
+        </section>
+      </div>
+    </section>
   `;
 }
-
 export function uploadCenterView({
   session,
   query,
@@ -1101,6 +1291,8 @@ export function uploadCenterView({
   const sizeLine = sizeHint
     ? html`<p class="muted">Maximum workbook size: ${sizeHint} (${Number(uploadMaxBytes)} bytes). Raw, Logic, and Labels share this API limit.</p>`
     : "";
+  const uploadItems = uploadResult && Array.isArray(uploadResult.items) ? uploadResult.items : [];
+  const hasFiles = uploadItems.length > 0;
   return html`
     ${errorBanner(error)}
     <div data-upload-status-host="true">${rawUploadBanner(uploadResult)}</div>
@@ -1121,12 +1313,12 @@ export function uploadCenterView({
     ${pageHeader({
       eyebrow: "Ingest",
       title: "Upload Center",
-      description: "Raw data feeds processing. Logic and Labels configure processing. None of these uploads publish a report.",
+      description: "Upload raw data workbooks, configure Logic and Labels processing, and prepare for review and publication. Uploads do not publish automatically.",
     })}
     ${!(session && session.client_id) ? clientScopeBar(scopeQuery, "/admin/upload") : ""}
     ${workflowSteps([
-      { label: "Select file", state: "done" },
-      { label: "Upload", state: life === "idle" ? "current" : "done" },
+      { label: "Select Files", state: hasFiles ? "done" : "current" },
+      { label: "Upload", state: life === "idle" && hasFiles ? "current" : hasFiles && (life === "queued" || life === "processing" || life === "succeeded" || life === "failed") ? "done" : "" },
       {
         label: "Validate",
         state:
@@ -1140,71 +1332,107 @@ export function uploadCenterView({
         label: "Process",
         state: life === "processing" ? "current" : life === "succeeded" ? "done" : "",
       },
-      { label: "Review", state: "" },
-      { label: "Publish", state: "" },
+      { label: "Review & Publish", state: "" },
     ])}
-    <div class="upload-grid">
-      <section class="upload-card">
-        <p class="eyebrow">Raw data</p>
-        <h2>Source dataset</h2>
-        <p class="purpose">
-          Web-Engage workbook used for staging and processing. Expected sheet:
-          Web-Engage Raw. You may upload one file or several files for the same
-          period. Publication remains false until you publish a run.
-        </p>
-        ${sizeLine}
-        <form class="stack" data-upload-form="true">
-          ${filePicker({ name: "files", multiple: true, label: "Workbook(s) (.xlsx)" })}
-          ${clientField(session, { query: scopeQuery })}
-          <label>
-            <span><input name="force" type="checkbox" /> Re-ingest a known file</span>
-          </label>
-          <button type="submit" ${life === "queued" || life === "processing" ? raw(" disabled") : ""}>
-            ${life === "queued" || life === "processing" ? "Processing…" : "Upload Raw Data"}
-          </button>
-        </form>
-        ${
-          batch
-            ? html`<p class="muted">Staging status: ${badge(batch.status)}. Staged ${displayCell(batch.row_count_staged)}, rejected ${displayCell(batch.row_count_rejected)}${uploadResult && uploadResult.file_count > 1 ? html` · ${uploadResult.file_count} files` : ""}.</p>`
-            : ""
-        }
+    <div class="upload-center-grid">
+      <section class="upload-center-main">
+        <section class="upload-dropzone" data-upload-dropzone="true">
+          <div class="dropzone-content">
+            ${icon("upload")}
+            <h2>Source dataset</h2>
+            <p class="purpose">
+              Drag and drop supported Excel raw files (.xlsx) here, or click to browse.
+            </p>
+            <p class="purpose">
+              Select one or more supported Excel raw files for the same reporting period.
+              Files will be validated and processed before they can be published.
+              Required worksheet: Web-Engage Raw.
+            </p>
+            ${sizeLine}
+            <form class="stack" data-upload-form="true" data-dropzone-form="true">
+              ${filePicker({ name: "files", multiple: true, label: "Browse Files" })}
+              ${clientField(session, { query: scopeQuery })}
+              <label>
+                <span><input name="force" type="checkbox" /> Re-ingest a known file</span>
+              </label>
+              <div class="selected-files" data-selected-files ${hasFiles ? "" : raw(" hidden")}>
+                <header class="selected-files-header">
+                  <h3>Selected files (<span data-file-count>${uploadItems.length}</span>)</h3>
+                  ${hasFiles ? html`<button type="button" class="btn-ghost btn-sm" data-remove-all-files>Remove All</button>` : ""}
+                </header>
+                <table class="selected-files-table">
+                  <thead>
+                    <tr>
+                      <th scope="col">File</th>
+                      <th scope="col">Size</th>
+                      <th scope="col">Status</th>
+                      <th scope="col"><label class="visually-hidden">Remove</label></th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    ${uploadItems.map((item, idx) => html`
+                      <tr data-file-index="${idx}">
+                        <td>${item.original_filename || item.filename || "Unknown"}</td>
+                        <td>${displayCell(item.byte_size)}</td>
+                        <td>${badge(item.status || "pending")}</td>
+                        <td><button type="button" class="icon-btn" data-remove-file="${idx}" aria-label="Remove ${item.original_filename || item.filename || "file"}">${icon("x")}</button></td>
+                      </tr>
+                    `)}
+                  </tbody>
+                </table>
+              </div>
+              <div class="upload-actions">
+                <button type="submit" class="btn-primary" ${life === "queued" || life === "processing" || !hasFiles ? raw(" disabled") : ""}>
+                  ${life === "queued" || life === "processing" ? "Processing…" : "Upload Selected Files"}
+                </button>
+                ${batch ? html`<button type="button" class="btn-secondary" data-validate-upload ${life === "queued" || life === "processing" ? raw(" disabled") : ""}>Validate</button>` : ""}
+              </div>
+              ${batch
+                ? html`<p class="muted">Staging status: ${badge(batch.status)}. Staged ${displayCell(batch.row_count_staged)}, rejected ${displayCell(batch.row_count_rejected)}${uploadResult && uploadResult.file_count > 1 ? html` · ${uploadResult.file_count} files` : ""}.</p>`
+                : ""
+              }
+            </form>
+          </div>
+        </section>
       </section>
-      <section class="upload-card">
-        <p class="eyebrow">Logic</p>
-        <h2>Business processing</h2>
-        <p class="purpose">
-          Campaign mapping workbook. Valid files become a draft version. Activation is explicit.
-        </p>
-        <p class="muted">
-          Current version:
-          ${logicActive ? html`${logicActive.version_label} (${logicActive.status})` : "Packaged fallback"}
-        </p>
-        <form class="stack" data-catalog-upload-form="true">
-          <input type="hidden" name="kind" value="logic" />
-          ${filePicker({})}
-          ${clientField(session, { query: scopeQuery })}
-          <button type="submit">Upload Logic</button>
-        </form>
-        <p><a href="/admin/logic">Open Logic management</a></p>
-      </section>
-      <section class="upload-card">
-        <p class="eyebrow">Labels</p>
-        <h2>Business mapping</h2>
-        <p class="purpose">
-          Filter Logic 1_2 workbook. Labels affect processing after activation.
-        </p>
-        <p class="muted">
-          Current version:
-          ${labelsActive ? html`${labelsActive.version_label} (${labelsActive.status})` : "Packaged fallback"}
-        </p>
-        <form class="stack" data-catalog-upload-form="true">
-          <input type="hidden" name="kind" value="labels" />
-          ${filePicker({})}
-          ${clientField(session, { query: scopeQuery })}
-          <button type="submit">Upload Labels</button>
-        </form>
-        <p><a href="/admin/labels">Open Labels management</a></p>
-      </section>
+      <aside class="upload-center-sidebar">
+        <section class="upload-config-card">
+          <p class="eyebrow">Logic</p>
+          <h2>Business processing</h2>
+          <p class="purpose">
+            Campaign mapping workbook. Valid files become a draft version. Activation is explicit.
+          </p>
+          <p class="muted">
+            Current version:
+            ${logicActive ? html`${logicActive.version_label} (${logicActive.status})` : "Packaged fallback"}
+          </p>
+          <form class="stack" data-catalog-upload-form="true">
+            <input type="hidden" name="kind" value="logic" />
+            ${filePicker({})}
+            ${clientField(session, { query: scopeQuery })}
+            <button type="submit">Upload Logic</button>
+          </form>
+          <p><a href="/admin/logic">Open Logic management</a></p>
+        </section>
+        <section class="upload-config-card">
+          <p class="eyebrow">Labels</p>
+          <h2>Business mapping</h2>
+          <p class="purpose">
+            Filter Logic 1_2 workbook. Labels affect processing after activation.
+          </p>
+          <p class="muted">
+            Current version:
+            ${labelsActive ? html`${labelsActive.version_label} (${labelsActive.status})` : "Packaged fallback"}
+          </p>
+          <form class="stack" data-catalog-upload-form="true">
+            <input type="hidden" name="kind" value="labels" />
+            ${filePicker({})}
+            ${clientField(session, { query: scopeQuery })}
+            <button type="submit">Upload Labels</button>
+          </form>
+          <p><a href="/admin/labels">Open Labels management</a></p>
+        </section>
+      </aside>
     </div>
   `;
 }
@@ -2093,8 +2321,8 @@ export function downloadsView({ session, query, logicPage, labelsPage, currentPu
         ${companyWorkbookButton()}
         ${companyRefreshableWorkbookButton()}
         ${companyConsolidatedWorkbookButton()}
-        <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
-        <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
+        <button type="button" class="btn-secondary" data-download-published="csv">Download CSV</button>
+        <button type="button" class="btn-secondary" data-download-published="xlsx">Download XLSX</button>
       </p>
       ${refreshableDownloadErrorHost()}
     </section>
@@ -2109,13 +2337,13 @@ export function downloadsView({ session, query, logicPage, labelsPage, currentPu
                 html`<span class="mono">${item.version_label}</span>`,
                 badge(item.status),
                 String(item.row_count),
-                html`<button type="button" class="secondary" data-catalog-download="${item.version_id}" data-catalog-kind="logic" data-catalog-client="${defaultClient}">Download Logic</button>`,
+                html`<button type="button" class="btn-secondary" data-catalog-download="${item.version_id}" data-catalog-kind="logic" data-catalog-client="${defaultClient}">Download Logic</button>`,
               ]),
             )
           : emptyState("No uploaded Logic versions yet.")
       }
       <p>
-        <button type="button" class="secondary" data-catalog-download="packaged" data-catalog-kind="logic" data-catalog-client="${defaultClient}">
+        <button type="button" class="btn-secondary" data-catalog-download="packaged" data-catalog-kind="logic" data-catalog-client="${defaultClient}">
           Download packaged Logic
         </button>
       </p>
@@ -2131,13 +2359,13 @@ export function downloadsView({ session, query, logicPage, labelsPage, currentPu
                 html`<span class="mono">${item.version_label}</span>`,
                 badge(item.status),
                 String(item.row_count),
-                html`<button type="button" class="secondary" data-catalog-download="${item.version_id}" data-catalog-kind="labels" data-catalog-client="${defaultClient}">Download Labels</button>`,
+                html`<button type="button" class="btn-secondary" data-catalog-download="${item.version_id}" data-catalog-kind="labels" data-catalog-client="${defaultClient}">Download Labels</button>`,
               ]),
             )
           : emptyState("No uploaded Labels versions yet.")
       }
       <p>
-        <button type="button" class="secondary" data-catalog-download="packaged" data-catalog-kind="labels" data-catalog-client="${defaultClient}">
+        <button type="button" class="btn-secondary" data-catalog-download="packaged" data-catalog-kind="labels" data-catalog-client="${defaultClient}">
           Download packaged Labels
         </button>
       </p>
@@ -4464,6 +4692,165 @@ export function overviewHostLoading() {
   `;
 }
 
+export function loadingOverviewShell() {
+  return html`
+    <section class="overview-workspace" data-overview-shell="true">
+      <header class="overview-hero workspace-chrome" data-workspace-chrome="true">
+        ${pageHeader({
+          title: "Overview",
+          description: "Analytical workspace for published history.",
+          actions: askAiControl(new URLSearchParams()),
+        })}
+        <div class="overview-host" data-overview-context-host-loading="true">${overviewHostLoading()}</div>
+      </header>
+      <div class="overview-sticky-scope">
+      <section class="overview-section overview-section-filters" data-overview-section="filters">
+        <header class="overview-section-head">
+          <div>
+            <h2>Filters & analytical context</h2>
+            <p class="muted">Period, comparison, and allowlisted dimensions for this workspace.</p>
+          </div>
+          <div class="overview-section-meta">
+            <div class="overview-host" data-overview-period-host="true">${overviewHostLoading()}</div>
+            <div class="overview-host" data-overview-comparison-host="true">${overviewHostLoading()}</div>
+          </div>
+        </header>
+      </section>
+      <div class="overview-filter-dock" data-overview-filter-dock="true">
+        <div class="overview-host" id="overview-filter-bar" data-overview-filter-bar-loading="true">${overviewHostLoading()}</div>
+      </div>
+      <div class="overview-host overview-filter-compact-host" data-overview-filter-compact-host-loading="true">${overviewHostLoading()}</div>
+      <section class="overview-section overview-section-kpis" data-overview-section="kpis">
+        <header class="overview-section-head">
+          <div>
+            <h2>Key Performance Indicators</h2>
+            <p class="muted">Published-history KPIs for the current filters.</p>
+          </div>
+        </header>
+        <div class="metrics overview-host" data-overview-kpis-host="true">${overviewHostLoading()}</div>
+      </section>
+      <div class="overview-stack">
+        <div class="overview-host" data-overview-explorer-host-loading="true">${overviewHostLoading()}</div>
+        <div class="overview-host" data-overview-trends-host-loading="true">${overviewHostLoading()}</div>
+        <div class="overview-host" data-overview-insights-host-loading="true">${overviewHostLoading()}</div>
+        <div class="overview-host" data-overview-anomalies-host-loading="true">${overviewHostLoading()}</div>
+        <section class="overview-section overview-section-tools" data-overview-section="tools">
+          <header class="overview-section-head">
+            <div>
+              <h2>Analysis Tools</h2>
+              <p class="muted">Continue analysis with Ask, Saved Views and Export.</p>
+            </div>
+          </header>
+          <div class="overview-tools-body">
+            <div class="overview-host" data-overview-ask-host-loading="true">${overviewHostLoading()}</div>
+            <div class="overview-host" data-overview-saved-host-loading="true">${overviewHostLoading()}</div>
+            <article class="tool-card" data-overview-export-card="true">
+              <header class="tool-card-head">
+                ${icon("downloads")}
+                <span>
+                  <span class="overview-kicker">Export CSV</span>
+                  <span class="overview-lede">Download the current analytical workspace as CSV.</span>
+                </span>
+              </header>
+              <button type="button" class="btn-secondary" data-overview-export="csv" disabled>Export CSV</button>
+            </article>
+          </div>
+        </section>
+      </div>
+      <div class="overview-host" data-overview-drill-host-loading="true"></div>
+      </div>
+    </section>
+  `;
+}
+
+
+export function loadingStudioShell() {
+  return html`
+    <section class="studio-workspace" data-studio-shell="true" aria-busy="true">
+      <p class="sr-only" role="status" aria-live="polite">Loading Analytics Studio.</p>
+      <header class="studio-header workspace-chrome" data-studio-header="true">
+        ${pageHeader({
+          eyebrow: "Analytics Studio",
+          title: "Performance canvas",
+          description: "Full-width published-history analysis. Shared filters with Overview. KPI values come from the same overview contract.",
+        })}
+        <p class="studio-context" data-studio-context="true">
+          <span data-studio-context-loading="true">Loading published-history analysis.</span>
+        </p>
+      </header>
+      <div class="studio-body">
+        <aside class="studio-filter-rail" data-studio-filter-rail="true" aria-labelledby="studio-filters-title">
+          <header class="studio-rail-head">
+            <h2 id="studio-filters-title">Filters</h2>
+            <p class="muted" id="studio-filters-desc">Same D2 period, comparison, and dimension keys as Overview.</p>
+          </header>
+          <div class="studio-filter-host" data-studio-filter-bar="true">${studioZoneLoading("Loading filters.")}</div>
+        </aside>
+        <div class="studio-canvas" data-studio-canvas="true" role="region" aria-label="Studio visuals">
+          <section class="studio-kpi-zone" data-studio-kpi-zone="true" aria-labelledby="studio-kpi-title" aria-describedby="studio-kpi-desc">
+            <header class="studio-zone-head">
+              <h2 id="studio-kpi-title">KPI band</h2>
+              <p class="muted" id="studio-kpi-desc">Eight published-history KPIs for the current Studio filters. Values are not computed in the browser.</p>
+            </header>
+            <div class="studio-kpi-slots" data-studio-kpis-host="true">${studioZoneLoading("Loading KPI band.")}</div>
+          </section>
+          <section class="studio-zone studio-stacked-zone" data-studio-zone="stacked" data-studio-stacked-zone="true" aria-labelledby="studio-stacked-title" aria-describedby="studio-stacked-desc">
+            <header class="studio-zone-head">
+              <h3 id="studio-stacked-title">Stacked breakdown</h3>
+              <p class="muted" id="studio-stacked-desc">Cost by channel. Published-history series from the trends contract.</p>
+            </header>
+            <div class="studio-stacked-body">${studioZoneLoading("Loading stacked breakdown.")}</div>
+          </section>
+          <section class="studio-zone studio-share-zone" data-studio-zone="share" data-studio-share-zone="true" aria-labelledby="studio-share-title" aria-describedby="studio-share-desc">
+            <header class="studio-zone-head">
+              <h3 id="studio-share-title">Channel share</h3>
+              <p class="muted" id="studio-share-desc">Channel share of cost. Published-history series from the trends contract.</p>
+            </header>
+            <div class="studio-share-body">${studioZoneLoading("Loading channel share.")}</div>
+          </section>
+          <div class="studio-canvas-grid">
+            <section class="studio-zone studio-trend-zone" data-studio-zone="trend" data-studio-trend-zone="true" aria-labelledby="studio-trend-title" aria-describedby="studio-trend-desc">
+              <header class="studio-zone-head">
+                <h3 id="studio-trend-title">Trend</h3>
+                <p class="muted" id="studio-trend-desc">Trend by period. Published-history series from the trends contract.</p>
+              </header>
+              <div class="studio-trend-body">${studioZoneLoading("Loading trend.")}</div>
+            </section>
+            <section class="studio-zone studio-mix-zone" data-studio-zone="mix" data-studio-mix-zone="true" aria-labelledby="studio-mix-title" aria-describedby="studio-mix-desc">
+              <header class="studio-zone-head">
+                <h3 id="studio-mix-title">Distribution</h3>
+                <p class="muted" id="studio-mix-desc">Metric by dimension. Published-history series from the explorer contract.</p>
+              </header>
+              <div class="studio-mix-body">${studioZoneLoading("Loading distribution.")}</div>
+            </section>
+            <section class="studio-zone studio-combo-zone" data-studio-zone="combo" data-studio-combo-zone="true" aria-labelledby="studio-combo-title" aria-describedby="studio-combo-desc">
+              <header class="studio-zone-head">
+                <h3 id="studio-combo-title">Dual-axis trend</h3>
+                <p class="muted" id="studio-combo-desc">Primary and secondary trend overlay. Published-history series from the trends contract.</p>
+              </header>
+              <div class="studio-combo-body">${studioZoneLoading("Loading dual-axis trend.")}</div>
+            </section>
+            <section class="studio-zone studio-detail-zone" data-studio-zone="detail" data-studio-detail-zone="true" aria-labelledby="studio-detail-title" aria-describedby="studio-detail-desc">
+              <header class="studio-zone-head">
+                <h3 id="studio-detail-title">Detail table</h3>
+                <p class="muted" id="studio-detail-desc">Published-history rows from the explorer contract.</p>
+              </header>
+              <div class="studio-detail-body">${studioZoneLoading("Loading detail table.")}</div>
+            </section>
+            <section class="studio-zone studio-narrative-zone" data-studio-zone="narrative" data-studio-narrative-zone="true" aria-labelledby="studio-narrative-title" aria-describedby="studio-narrative-desc">
+              <header class="studio-zone-head">
+                <h3 id="studio-narrative-title">Insights & Anomalies</h3>
+                <p class="muted" id="studio-narrative-desc">Automated insights and anomaly detection from published history.</p>
+              </header>
+              <div class="studio-narrative-body">${studioZoneLoading("Loading narrative.")}</div>
+            </section>
+          </div>
+        </div>
+      </div>
+    </section>
+  `;
+}
+
 function overviewHostOrRetry(name, error, content) {
   return error && error.status !== 422 ? overviewSectionRetry(name, error) : content;
 }
@@ -4601,8 +4988,8 @@ export function clientHomeView({ session, currentPublication, publications }) {
         <button type="button" data-download-client-report="current">Download Client Report</button>
         ${companyRefreshableWorkbookButton()}
         ${companyConsolidatedWorkbookButton()}
-        <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
-        <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
+        <button type="button" class="btn-secondary" data-download-published="csv">Download CSV</button>
+        <button type="button" class="btn-secondary" data-download-published="xlsx">Download XLSX</button>
       </p>
       ${refreshableDownloadErrorHost()}
       <p class="muted">The Client Report is the nine-sheet static snapshot of the current publication. The Consolidated Workbook is also static, but it already contains every successfully processed month currently available for this company in one file, so it never needs Excel Refresh All. The refreshable workbook uses the same pivots and follows cumulative published history after Excel Refresh All. It includes the current session token for Refresh All (not a permanent secret). Historical files do not update themselves.</p>
@@ -4631,7 +5018,7 @@ export function clientHomeView({ session, currentPublication, publications }) {
   `;
 }
 
-function studioZoneLoading(label) {
+export function studioZoneLoading(label) {
   return html`
     <div class="studio-zone-status is-loading" data-studio-loading="true" role="status">
       <span class="sr-only">${label}</span>
@@ -4660,7 +5047,7 @@ function studioReservedZone({ zone, title, description }) {
   `;
 }
 
-function studioTrendZone({ query, trend, trendError, loading }) {
+export function studioTrendZone({ query, trend, trendError, loading }) {
   const selection = (trend && trend.selection) || {};
   const metric = selection.metric || "total_cost";
   const grain = selection.grain || "day";
@@ -4784,7 +5171,7 @@ function studioDonutChart({ slices, kind, metricLabel }) {
   `;
 }
 
-function studioDistributionZone({ query, mix, mixError, loading }) {
+export function studioDistributionZone({ query, mix, mixError, loading }) {
   const selection = (mix && mix.selection) || {};
   const metric = (mix && mix.metric) || {};
   const dimension = selection.dimension || "campaign_id";
@@ -4972,7 +5359,7 @@ function studioStackedBarChart(trend) {
   `;
 }
 
-function studioStackedBarZone({ query, stack, stackError, loading }) {
+export function studioStackedBarZone({ query, stack, stackError, loading }) {
   const selection = (stack && stack.selection) || {};
   const metric = (stack && stack.metric) || {};
   const metricLabel = metric.label || "Total Cost";
@@ -5109,7 +5496,7 @@ function studioShareStackedBarChart(trend) {
   `;
 }
 
-function studioShareStackedZone({ query, stack, stackError, loading }) {
+export function studioShareStackedZone({ query, stack, stackError, loading }) {
   const selection = (stack && stack.selection) || {};
   const metric = (stack && stack.metric) || {};
   const metricLabel = metric.label || "Total Cost";
@@ -5262,7 +5649,7 @@ function studioComboChart(trend) {
   `;
 }
 
-function studioComboZone({ query, trend, trendError, loading }) {
+export function studioComboZone({ query, trend, trendError, loading }) {
   const selection = (trend && trend.selection) || {};
   const primary = (trend && trend.metric) || {};
   const secondary = (trend && trend.secondary) || {};
@@ -5311,7 +5698,7 @@ function studioComboZone({ query, trend, trendError, loading }) {
   `;
 }
 
-function studioDetailZone({ query, mix, mixError, loading }) {
+export function studioDetailZone({ query, mix, mixError, loading }) {
   const selection = (mix && mix.selection) || {};
   const metric = (mix && mix.metric) || {};
   const dimension = selection.dimension || "campaign_id";
@@ -5492,7 +5879,7 @@ function studioNarrativeAnomalies({ query, anomalies, anomaliesError }) {
   `;
 }
 
-function studioNarrativeZone({ query, insights, insightsError, anomalies, anomaliesError, loading }) {
+export function studioNarrativeZone({ query, insights, insightsError, anomalies, anomaliesError, loading }) {
   let body;
   if (loading) {
     body = studioZoneLoading("Loading narrative.");
@@ -5607,8 +5994,8 @@ export function clientFactListView(model) {
       <button type="button" data-download-client-report="current">Download Client Report</button>
       ${companyRefreshableWorkbookButton()}
       ${companyConsolidatedWorkbookButton()}
-      <button type="button" class="secondary" data-download-published="csv">Download CSV</button>
-      <button type="button" class="secondary" data-download-published="xlsx">Download XLSX</button>
+      <button type="button" class="btn-secondary" data-download-published="csv">Download CSV</button>
+      <button type="button" class="btn-secondary" data-download-published="xlsx">Download XLSX</button>
     </p>
     ${refreshableDownloadErrorHost()}
     ${factListView({
@@ -5770,10 +6157,10 @@ export function catalogView({
                     }
                     ${
                       item.status === "active"
-                        ? html`<button type="button" class="secondary" data-catalog-deactivate="${item.version_id}" data-catalog-kind="${selectedKind}" data-catalog-client="${defaultClient}" data-catalog-label="${item.version_label}">Deactivate Version</button>`
+                        ? html`<button type="button" class="btn-secondary" data-catalog-deactivate="${item.version_id}" data-catalog-kind="${selectedKind}" data-catalog-client="${defaultClient}" data-catalog-label="${item.version_label}">Deactivate Version</button>`
                         : ""
                     }
-                    <button type="button" class="secondary" data-catalog-download="${item.version_id}" data-catalog-kind="${selectedKind}" data-catalog-client="${defaultClient}">Download</button>
+                    <button type="button" class="btn-secondary" data-catalog-download="${item.version_id}" data-catalog-kind="${selectedKind}" data-catalog-client="${defaultClient}">Download</button>
                   </div>
                 `,
               ]),
@@ -5781,7 +6168,7 @@ export function catalogView({
           : emptyState("No uploaded versions yet. The packaged catalog remains in use.")
       }
       <p>
-        <button type="button" class="secondary" data-catalog-download="packaged" data-catalog-kind="${selectedKind}" data-catalog-client="${defaultClient}">
+        <button type="button" class="btn-secondary" data-catalog-download="packaged" data-catalog-kind="${selectedKind}" data-catalog-client="${defaultClient}">
           Download packaged ${selectedKind}
         </button>
       </p>

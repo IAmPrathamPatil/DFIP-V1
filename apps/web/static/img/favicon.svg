@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" width="32" height="32" fill="none">
+  <defs>
+    <linearGradient id="dfipGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="50%" stop-color="#0088ff"/>
+      <stop offset="100%" stop-color="#1a3a8c"/>
+    </linearGradient>
+    <linearGradient id="dfipGradientAlt" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00ffcc"/>
+      <stop offset="100%" stop-color="#0088ff"/>
+    </linearGradient>
+  </defs>
+  
+  <!-- Background circle for favicon visibility -->
+  <circle cx="16" cy="16" r="15" fill="url(#dfipGradient)" opacity="0.15"/>
+  
+  <!-- Outer flow ring -->
+  <path d="M16 3 C8.3 3 3 8.3 3 16 s5.3 13 13 13 13-5.3 13-13 S23.7 3 16 3" 
+        stroke="url(#dfipGradient)" stroke-width="1.5" fill="none" stroke-linecap="round" 
+        stroke-dasharray="6 4"/>
+  
+  <!-- Inner flow ring -->
+  <path d="M16 7 C11 7 7 11 7 16 s4 9 9 9 9-4 9-9 S21 7 16 7" 
+        stroke="url(#dfipGradientAlt)" stroke-width="1.2" fill="none" stroke-linecap="round" 
+        stroke-dasharray="4 3" opacity="0.7"/>
+  
+  <!-- Central data nodes -->
+  <circle cx="16" cy="9" r="2" fill="url(#dfipGradient)"/>
+  <circle cx="23" cy="16" r="2" fill="url(#dfipGradientAlt)"/>
+  <circle cx="16" cy="23" r="2" fill="url(#dfipGradient)"/>
+  <circle cx="9" cy="16" r="2" fill="url(#dfipGradientAlt)"/>
+  <circle cx="16" cy="16" r="2.5" fill="url(#dfipGradient)"/>
+  
+  <!-- Connecting lines -->
+  <g stroke="url(#dfipGradient)" stroke-width="0.8" fill="none" opacity="0.6" stroke-linecap="round">
+    <path d="M16 11 L16 13.5"/>
+    <path d="M16 18.5 L16 21"/>
+    <path d="M11 16 L13.5 16"/>
+    <path d="M18.5 16 L21 16"/>
+  </g>
+</svg>

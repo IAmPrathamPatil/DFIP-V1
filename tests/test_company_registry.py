@@ -32,9 +32,9 @@ from test_p5_api import JWT_SECRET, make_settings
 from test_p9_authz import _error
 
 PUBLISHER_PASSWORD = "local-publisher-pass"
-CLIENT_PASSWORD = "local-client-pass"
+CLIENT_PASSWORD = "client-pass"
 PUBLISHER2_PASSWORD = "local-publisher2-pass"
-CLIENT2_PASSWORD = "local-client2-pass"
+CLIENT2_PASSWORD = "client2-pass"
 READER_PASSWORD = "local-reader-pass"
 SOLO_PASSWORD = "local-solo-pass"
 ITERATIONS = 1000
@@ -297,7 +297,7 @@ def test_spa_company_registry_is_publisher_only() -> None:
     client_js = (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
     assert "admin-companies" in app_js
     assert "companiesView" in views
-    assert "data-company-registry" in views
+    assert "data-companies-shell" in views
     assert "data-company-rename-form" in views
     assert "/admin/companies" in components
     assert "listClients" in client_js
@@ -307,7 +307,7 @@ def test_spa_company_registry_is_publisher_only() -> None:
     assert "createClientUser" in client_js
     assert "Add Company" in views
     assert "data-company-create-form" in views
-    assert "data-company-onboarding" in views
+    assert "data-companies-onboarding" in views
     assert "data-company-client-form" in views
 
 

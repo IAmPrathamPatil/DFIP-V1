@@ -22,6 +22,8 @@ export function toHtml(value) {
 }
 
 export const MIN_PASSWORD_LENGTH = 12;
+export const CLIENT_PASSWORD_MIN_LENGTH = 6;
+export const CLIENT_PASSWORD_MAX_LENGTH = 12;
 
 export function formatByteLimit(bytes) {
   const n = Number(bytes);

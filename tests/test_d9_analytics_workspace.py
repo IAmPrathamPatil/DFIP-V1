@@ -448,9 +448,10 @@ def test_same_route_overview_partial_refresh_contract() -> None:
         "data-overview-ask-host",
         "data-overview-drill-host",
     ):
-        assert views.count(f'{host}="true"') == 1
+        shell = views[views.index("export function clientOverviewView") : views.index("export function clientHomeView")]
+        assert shell.count(f'{host}="true"') == 1
         assert host in overview_refresh.replace("_", "-") or host.replace("data-overview-", "[data-overview-")
-        assert f"[{host}]" in app or f'{host}="true"' in views
+        assert f"[{host}]" in app or f'{host}="true"' in shell
     assert "data-overview-retry" in views
     assert "data-overview-loading" in app
     assert "overview-host[aria-busy" in css
@@ -469,9 +470,10 @@ def test_same_route_overview_partial_refresh_contract() -> None:
     assert "data-drill-unauthorized" in views
     assert "unauthorizedView()" not in overview_refresh
 
-
 def test_overview_host_selectors_are_unique() -> None:
     views = (WEB_STATIC / "js" / "views.js").read_text(encoding="utf-8")
+    shell = views[views.index("export function clientOverviewView") : views.index("export function clientHomeView")]
+
     hosts = (
         "data-overview-context-host",
         "data-overview-saved-host",
@@ -486,7 +488,7 @@ def test_overview_host_selectors_are_unique() -> None:
         "data-overview-comparison-host",
     )
     for host in hosts:
-        assert views.count(f'{host}="true"') == 1
+        assert shell.count(f'{host}="true"') == 1
     inner = (
         "data-overview-explorer",
         "data-overview-insights",
@@ -550,13 +552,15 @@ def test_same_route_busy_ask_and_kpi_failure_contracts() -> None:
 def test_same_route_inactive_company_reloads_session() -> None:
     app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
     start = app.index('route.name === "client-overview" &&')
-    block = app[start : app.index("overviewRefreshSeq += 1")]
+    # Find the LAST occurrence of overviewRefreshSeq += 1 after the route handler
+    end_idx = app.rindex("overviewRefreshSeq += 1", start)
+    block = app[start:end_idx]
     assert "refreshOverviewInPlace(query)" in block
     assert "isInactiveCompanyError(error)" in block
     assert 'overviewClientId = ""' in block
     assert "unauthorizedView()" not in block
     assert "loadSession" not in block
-    after = app[app.index("overviewRefreshSeq += 1") : app.index("async function viewFor(")]
+    after = app[end_idx:app.index("async function viewFor(")]
     assert "await loadSession()" in after
     assert "needsCompanySelection(session)" in after
 
@@ -1311,5 +1315,116 @@ def test_d4_trend_tooltip_uses_existing_point_values() -> None:
     spark = (WEB_STATIC / "js" / "sparkline.js").read_text(encoding="utf-8")
     assert "data-trend-tooltip" not in spark
     assert "kpi-sparkline" in spark
+
+
+def test_studio_progressive_loading_shell_first() -> None:
+    """Test that Studio shell renders before secondary requests settle."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    views = (WEB_STATIC / "js" / "views.js").read_text(encoding="utf-8")
+
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # Initial shell renders before KPIs
+    assert "render(loadingStudioShell()" in studio_refresh
+
+    # KPI fetch happens, then shell with KPIs renders
+    assert "getOverviewKpis" in studio_refresh
+    assert "studio-kpis-ready" in studio_refresh
+    assert "render(clientStudioView(" in studio_refresh
+    assert "studio-shell-ready" in studio_refresh
+
+    # Only then secondary requests fire
+    assert "getOverviewTrends" in studio_refresh
+    assert "getOverviewExplorer" in studio_refresh
+    assert "getOverviewInsights" in studio_refresh
+    assert "getOverviewAnomalies" in studio_refresh
+
+
+def test_studio_kpis_render_before_secondary() -> None:
+    """Test that KPI data renders while secondary requests are still pending."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # KPI result used to render Studio view with data
+    assert "kpiResult" in studio_refresh or "kpiData" in studio_refresh
+
+    # Secondary jobs defined after KPI render
+    kpi_render_idx = studio_refresh.index("studio-shell-ready")
+    secondary_idx = studio_refresh.index("const secondaryJobs =")
+    assert kpi_render_idx < secondary_idx
+
+
+def test_studio_fast_section_renders_independently() -> None:
+    """Test that each secondary section updates independently on settle."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # Each job has its own onSuccess/onError callbacks
+    assert "onSuccess:" in studio_refresh
+    assert "onError:" in studio_refresh
+
+    # setStudioHost called per section (5 secondary jobs)
+    assert studio_refresh.count("setStudioHost(") >= 5
+
+    # Each section mapped to correct host
+    assert '[data-studio-trend-zone]' in studio_refresh
+    assert '[data-studio-mix-zone]' in studio_refresh
+    assert '[data-studio-stacked-zone]' in studio_refresh
+    assert '[data-studio-share-zone]' in studio_refresh
+    assert '[data-studio-narrative-zone]' in studio_refresh
+
+
+def test_studio_section_failure_does_not_block_others() -> None:
+    """Test that a failed section doesn't prevent successful sections from rendering."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # Errors caught per-job and passed to onError (5 secondary jobs)
+    assert studio_refresh.count("onError:") >= 5
+
+    # Each onError calls setStudioHost independently
+    # Auth/inactive-company errors still propagate
+    assert "error.status === 401" in studio_refresh
+    assert "isInactiveCompanyError" in studio_refresh
+
+
+def test_studio_stale_response_guard() -> None:
+    """Test that stale responses after navigation/filter/company changes are ignored."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # stillCurrent() checked before every section update
+    assert studio_refresh.count("stillCurrent()") >= 10
+
+    # Auth errors still propagate and are not swallowed
+    assert "throw error" in studio_refresh
+
+
+def test_studio_distinct_trends_requests_preserved() -> None:
+    """Test that the two distinct Trends requests are preserved."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # Trend with secondary=revenue_inr
+    assert "secondary: \"revenue_inr\"" in studio_refresh
+
+    # Stack with breakdown=channel
+    assert "breakdown: \"channel\"" in studio_refresh
+
+    # Both use getOverviewTrends but with different params
+    assert studio_refresh.count("getOverviewTrends") == 2
+
+
+def test_studio_completion_mark_after_all_settled() -> None:
+    """Test that studio-complete mark fires after all secondary work settles."""
+    app = (WEB_STATIC / "js" / "app.js").read_text(encoding="utf-8")
+    studio_refresh = app[app.index("async function loadStudioProgressive(") : app.index("async function renderRoute(")]
+
+    # Promise.allSettled waits for all pending
+    assert "Promise.allSettled(pending)" in studio_refresh
+
+    # studio-complete mark inside .then()
+    assert "studio-complete" in studio_refresh
+    assert studio_refresh.index("studio-complete") > studio_refresh.index("Promise.allSettled(pending)")
 
 

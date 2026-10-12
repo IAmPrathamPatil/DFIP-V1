@@ -183,7 +183,7 @@ def create_client_user(
     require_company_active(directory, target)
     store = request.app.state.identity_store
     settings = request.app.state.settings
-    validate_new_account(settings, username=username, password=body.password)
+    validate_new_account(settings, username=username, password=body.password, for_client=True)
     try:
         identity = store.create_client_user(
             subject=username,

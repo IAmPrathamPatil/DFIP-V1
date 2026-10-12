@@ -1,0 +1,65 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" width="64" height="64" fill="none">
+  <defs>
+    <linearGradient id="dfipGradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#00d4ff"/>
+      <stop offset="50%" stop-color="#0088ff"/>
+      <stop offset="100%" stop-color="#1a3a8c"/>
+    </linearGradient>
+    <linearGradient id="dfipGradientAlt" x1="0%" y1="100%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#00ffcc"/>
+      <stop offset="100%" stop-color="#0088ff"/>
+    </linearGradient>
+    <filter id="glow" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="3" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+  
+  <!-- Background circle for favicon visibility -->
+  <circle cx="32" cy="32" r="30" fill="url(#dfipGradient)" opacity="0.15"/>
+  
+  <!-- Outer flow ring -->
+  <path d="M32 6 C17.6 6 6 17.6 6 32 s11.6 26 26 26 26-11.6 26-26 S46.4 6 32 6" 
+        stroke="url(#dfipGradient)" stroke-width="2.5" fill="none" stroke-linecap="round" 
+        stroke-dasharray="12 8" filter="url(#glow)"/>
+  
+  <!-- Inner flow ring -->
+  <path d="M32 14 C22.1 14 14 22.1 14 32 s8.1 18 18 18 18-8.1 18-18 S41.9 14 32 14" 
+        stroke="url(#dfipGradientAlt)" stroke-width="2" fill="none" stroke-linecap="round" 
+        stroke-dasharray="8 6" opacity="0.7" filter="url(#glow)"/>
+  
+  <!-- Central data nodes - three connected nodes representing data flow -->
+  <g filter="url(#glow)">
+    <!-- Top node -->
+    <circle cx="32" cy="18" r="4" fill="url(#dfipGradient)"/>
+    <!-- Right node -->
+    <circle cx="46" cy="32" r="4" fill="url(#dfipGradientAlt)"/>
+    <!-- Bottom node -->
+    <circle cx="32" cy="46" r="4" fill="url(#dfipGradient)"/>
+    <!-- Left node -->
+    <circle cx="18" cy="32" r="4" fill="url(#dfipGradientAlt)"/>
+    <!-- Center node -->
+    <circle cx="32" cy="32" r="5" fill="url(#dfipGradient)"/>
+  </g>
+  
+  <!-- Connecting lines between nodes -->
+  <g stroke="url(#dfipGradient)" stroke-width="1.5" fill="none" opacity="0.6" stroke-linecap="round">
+    <path d="M32 22 L32 27"/>
+    <path d="M32 37 L32 42"/>
+    <path d="M22 32 L27 32"/>
+    <path d="M37 32 L42 32"/>
+  </g>
+  
+  <!-- Subtle pulse rings on central node -->
+  <circle cx="32" cy="32" r="8" stroke="url(#dfipGradient)" stroke-width="1" fill="none" opacity="0.3">
+    <animate attributeName="r" values="8;12;8" dur="3s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.3;0;0.3" dur="3s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="32" cy="32" r="8" stroke="url(#dfipGradientAlt)" stroke-width="1" fill="none" opacity="0.2">
+    <animate attributeName="r" values="8;14;8" dur="4s" repeatCount="indefinite" begin="1s"/>
+    <animate attributeName="opacity" values="0.2;0;0.2" dur="4s" repeatCount="indefinite" begin="1s"/>
+  </circle>
+</svg>

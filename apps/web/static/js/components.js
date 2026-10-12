@@ -46,8 +46,8 @@ export function isNavCurrent(href, path) {
 function navItem(href, label, current, allowed, iconName) {
   if (!allowed) return "";
   const mark = isNavCurrent(href, current)
-    ? html`<a class="item" href="${href}" aria-current="page">${icon(iconName)}<span>${label}</span></a>`
-    : html`<a class="item" href="${href}">${icon(iconName)}<span>${label}</span></a>`;
+    ? html`<a class="item" href="${href}" aria-current="page" title="${label}" aria-label="${label}">${icon(iconName)}<span>${label}</span></a>`
+    : html`<a class="item" href="${href}" title="${label}" aria-label="${label}">${icon(iconName)}<span>${label}</span></a>`;
   return html`<li>${mark}</li>`;
 }
 
@@ -136,9 +136,41 @@ export function layout({ path, session, body }) {
   return html`
     <div class="shell">
       <button class="nav-backdrop" type="button" data-nav-close="true" aria-label="Close navigation"></button>
-      <nav class="sidebar nav" aria-label="Application">
+      <nav class="sidebar nav" id="sidebar-nav" aria-label="Application">
         <div class="brand-block">
-          <div class="brand-mark">DF</div>
+          <svg class="brand-mark" viewBox="0 0 64 64" width="32" height="32" aria-hidden="true" focusable="false">
+            <defs>
+              <linearGradient id="dfipGradientSidebar" x1="0%" y1="0%" x2="100%" y2="100%">
+                <stop offset="0%" stop-color="#00d4ff"/>
+                <stop offset="50%" stop-color="#0088ff"/>
+                <stop offset="100%" stop-color="#1a3a8c"/>
+              </linearGradient>
+              <linearGradient id="dfipGradientAltSidebar" x1="0%" y1="100%" x2="100%" y2="0%">
+                <stop offset="0%" stop-color="#00ffcc"/>
+                <stop offset="100%" stop-color="#0088ff"/>
+              </linearGradient>
+            </defs>
+            <circle cx="32" cy="32" r="30" fill="url(#dfipGradientSidebar)" opacity="0.15"/>
+            <path d="M32 6 C17.6 6 6 17.6 6 32 s11.6 26 26 26 26-11.6 26-26 S46.4 6 32 6" 
+                  stroke="url(#dfipGradientSidebar)" stroke-width="2.5" fill="none" stroke-linecap="round" 
+                  stroke-dasharray="12 8" opacity="0.8"/>
+            <path d="M32 14 C22.1 14 14 22.1 14 32 s8.1 18 18 18 18-8.1 18-18 S41.9 14 32 14" 
+                  stroke="url(#dfipGradientAltSidebar)" stroke-width="2" fill="none" stroke-linecap="round" 
+                  stroke-dasharray="8 6" opacity="0.5"/>
+            <g>
+              <circle cx="32" cy="18" r="4" fill="url(#dfipGradientSidebar)"/>
+              <circle cx="46" cy="32" r="4" fill="url(#dfipGradientAltSidebar)"/>
+              <circle cx="32" cy="46" r="4" fill="url(#dfipGradientSidebar)"/>
+              <circle cx="18" cy="32" r="4" fill="url(#dfipGradientAltSidebar)"/>
+              <circle cx="32" cy="32" r="5" fill="url(#dfipGradientSidebar)"/>
+            </g>
+            <g stroke="url(#dfipGradientSidebar)" stroke-width="1.5" fill="none" opacity="0.5" stroke-linecap="round">
+              <path d="M32 22 L32 27"/>
+              <path d="M32 37 L32 42"/>
+              <path d="M22 32 L27 32"/>
+              <path d="M37 32 L42 32"/>
+            </g>
+          </svg>
           <div>
             <p class="brand">DFIP</p>
             <p class="sub">${area}</p>
@@ -199,7 +231,7 @@ export function layout({ path, session, body }) {
       <div class="workspace">
         <header class="topbar">
           <div class="topbar-title">
-            <button class="menu-toggle" type="button" data-nav-toggle="true" aria-label="Open navigation">${icon("menu")}</button>
+            <button class="menu-toggle" type="button" data-nav-toggle="true" data-sidebar-toggle="true" aria-label="Open navigation" aria-expanded="false" aria-controls="sidebar-nav">${icon("menu")}</button>
             <p class="topbar-kicker">${area}</p>
             <p class="topbar-heading">${pageTitleFor(path)}</p>
           </div>

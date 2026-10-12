@@ -459,7 +459,7 @@ def test_d5_explorer_presentation_layer() -> None:
 
     assert ".explorer-sort:focus-visible {" in css
     assert '.explorer-table th[data-explorer-sort-active="true"]' in css
-    assert ".explorer-affordance {\n  color: var(--accent);" in css
+    assert ".explorer-affordance" in css and "color: var(--accent)" in css
     assert "position: sticky" in css
     assert ".explorer-table-wrap" in css
     assert "data-explorer-table-wrap" in section

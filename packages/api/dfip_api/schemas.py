@@ -223,8 +223,8 @@ class ClientUserCreateRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     username: str = Field(min_length=1, max_length=320)
-    password: str = Field(min_length=12, max_length=1024)
-    confirm_password: str = Field(min_length=12, max_length=1024)
+    password: str = Field(min_length=6, max_length=12)
+    confirm_password: str = Field(min_length=6, max_length=12)
     role: Literal["client"] = "client"
 
     @model_validator(mode="after")

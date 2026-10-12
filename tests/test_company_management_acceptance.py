@@ -51,9 +51,9 @@ CAMP_1 = "camp-004b4-co1"
 CAMP_2 = "camp-004b4-co2"
 CAMP_NEW = "camp-004b4-new"
 ALPHA_USER = "alpha-portal-user"
-ALPHA_PASS = "alpha-portal-pass"
+ALPHA_PASS = "alpha-pass"
 GAMMA_USER = "gamma-portal-user"
-GAMMA_PASS = "gamma-portal-pass"
+GAMMA_PASS = "gamma-pass"
 OPERATOR_USER = "ops.publisher"
 OPERATOR_PASS = "ops-publisher-pass"
 
@@ -346,8 +346,9 @@ def test_spa_exposes_operator_client_provisioning() -> None:
     client_js = (WEB_STATIC / "js" / "api-client.js").read_text(encoding="utf-8")
     assert "data-company-client-form" in views
     assert "Create Client Account" in views
-    assert "minlength=\"12\"" in views
-    assert "at least 12 characters" in views.lower()
+    assert "minlength=\"6\"" in views
+    assert "maxlength=\"12\"" in views
+    assert "6–12 characters" in views
     assert "data-publisher-setup-form" in views
     assert "Publisher username" in views
     assert "Publisher password" in views
@@ -371,6 +372,105 @@ def test_spa_exposes_operator_client_provisioning() -> None:
     assert "companyClientForm" in app_js
     assert "publisherSetupForm" in app_js
     assert "password hash" in views.lower() or "password hash" in app_js.lower()
+
+
+def test_client_password_min_length_rejected() -> None:
+    """5-character client password should be rejected."""
+    http = TestClient(_memory_app())
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
+    created = http.post(
+        _users_url(DEFAULT_CLIENT_ID),
+        headers=publisher,
+        json=_user_body(ALPHA_USER, "abcde"),  # 5 characters
+    )
+    assert created.status_code == 422, created.text
+    assert _error(created)["code"] == "VALIDATION_ERROR"
+    assert "at least 6 characters" in created.text or "minimum" in created.text
+
+
+def test_client_password_six_chars_accepted() -> None:
+    """6-character client password should be accepted."""
+    http = TestClient(_memory_app())
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
+    created = http.post(
+        _users_url(DEFAULT_CLIENT_ID),
+        headers=publisher,
+        json=_user_body(ALPHA_USER + "6", "abcdef"),  # 6 characters
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["username"] == ALPHA_USER + "6"
+    assert body["role"] == "client"
+
+
+def test_client_password_twelve_chars_accepted() -> None:
+    """12-character client password should be accepted."""
+    http = TestClient(_memory_app())
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
+    created = http.post(
+        _users_url(DEFAULT_CLIENT_ID),
+        headers=publisher,
+        json=_user_body(ALPHA_USER + "12", "abcdefghijkl"),  # 12 characters
+    )
+    assert created.status_code == 201, created.text
+    body = created.json()
+    assert body["username"] == ALPHA_USER + "12"
+    assert body["role"] == "client"
+
+
+def test_client_password_thirteen_chars_rejected() -> None:
+    """13-character client password should be rejected."""
+    http = TestClient(_memory_app())
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
+    created = http.post(
+        _users_url(DEFAULT_CLIENT_ID),
+        headers=publisher,
+        json=_user_body(ALPHA_USER + "13", "abcdefghijklm"),  # 13 characters
+    )
+    assert created.status_code == 422, created.text
+    assert _error(created)["code"] == "VALIDATION_ERROR"
+    assert "at most 12 characters" in created.text or "exceeds the maximum length" in created.text
+
+
+def test_client_password_mismatch_rejected() -> None:
+    """Mismatched confirm_password should be rejected."""
+    http = TestClient(_memory_app())
+    publisher = _pub(
+        http, _token(http, DEMO_PUBLISHER_SUBJECT, PUBLISHER_PASSWORD, DEFAULT_CLIENT_ID)
+    )
+    created = http.post(
+        _users_url(DEFAULT_CLIENT_ID),
+        headers=publisher,
+        json=_user_body(ALPHA_USER + "mismatch", "abcdef", confirm="different"),
+    )
+    assert created.status_code == 422, created.text
+    assert _error(created)["code"] == "VALIDATION_ERROR"
+    assert "do not match" in created.text.lower() or "match" in created.text.lower()
+
+
+def test_publisher_password_still_requires_twelve_chars() -> None:
+    """Publisher account creation still requires 12+ characters."""
+    http = TestClient(_memory_app())
+    # Publisher setup should still require 12+ chars for publisher accounts
+    # We test the account policy directly since publisher setup might already be done
+    from dfip_api.account_policy import validate_new_account
+    from dfip_config.settings import Settings
+
+    settings = Settings()
+    try:
+        from dfip_api.account_policy import validate_new_account
+        validate_new_account(settings, username="test", password="short", for_client=False)
+        assert False, "Expected ValidationFailed"
+    except Exception as e:
+        assert "minimum length" in str(e) or "minimum length" in str(e).lower()
 
 
 def _xlsx_has(content: bytes, needle: str) -> bool:
