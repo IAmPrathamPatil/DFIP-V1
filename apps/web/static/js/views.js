@@ -2689,6 +2689,9 @@ export function overviewFilterBar(data, query, options = {}) {
               : html`<a class="btn-secondary" href="/client/overview" aria-label="Clear all filters">Clear all</a>`
           }
           <button type="submit">Apply filters</button>
+          <button type="button" class="overview-filter-toggle overview-filter-toggle-collapse" aria-label="Collapse filters" aria-expanded="true" data-overview-filter-toggle="collapse" aria-controls="overview-filter-bar">
+            <span class="overview-filter-toggle-icon" aria-hidden="true">▲</span>
+          </button>
         </p>
         ${
           droppedKeys.length
@@ -4454,7 +4457,7 @@ export function overviewDrillPanel({ query, data, drill, drillError, mode, trend
   `;
 }
 
-export function overviewFilterCompactBar({ data }) {
+export function overviewFilterCompactBar({ data, query }) {
   const applied = (data && data.applied) || {};
   const period = (data && data.period) || {};
   const comparison = (data && data.comparison) || {};
@@ -4466,12 +4469,23 @@ export function overviewFilterCompactBar({ data }) {
     comparison.reason === "comparison_disabled" || !comparison.available
       ? "none"
       : comparison.month_label || comparison.month_start || "prior period";
+  const activeFilterCount = (applied.channels || []).length + (applied.campaign_ids || []).length + (applied.filter_logic_1 || []).length + (applied.filter_logic_1_group || []).length;
+  const channelLabel = (applied.channels || []).length ? ` · Channel: ${applied.channels.join(", ")}` : "";
+  const campaignLabel = (applied.campaign_ids || []).length ? ` · ${applied.campaign_ids.length} campaign(s)` : "";
   return html`
-    <a class="overview-filter-compact" href="#overview-filter-bar" data-overview-filter-compact="true">
-      <span class="overview-filter-compact-action">Filters</span>
-      <span data-overview-filter-compact-period="true">${periodLabel}</span>
-      <span data-overview-filter-compact-compare="true">Comparison: ${compareLabel}</span>
-    </a>
+    <div class="overview-filter-compact-bar" data-overview-filter-compact-bar="true" data-collapsed="true" role="region" aria-label="Collapsed filter summary">
+      <a class="overview-filter-compact" href="#overview-filter-bar" data-overview-filter-compact="true">
+        <span class="overview-filter-compact-action">Filters</span>
+        <span data-overview-filter-compact-period="true">${periodLabel}</span>
+        <span data-overview-filter-compact-compare="true">Comparison: ${compareLabel}</span>
+        ${channelLabel ? html`<span class="overview-filter-compact-channel">${channelLabel}</span>` : ""}
+        ${campaignLabel ? html`<span class="overview-filter-compact-campaign">${campaignLabel}</span>` : ""}
+        ${activeFilterCount > 0 ? html`<span class="overview-filter-compact-count" aria-label="${activeFilterCount} active dimension filter${activeFilterCount > 1 ? "s" : ""}">${activeFilterCount}</span>` : ""}
+      </a>
+      <button type="button" class="overview-filter-toggle overview-filter-toggle-expand" aria-label="Expand filters" aria-expanded="false" data-overview-filter-toggle="expand" aria-controls="overview-filter-bar">
+        <span class="overview-filter-toggle-icon" aria-hidden="true">▼</span>
+      </button>
+    </div>
   `;
 }
 
@@ -4692,7 +4706,7 @@ export function overviewHostLoading() {
   `;
 }
 
-export function loadingOverviewShell() {
+export function loadingOverviewShell({ data = null, query }) {
   return html`
     <section class="overview-workspace" data-overview-shell="true">
       <header class="overview-hero workspace-chrome" data-workspace-chrome="true">
@@ -4704,60 +4718,49 @@ export function loadingOverviewShell() {
         <div class="overview-host" data-overview-context-host-loading="true">${overviewHostLoading()}</div>
       </header>
       <div class="overview-sticky-scope">
-      <section class="overview-section overview-section-filters" data-overview-section="filters">
-        <header class="overview-section-head">
-          <div>
-            <h2>Filters & analytical context</h2>
-            <p class="muted">Period, comparison, and allowlisted dimensions for this workspace.</p>
-          </div>
-          <div class="overview-section-meta">
-            <div class="overview-host" data-overview-period-host="true">${overviewHostLoading()}</div>
-            <div class="overview-host" data-overview-comparison-host="true">${overviewHostLoading()}</div>
-          </div>
-        </header>
-      </section>
-      <div class="overview-filter-dock" data-overview-filter-dock="true">
-        <div class="overview-host" id="overview-filter-bar" data-overview-filter-bar-loading="true">${overviewHostLoading()}</div>
-      </div>
-      <div class="overview-host overview-filter-compact-host" data-overview-filter-compact-host-loading="true">${overviewHostLoading()}</div>
-      <section class="overview-section overview-section-kpis" data-overview-section="kpis">
-        <header class="overview-section-head">
-          <div>
-            <h2>Key Performance Indicators</h2>
-            <p class="muted">Published-history KPIs for the current filters.</p>
-          </div>
-        </header>
-        <div class="metrics overview-host" data-overview-kpis-host="true">${overviewHostLoading()}</div>
-      </section>
-      <div class="overview-stack">
-        <div class="overview-host" data-overview-explorer-host-loading="true">${overviewHostLoading()}</div>
-        <div class="overview-host" data-overview-trends-host-loading="true">${overviewHostLoading()}</div>
-        <div class="overview-host" data-overview-insights-host-loading="true">${overviewHostLoading()}</div>
-        <div class="overview-host" data-overview-anomalies-host-loading="true">${overviewHostLoading()}</div>
-        <section class="overview-section overview-section-tools" data-overview-section="tools">
+        <section class="overview-section overview-section-filters" data-overview-section="filters">
           <header class="overview-section-head">
             <div>
-              <h2>Analysis Tools</h2>
-              <p class="muted">Continue analysis with Ask, Saved Views and Export.</p>
+              <h2>Filters & analytical context</h2>
+              <p class="muted">Period, comparison, and allowlisted dimensions for this workspace.</p>
+            </div>
+            <div class="overview-section-meta">
+              <div class="overview-host" data-overview-period-host="true">${overviewHostLoading()}</div>
+              <div class="overview-host" data-overview-comparison-host="true">${overviewHostLoading()}</div>
             </div>
           </header>
-          <div class="overview-tools-body">
-            <div class="overview-host" data-overview-ask-host-loading="true">${overviewHostLoading()}</div>
-            <div class="overview-host" data-overview-saved-host-loading="true">${overviewHostLoading()}</div>
-            <article class="tool-card" data-overview-export-card="true">
-              <header class="tool-card-head">
-                ${icon("downloads")}
-                <span>
-                  <span class="overview-kicker">Export CSV</span>
-                  <span class="overview-lede">Download the current analytical workspace as CSV.</span>
-                </span>
-              </header>
-              <button type="button" class="btn-secondary" data-overview-export="csv" disabled>Export CSV</button>
-            </article>
+          <div class="overview-filter-dock" data-overview-filter-dock="true" data-overview-collapsed="false">
+            <div class="overview-host" id="overview-filter-bar" data-overview-filter-bar="true">${overviewFilterBar(data, query)}</div>
           </div>
+          <div class="overview-host overview-filter-compact-host" data-overview-filter-compact-host="true">${overviewFilterCompactBar({ data, query })}</div>
+        </div>
+        <section class="overview-section overview-section-kpis" data-overview-section="kpis">
+          <header class="overview-section-head">
+            <div>
+              <h2>Key Performance Indicators</h2>
+              <p class="muted">Published-history KPIs for the current filters.</p>
+            </div>
+          </header>
+          <div class="metrics overview-host" data-overview-kpis-host="true">${overviewHostLoading()}</div>
         </section>
-      </div>
-      <div class="overview-host" data-overview-drill-host-loading="true"></div>
+        <div class="overview-stack">
+          <div class="overview-host" data-overview-explorer-host-loading="true">${overviewHostLoading()}</div>
+          <div class="overview-host" data-overview-trends-host-loading="true">${overviewHostLoading()}</div>
+          <div class="overview-host" data-overview-insights-host-loading="true">${overviewHostLoading()}</div>
+          <div class="overview-host" data-overview-anomalies-host-loading="true">${overviewHostLoading()}</div>
+          <section class="overview-section overview-section-tools" data-overview-section="tools">
+            <header class="overview-section-head">
+              <div>
+                <h2>Analysis Tools</h2>
+                <p class="muted">Continue analysis with Ask, Saved Views and Export.</p>
+              </div>
+            </header>
+            <div class="overview-tools-body">
+              <div class="overview-host" data-overview-ask-host-loading="true">${overviewHostLoading()}</div>
+              <div class="overview-host" data-overview-saved-host-loading="true">${overviewHostLoading()}</div>
+            </div>
+          </section>
+        </div>
       </div>
     </section>
   `;
@@ -4911,7 +4914,7 @@ export function clientOverviewView({ session, data, error, loading, query, trend
           </div>
         </header>
       </section>
-      <div class="overview-filter-dock" data-overview-filter-dock="true">
+      <div class="overview-filter-dock" data-overview-filter-dock="true" data-overview-collapsed="false">
         <div class="overview-host" id="overview-filter-bar" data-overview-filter-bar="true">${overviewFilterBar(data, query)}</div>
       </div>
       <div class="overview-host overview-filter-compact-host" data-overview-filter-compact-host="true">${overviewFilterCompactBar({ data, query })}</div>

@@ -1,4 +1,4 @@
-import { ANALYTICS_MULTI, ANALYTICS_SINGLE, DRILL_MULTI, DRILL_SINGLE, EXPLORER_KEYS, FINDING_KEYS, FOCUS_KEYS, TREND_KEYS, drillParamsFromQuery, drillTrendParamsFromQuery, explorerParamsFromQuery, insightsParamsFromQuery, anomaliesParamsFromQuery, askPayloadFromForm, exportParamsFromQuery, generateTrendAskPayload, generatedTrendSelectionFromAsk, overviewHref, overviewParamsFromQuery, parseDrillQuery, queryFromExplorerForm, queryFromOverviewForm, queryFromStudioForm, queryFromTrendForm, queryFromWorkspaceState, sparklineParamsFromQuery, stripDrill, studioHref, studioParamsFromQuery, withDrill, withTrendSelection, workspaceStateFromQuery } from "./analytics-state.js";
+﻿import { ANALYTICS_MULTI, ANALYTICS_SINGLE, DRILL_MULTI, DRILL_SINGLE, EXPLORER_KEYS, FINDING_KEYS, FOCUS_KEYS, TREND_KEYS, drillParamsFromQuery, drillTrendParamsFromQuery, explorerParamsFromQuery, insightsParamsFromQuery, anomaliesParamsFromQuery, askPayloadFromForm, exportParamsFromQuery, generateTrendAskPayload, generatedTrendSelectionFromAsk, overviewHref, overviewParamsFromQuery, parseDrillQuery, queryFromExplorerForm, queryFromOverviewForm, queryFromStudioForm, queryFromTrendForm, queryFromWorkspaceState, sparklineParamsFromQuery, stripDrill, studioHref, studioParamsFromQuery, withDrill, withTrendSelection, workspaceStateFromQuery } from "./analytics-state.js";
 import { contextualTrendFromSparkline } from "./sparkline.js";
 import { DfipApiClient, ApiError } from "./api-client.js";
 import { clearToken, getStoredToken, storeToken } from "./auth.js";
@@ -859,6 +859,97 @@ function revealOverviewFilters() {
   if (control instanceof HTMLElement) control.focus({ preventScroll: true });
 }
 
+function getOverviewFilterState() {
+  const dock = root && root.querySelector("[data-overview-filter-dock]");
+  return dock ? dock.getAttribute("data-overview-collapsed") === "true" : false;
+}
+
+function setOverviewFilterCollapsed(collapsed) {
+  const dock = root && root.querySelector("[data-overview-filter-dock]");
+  const compactHost = root && root.querySelector("[data-overview-filter-compact-host]");
+  const compactBar = compactHost && compactHost.querySelector("[data-overview-filter-compact-bar]");
+  const filterBar = root && root.querySelector("[data-overview-filter-bar]");
+  const collapseBtn = root && root.querySelector("[data-overview-filter-toggle='collapse']");
+  const expandBtn = root && root.querySelector("[data-overview-filter-toggle='expand']");
+  const compactBarEl = compactHost && compactHost.querySelector("[data-overview-filter-compact-bar]");
+
+  if (dock) dock.setAttribute("data-overview-collapsed", collapsed ? "true" : "false");
+  if (compactBarEl) compactBarEl.setAttribute("data-collapsed", collapsed ? "true" : "false");
+  if (collapseBtn) collapseBtn.setAttribute("aria-expanded", collapsed ? "false" : "true");
+  if (expandBtn) expandBtn.setAttribute("aria-expanded", collapsed ? "true" : "false");
+
+  if (collapsed) {
+    if (filterBar) filterBar.setAttribute("aria-hidden", "true");
+    if (compactHost) compactHost.style.display = "";
+  } else {
+    if (filterBar) filterBar.removeAttribute("aria-hidden");
+    if (compactHost) compactHost.style.display = "none";
+  }
+}
+
+function toggleOverviewFilterCollapsed() {
+  const collapsed = !getOverviewFilterState();
+  setOverviewFilterCollapsed(collapsed);
+
+  // Announce state change to screen readers
+  const announcement = collapsed ? "Filters collapsed" : "Filters expanded";
+  const liveRegion = document.getElementById("overview-filter-announcer") || (() => {
+    const region = document.createElement("div");
+    region.id = "overview-filter-announcer";
+    region.setAttribute("role", "status");
+    region.setAttribute("aria-live", "polite");
+    region.setAttribute("aria-atomic", "true");
+    region.className = "sr-only";
+    document.body.appendChild(region);
+    return region;
+  })();
+  liveRegion.textContent = announcement;
+}
+
+function initOverviewFilterToggle() {
+  const collapseBtn = root && root.querySelector("[data-overview-filter-toggle='collapse']");
+  const expandBtn = root && root.querySelector("[data-overview-filter-toggle='expand']");
+
+  if (collapseBtn) {
+    collapseBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      toggleOverviewFilterCollapsed();
+    });
+  }
+  if (expandBtn) {
+    expandBtn.addEventListener("click", (e) => {
+      e.preventDefault();
+      toggleOverviewFilterCollapsed();
+    });
+  }
+
+  // Keyboard support for toggle buttons
+  const toggleButtons = root && root.querySelectorAll("[data-overview-filter-toggle]");
+  if (toggleButtons) {
+    toggleButtons.forEach(btn => {
+      btn.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          toggleOverviewFilterCollapsed();
+        }
+      });
+    });
+  }
+
+  // Initialize state from DOM
+  const dock = root && root.querySelector("[data-overview-filter-dock]");
+  if (dock && dock.getAttribute("data-overview-collapsed") === "true") {
+    // Sync internal state without re-triggering
+    const compactHost = root && root.querySelector("[data-overview-filter-compact-host]");
+    if (compactHost) compactHost.style.display = "";
+    const filterBar = root && root.querySelector("[data-overview-filter-bar]");
+    if (filterBar) filterBar.setAttribute("aria-hidden", "true");
+  } else {
+    const compactHost = root && root.querySelector("[data-overview-filter-compact-host]");
+    if (compactHost) compactHost.style.display = "none";
+  }
+}
+
 let stickyOffsetObserver = null;
 let stickyOffsetNode = null;
 
@@ -1224,7 +1315,7 @@ function submitGenerateTrendFrom(el) {
   }
   if (status) {
     status.innerHTML = toHtml(
-      html`<p class="muted" data-generate-trend-loading="true" role="status">Generating…</p>`,
+      html`<p class="muted" data-generate-trend-loading="true" role="status">Generatingâ€¦</p>`,
     );
   }
   if (submit) submit.disabled = true;
@@ -1490,9 +1581,16 @@ function paintOverviewFilters(data, keepForm, query) {
   const form = bar && bar.querySelector("[data-overview-filters]");
   if (keepForm && form instanceof HTMLFormElement) {
     syncOverviewFilterBar(form, data, query);
-    return;
+  } else if (bar) {
+    bar.innerHTML = toHtml(overviewFilterBar(data, query));
   }
-  if (bar) bar.innerHTML = toHtml(overviewFilterBar(data, query));
+  // Re-initialize toggle buttons after repainting
+  initOverviewFilterToggle();
+  // Restore collapsed state if needed
+  const dock = root && root.querySelector("[data-overview-filter-dock]");
+  if (dock && dock.getAttribute("data-overview-collapsed") === "true") {
+    setOverviewFilterCollapsed(true);
+  }
 }
 
 function clearOverviewAskResult() {
@@ -1754,7 +1852,7 @@ async function loadOverviewProgressive(query) {
   const stillCurrent = () => token === overviewRefreshSeq && overviewShellMounted();
 
   // Render initial shell with loading KPIs
-  render(loadingOverviewShell(), "/client/overview");
+  render(loadingOverviewShell({ data: null, query }), "/client/overview");
   if (!stillCurrent()) return;
 
   // Performance mark: navigation start
@@ -2034,6 +2132,7 @@ async function loadOverviewProgressive(query) {
   });
 
   observeStickyOffset();
+  initOverviewFilterToggle();
   syncOverviewDrillInert();
   const drillQueryCheck = parseDrillQuery(query);
   if (drillQueryCheck) {
@@ -2955,7 +3054,7 @@ function refreshableDownloadButtons() {
 function setRefreshableDownloadBusy(phase) {
   const busy = phase === "generating" || phase === "downloading";
   const label =
-    phase === "generating" ? "Generating…" : phase === "downloading" ? "Downloading…" : REFRESHABLE_DOWNLOAD_LABEL;
+    phase === "generating" ? "Generatingâ€¦" : phase === "downloading" ? "Downloadingâ€¦" : REFRESHABLE_DOWNLOAD_LABEL;
   for (const button of refreshableDownloadButtons()) {
     button.disabled = busy;
     button.setAttribute("aria-busy", busy ? "true" : "false");
@@ -3739,7 +3838,7 @@ root.addEventListener("click", (event) => {
     const attemptConsolidatedDownload = (attempt) => {
       consolidatedReport.disabled = true;
       consolidatedReport.textContent =
-        attempt === 0 ? "Generating…" : `Preparing… retry ${attempt} of ${CONSOLIDATED_PREPARING_MAX_ATTEMPTS}`;
+        attempt === 0 ? "Generatingâ€¦" : `Preparingâ€¦ retry ${attempt} of ${CONSOLIDATED_PREPARING_MAX_ATTEMPTS}`;
       return api.downloadConsolidatedClientReport(params).then((payload) => {
         if (payload && payload.preparing) {
           if (attempt + 1 > CONSOLIDATED_PREPARING_MAX_ATTEMPTS) {
@@ -4161,7 +4260,7 @@ root.addEventListener("change", (event) => {
     return;
   }
   const size = file.size < 1024 ? `${file.size} B` : `${Math.round(file.size / 1024)} KB`;
-  meta.textContent = `${file.name} · ${file.type || "xlsx"} · ${size}`;
+  meta.textContent = `${file.name} Â· ${file.type || "xlsx"} Â· ${size}`;
   updateSelectedFilesUI(input);
 });
 
@@ -4287,7 +4386,7 @@ root.addEventListener("click", (event) => {
     if (!form) return;
     const statusHost = document.querySelector("[data-upload-status-host]");
     if (statusHost) {
-      statusHost.textContent = "Validating…";
+      statusHost.textContent = "Validatingâ€¦";
     }
     showToast({ tone: "info", title: "Validation started", message: "Re-validating uploaded files. Results will appear shortly." });
     // Trigger a reload of the upload view to show updated validation status
@@ -4511,7 +4610,7 @@ root.addEventListener("submit", async (event) => {
       showToast({
         tone: "error",
         title: "Invalid password length.",
-        message: `Client passwords must be ${CLIENT_PASSWORD_MIN_LENGTH}–${CLIENT_PASSWORD_MAX_LENGTH} characters.`,
+        message: `Client passwords must be ${CLIENT_PASSWORD_MIN_LENGTH}â€“${CLIENT_PASSWORD_MAX_LENGTH} characters.`,
       });
       return;
     }
