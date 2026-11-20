@@ -1,273 +1,191 @@
-# DFIP V1 — DataFlow Intelligence Platform
+# DFIP — DataFlow Intelligence Platform
 
-DFIP replaces a manual Excel / Power Query workflow for Web Engage campaign reporting. Publishers upload source data; DFIP labels, costs, validates, and publishes a narrow authorized dataset that the client workbook refreshes over a controlled API.
+[![Python 3.11+](https://img.shields.io/badge/python-3.11+-blue)](https://www.python.org/)
+[![FastAPI](https://img.shields.io/badge/FastAPI-0.115+-green)](https://fastapi.tiangolo.com/)
+[![PostgreSQL 16](https://img.shields.io/badge/PostgreSQL-16-blue)](https://www.postgresql.org/)
+[![Ruff](https://img.shields.io/badge/lint-ruff-ff6b35)](https://github.com/astral-sh/ruff)
 
-This repository is **DFIP-V1 COMPLETE**.
+DFIP is a platform designed to streamline and automate reporting workflows for Web Engage campaign data. Publishers upload source Excel workbooks; DFIP ingests, transforms, validates, and publishes a controlled dataset that client workbooks can refresh over a secure API. It replaces manual Excel / Power Query reconciliation with a staged pipeline: upload, ingest, transform, QA review, explicit publication, and download.
 
-P0–P9 are locked. P10 locked published-data / report-layer parity. P11 adds
-native Excel PivotTables on that slice. **P12 COMPLETE** (historical reports /
-recovery). **P13A COMPLETE** (production environment + secrets). **P13B
-COMPLETE** (durable processing / recovery). **P13C COMPLETE** (backup +
-restore). **P13D COMPLETE** (monitoring + health). **P13E COMPLETE**
-(upload / request limits). **P13F COMPLETE** (retention + company
-lifecycle). **P13G COMPLETE** (DigitalOcean single-Droplet deployment package
-+ runbook). P14 is not started.
-Deferred architecture is V2, not a later V1 phase.
+## Project Demonstration
 
-## Current implementation status
+[![Watch DFIP — DataFlow Intelligence Platform](docs/screenshots/dfip-video-thumbnail.png)](https://www.youtube.com/watch?v=vjct1gDHOHI)
 
-| Phase | Name | Status |
-|---|---|---|
-| M1.1–M1.4 | Source discovery, reverse-engineering, contract lock | Complete (evidence, not code) |
-| M2.1 | Architecture specification | Complete (design, not code) |
-| **P0** | Repository & environment foundation | Complete |
-| **P1** | Database foundation | Complete |
-| **P2** | Configuration / business logic | Complete |
-| **P3** | Ingestion | Complete |
-| **P4** | Transformation / reconciliation | Complete |
-| **P5** | API / authentication foundation | Complete |
-| **P6** | Admin / Publisher + Client web application | Complete |
-| **P7** | Publication + Excel / Power Query client workbook | Complete |
-| **P8** | UAT / full reconciliation | Complete |
-| **P9** | Authorization hardening | Complete |
-| **P10** | Report-layer data parity | **Complete** |
-| **P11** | Native Excel PivotTables + slicers | **Complete — presentation objects** |
-| **P12** | Historical reports / recovery | **Complete** |
-| **P13A** | Production environment + secrets | **Complete** |
-| **P13B** | Durable processing / recovery | **Complete** |
-| **P13C** | Backup + restore | **Complete** |
-| **P13D** | Monitoring + health | **Complete** |
-| **P13E** | Upload / request limits | **Complete** |
-| **P13F** | Retention + company lifecycle | **Complete** |
-| **P13G** | Deployment + rollback + production runbook | **Complete** — artifacts + disposable rehearsal; no live Droplet |
-| **V2 Phase 1** | PostgreSQL persistence foundation | Complete |
-| **V2 Phase 2A** | Analytics / published `rpt_*` | Complete |
-| **V2 Phase 2B** | Power BI reporting package | Complete — local Desktop `.pbix` remaining |
-| **V2 HTTP ingest** | Authenticated `.xlsx` upload + published download | Complete — API, SPA, and V2-X Excel pointer Refresh All verified locally. **P9 Power BI Desktop** remaining. See `documentation/DESKTOP_ACCEPTANCE.md` |
+Watch the complete DFIP demonstration, covering data ingestion, processing, reporting automation and analytics.
+
+## Overview
+
+Campaign operations teams previously reconciled Web Engage raw exports by hand in Excel and Power Query. DFIP automates that pipeline: upload a `.xlsx` workbook, run it through a versioned ingest and transformation engine, review quality-assurance findings, explicitly publish an immutable snapshot, and let clients download reports or refresh them directly from Excel.
+
+## Key Features
+
+| Feature | Description |
+|---------|-------------|
+| Excel ingestion | Multipart `.xlsx` upload with ZIP/size validation, SHA-256 identity, and replay deduplication |
+| P3 ingest pipeline | 57-column header contract validation, row staging, rejected-row tracking |
+| P4 transformation | Campaign labels, template mapping, Filter Logic 1_2, rate cards, Total Cost, `fact_campaign_day` |
+| Quality assurance | Deterministic QA verdict (pass / warn / fail / unavailable) per processing run |
+| Explicit publication | Immutable `publication_fact` snapshot; `publication_current` pointer per client; upload does **not** auto-publish |
+| Published downloads | CSV and XLSX of the published slice, row-capped |
+| Client workbooks | Static Client Report (XLSX) and refreshable Client Report (XLSM) via Power Query |
+| Historical reports | Per-publication snapshot downloads bound to `publication_id` |
+| Overview dashboard | Eight hero KPIs with prior-month comparison |
+| Key Insights | Deterministic insights: material change, dominant driver, signals, relationships |
+| Anomaly Detection | Baseline-based anomaly detection on published history |
+| Ask DFIP | Contextual QA over published history; deterministic intent classification, optional OpenAI/Gemini wording |
+| Analytics Studio | Trends, explorer, drilldown, filters, saved analyses, CSV export |
+| Client authentication | Password sign-in → HS256 JWT; publisher session lease; application-level authorization |
 
 
-### Implemented (P0 through P13G)
+## Architecture
 
-- Independent Git repository at `DFIP-V1`
-- `.gitignore` that excludes client workbooks, CSV/raw data, secrets, caches, and virtualenvs
-- Python packages (`dfip_core`, `dfip_db`, `dfip_shared`, `dfip_config`, `dfip_api`, `dfip_web`)
-- `.env.example` with documented placeholders and no real credentials
-- smoke tests, configuration-load tests, P1 schema tests, P2 configuration tests, P3 ingest tests, P4 transformation and reconciliation tests, P5 API tests, P6 web tests, P7 publication and workbook tests, P8 UAT tests, P9 authorization tests, P10 release tests, P11 PivotTable tests
-- Ruff lint configuration
-- Minimal Dockerfile / docker-compose (app image; optional `dfip_db` on profile `v2-db`)
-- GitHub Actions workflow that installs, lints, and tests
-- PostgreSQL/Supabase SQL migrations (tables, indexes, catalogs, KPI/rate-card seed, P2 config loads, P3 batch metadata)
-- Versioned New Logic campaign/template snapshots and Filter Logic 1_2 membership
-- Deterministic resolvers (campaign label, template Q:R, rate-card rule, FL1 group)
-- Read-only ingestion of the 57 Web Engage source columns into the P1 staging model
-- Excel A:BO ↔ database column mapping documented in `documentation/SCHEMA.md`
-- Deterministic transformation engine producing `fact_campaign_day` records with Total Cost, derived labels, and full configuration lineage
-- Reconciliation module that independently recomputes every derived value
-- Read-only FastAPI application (`dfip_api`) under `/api/v1` with pagination, validated filters, and an authentication boundary
-- Public `GET /health` that never claims database connectivity
-- Authenticated `GET /api/v1/ops/ready` (publisher/inspector) for cheap readiness; web `/health` remains `dfip-web` process liveness
-- Admin/Publisher and Client SPA (`apps/web/static`) served by `python -m dfip_web` on port 3000, consuming `/api/v1` with UI route guards. Upload Center uploads `.xlsx` (does not publish). Publications publishes a succeeded run. Client facts download the published CSV/XLSX slice. See `documentation/WEBSITE.md`.
-- P7 publication pointer (`publication` / `publication_current`) with `POST /api/v1/publications` and published-facts GET
-- Empty client workbook `excel/Client_Report.xlsx` (`PublishedFacts` + `Facts`
-  + nine Daily Report **native PivotTables** (shared cache, slicers, page
-  filters), native Excel connection/query artifacts). Power
-  Query source of truth is `excel/PublishedFacts.m` (published facts, limit
-  200). Fake `xl/queryMashup/` parts are forbidden. Do not commit a BearerToken.
-  See `documentation/DAILY_REPORT.md`.
-- P8 client portal `/client/facts` reads the published slice; Admin `/admin/facts` remains the working set
-- P9 application-level authorization: admin/publisher inspect the working set and publish; client/reader may read session plus published data only. Unknown JWT roles are rejected. **This is application-level authorization, not PostgreSQL RLS and not production tenant isolation.**
-- P10 V1 data/report-layer closeout: documentation, UI copy, release metadata, and acceptance tests. Native PivotTables are P11.
-- P11 native Excel PivotTables, independent slicers, page filters, and outline expand/collapse on the nine report sheets. P8 historical downloads rebind the shared cache to that publication's static PublishedFacts cells.
-- P12 historical reports / recovery: current vs historical catalog, historical static Client Report bound to `publication_id`, same-day filename disambiguator, no historical refreshable workbook. **P13A COMPLETE**. **P13B COMPLETE**. **P13C COMPLETE**. **P13D COMPLETE**. **P13E COMPLETE**. **P13F COMPLETE**. **P13G COMPLETE**. P14 is not started.
-- P13C coordinated backup/restore: `python -m dfip_api.backup` (`pg_dump -Fc` plus `DFIP_STORAGE_ENDPOINT` copy, secret-free manifest). Restore into a disposable local database (`--confirm-disposable`) or colocated production database name `dfip` (`--confirm-production-local`). Identify extra verified sets with `python -m dfip_api.backup identify-eligible` (never deletes; never selects the only verified set).
-- P13F company lifecycle: publisher deactivate/reactivate (`POST /api/v1/clients/{id}/deactivate|reactivate`). Permanent purge is operator CLI only: `python -m dfip_api.purge dry-run --code CODE --confirm-disposable` then `python -m dfip_api.purge purge --code CODE --confirm-purge --confirm-disposable`. Production colocated `dfip` uses `--confirm-production-local` instead of `--confirm-disposable`. See `documentation/V1_OPERATIONS_RUNBOOK.md` and `documentation/V1_DEPLOYMENT.md`.
-- P13G production package: `deploy/` systemd units, Caddyfile, environment templates, backup timer example, recreate-in-place scripts, smoke/rehearse helpers. Locked topology is one DigitalOcean Droplet (BLR1), colocated PostgreSQL 16, block-volume archive, Caddy HTTPS. No live Droplet is provisioned by this repository.
-- V2 HTTP ingest: `POST /api/v1/uploads` accepts a workbook and runs existing P3/P4 libraries off the API event loop (202 + poll batch/run). It does not publish. The Admin SPA posts that multipart. Published-slice download: `GET /api/v1/publications/current/facts.csv` and `.xlsx`, including Client SPA buttons. See `documentation/HTTP_WORKFLOW.md`.
+```mermaid
+flowchart TD
+    subgraph Client["Client / Publisher Side"]
+        XLSX[Web Engage .xlsx<br/>Source Export]
+        EXCEL[Excel Desktop<br/>Power Query Refresh]
+        SPA[Browser SPA<br/>Publisher & Client Portal]
+    end
 
-### Runtime honesty (V1)
+    subgraph API["DFIP API (FastAPI)"]
+        UPLOAD[POST /api/v1/uploads<br/>Authenticated upload]
+        TRANSFORM[P3 Ingest → P4 Transform]
+        QA[QA Gate<br/>pass / warn / fail]
+        PUBLISH[POST /api/v1/publications<br/>Explicit publish]
+        DOWNLOAD[GET /api/v1/publications/current/*<br/>Published slice download]
+    end
 
-- P3 ingestion and P4 transformation remain **libraries**. Authenticated
-  `POST /api/v1/uploads` (V2) calls those libraries off the API event loop; it does not auto-publish.
-- `python -m dfip_api` starts with **empty in-memory** P3/P4/P7 stores. It does
-  not ingest an XLSX on startup.
-- SQL migrations under `supabase/migrations/` exist as the schema artifact. The
-  running API opens PostgreSQL only when `DATABASE_URL` is set.
-- `dev_token` is development/test only. HS256 JWT is an authentication hook, not a production identity provider.
-- Application-level `client_id` scoping is not PostgreSQL RLS. V1 is not production tenant isolated.
+    subgraph Data["Data Layer"]
+        SOURCE[(source_file / batch)]
+        WORKING[(fact_campaign_day<br/>working set)]
+        SNAPSHOT[(publication_fact<br/>immutable snapshot)]
+        CURRENT[(publication_current<br/>pointer per client)]
+    end
 
-### V2 (not implemented)
-
-Later V2 *product* items remain unimplemented: production
-identity-provider runtime / Supabase Auth, signed URLs, RECON-09,
-OData/PostgREST, and worker/queue runtime. These are not additional V1 phases.
-(HTTP multipart upload, QA `evaluate_qa`, and the KPI engine **are** in this
-repository — see Phase 2A and `POST /api/v1/uploads` below. Do not use this
-paragraph as an inventory of missing code.)
-
-V2 Phase 1 adds optional PostgreSQL persistence when `DATABASE_URL` is set
-(local PostgreSQL 16 or hosted Supabase Free-tier URI, Direct/Session pooler).
-Default `python -m pytest` still uses in-memory stores. Authentication remains
-application authentication. PostgreSQL RLS is defense in depth and does not
-replace FastAPI authorization. A supabase.co project is not created by this
-repository; the operator supplies `DATABASE_URL` locally and never commits it.
-
-V2 Phase 2A adds `dfip_analytics`, `qa_finding`, and published-only `rpt_*`
-views. Phase 2B is the version-controlled Power BI package in `powerbi/`; no
-committed `.pbix`. Authenticated multipart ingest is `POST /api/v1/uploads`;
-published CSV/XLSX download is `GET /api/v1/publications/current/facts.csv`
-(and `.xlsx`). See `documentation/HTTP_WORKFLOW.md`. Excel Desktop refresh
-(V2-X) was verified on a local pointer-test workbook. Power BI Desktop
-(P9) remains parked.
-
-## Repository structure
-
-```
-DFIP-V1/
-├── apps/
-│   ├── web/          # P6 Admin/Client SPA (static origin)
-│   └── worker/       # planned job runner; P4 logic is a library in packages/core
-├── packages/
-│   ├── core/         # P3 ingestion + P4 transformation/reconciliation
-│   ├── api/          # P5 FastAPI application
-│   ├── web/          # P6 static origin server + test API client
-│   ├── db/           # P1 catalog + SQL inspection + V2 Postgres adapters
-│   ├── analytics/    # V2 Phase 2A KPI / QA calculator
-│   ├── shared/       # planned shared types
-│   └── config/       # P0 settings + P2 versioned config resolvers + P5 auth settings
-├── powerbi/          # V2 Phase 2B DAX / model / pages (no committed .pbix)
-├── supabase/         # P1/P2/P3 SQL migrations (P4 adds none)
-├── excel/            # Native V2-X Client_Report.xlsx + PublishedFacts.m + 9-sheet report
-├── deploy/           # P13G systemd/Caddy/env/scripts (no live provision)
-├── tests/            # P0–P13G tests
-├── documentation/    # status, schema, local testing runbook, publication, daily report
-├── source/           # local source-data drop folder (gitignored except README)
-├── .env.example
-├── Dockerfile
-├── docker-compose.yml
-└── pyproject.toml
+    XLSX -->|1. Upload| UPLOAD
+    UPLOAD -->|2. Ingest & Transform| TRANSFORM
+    TRANSFORM --> SOURCE
+    TRANSFORM --> WORKING
+    TRANSFORM -->|3. QA Review| QA
+    QA -->|4. Gate: pass/warn| PUBLISH
+    PUBLISH -->|5. Publish| SNAPSHOT
+    SNAPSHOT --> CURRENT
+    CURRENT -->|6. Download| DOWNLOAD
+    DOWNLOAD --> SPA
+    EXCEL -->|Power Query GET request| DOWNLOAD
+    DOWNLOAD -->|Reads published facts| CURRENT
+    DOWNLOAD -->|Returns facts to Excel| EXCEL
 ```
 
-Local Web Engage `.xlsx` files may sit in this folder for forensic work. They are **gitignored** and must stay that way. Do not move, rename, or edit them.
+### Working Set vs. Published Facts
 
-## Prerequisites
+- **Working set** (`fact_campaign_day`): unpublished, inspector-only, reachable via `GET /api/v1/facts`.
+- **Published facts** (`publication_fact` + `publication_current`): immutable snapshot, client-scoped, reachable via `GET /api/v1/publications/current/facts` and download endpoints.
 
-- Python 3.11 or later
-- pip
-- Git
-- Docker Desktop (optional; used only if you want to build the P0 image)
+Upload, transformation, QA, and publication are **separate stages**. Upload does not automatically publish.
 
-## Local setup
+## Technology Stack
+
+| Layer | Technology |
+|-------|------------|
+| Backend | Python 3.11+, FastAPI, Pydantic 2 |
+| Frontend | JavaScript (ES modules), HTML5, CSS3 |
+| Authentication | PyJWT HS256, constant-time dev-token compare |
+| Excel I/O | openpyxl 3 |
+| Database | psycopg 3, PostgreSQL 16 (optional via `DATABASE_URL`; in-memory by default) |
+| HTTP client | httpx |
+| Testing | pytest 8 |
+| Lint / Format | Ruff |
+| Container | Docker |
+| Production edge | Caddy (HTTPS, loopback upstreams) |
+
+### Optional Integrations
+
+- **OpenAI / Gemini**: LLM wording provider for Ask DFIP (server-side only; `DFIP_ASK_PROVIDER` must be set)
+- **Excel Desktop**: Power Query (`PublishedFacts.m`) refreshes published facts from the API
+- **Power BI**: Model, DAX, query, and SQL specifications exist under `powerbi/`; no `.pbix` is committed and Desktop integration is not verified
+
+## Local Running
+
+Start the API:
 
 ```powershell
-cd C:\Users\PRATHAM\Downloads\DFIP-V1
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
+$env:DFIP_ENV="development"
+$env:DFIP_AUTH_MODE="dev_token"
+$env:DFIP_DEV_AUTH_TOKEN="choose-a-local-token"
+$env:DFIP_DEV_AUTH_ROLE="publisher"
+python -m dfip_api
 ```
 
-Windows one-click local demo (after the venv install and a local `.env`):
-double-click `START_DFIP_DEMO.bat`. Use `CHECK_DFIP_DEMO.bat` and
-`STOP_DFIP_DEMO.bat` as documented in `documentation/LOCAL_TESTING_RUNBOOK.md`.
-
-macOS / Linux:
-
-```bash
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install --upgrade pip
-python -m pip install -e ".[dev]"
-```
-
-## Environment setup
+Start the web SPA:
 
 ```powershell
-copy .env.example .env
+python -m dfip_web
 ```
 
-`.env` is gitignored. Leave secret fields empty. P0/P1 do not need a live database, Supabase project, or API keys.
+The API runs on `http://127.0.0.1:8000`; the SPA runs on `http://127.0.0.1:3000` and calls the API at `DFIP_API_BASE_URL`. Copy `.env.example` to `.env` (gitignored, never committed) and review settings before running. Leave `DATABASE_URL` empty for in-memory stores.
 
-See `.env.example` for what each variable is for. Local API/web startup,
-auth, Excel demo, and troubleshooting: `documentation/LOCAL_TESTING_RUNBOOK.md`.
+## Excel Token Refresh
 
-## Tests
+Power Query (`PublishedFacts.m`) reads `ApiBaseUrl` and `BearerToken` from the workbook Settings table and calls `GET /api/v1/publications/current/facts` with `Authorization: Bearer <token>`, paging `limit=200` until `total` is consumed. For refreshable workbooks, the download endpoint stamps a short-lived JWT into `BearerToken`. When the JWT expires but the workbook grant is still active, `POST /api/v1/auth/refresh` can renew it. After grant expiry, the client must re-download the workbook. The committed `excel/Client_Report.xlsx` template ships with an empty `BearerToken`.
+
+## Workflow
+
+1. **Upload** — Publisher submits a Web Engage `.xlsx` via `POST /api/v1/uploads`. Returns `202 Accepted`; poll batch and processing-run status.
+2. **Ingest & Transform** — P3 validates headers and stages rows; P4 applies labels, templates, rate cards, and computes facts.
+3. **QA & Review** — Each run receives a QA verdict. Publication is allowed only for `pass` or `warn`.
+4. **Publish** — Explicit `POST /api/v1/publications` writes an immutable `publication_fact` snapshot and replaces the client's `publication_current` pointer.
+5. **Download** — Clients download CSV/XLSX or a Client Report workbook from the published slice.
+
+## Dashboards & Analytics
+
+- **Overview (D1)**: Eight hero KPIs (Total Cost, Revenue, ROAS, Delivered, Clicks, Conversions, Delivery Rate, CTR) with prior-month comparison.
+- **Key Insights (D6)**: Deterministic — not AI-generated. Material change, dominant driver, positive/negative signals, relationships.
+- **Anomaly Detection (D7)**: Baseline-based detection on published history.
+- **Ask DFIP (D8)**: Deterministic intent classification first; optional OpenAI/Gemini provider supplies wording only. The LLM never selects SQL, metrics, or tenants.
+- **Analytics Studio (D9)**: Trends, explorer, drilldown, global filters, saved analyses, workspace CSV export.
+
+## Testing & Linting
 
 ```powershell
 python -m pytest
-```
-
-## Lint / format
-
-```powershell
 python -m ruff check packages tests
 python -m ruff format --check packages tests
 ```
 
-`ruff format` (without `--check`) rewrites files locally. CI runs `ruff check` and `ruff format --check`.
+PostgreSQL-backed tests require `DFIP_TEST_DATABASE_URL` and are skipped without it.
 
-## Docker
+## Security Considerations
 
-Docker is **not required** for P0 development. Docker Desktop is not assumed to be installed.
+- **Authentication**: `dev_token` for development/test only (refused in production); HS256 JWT via password sign-in otherwise. Tokens stored in `sessionStorage`, not `localStorage`.
+- **Authorization**: Application-level role gating (`admin`, `publisher`, `reader`, `client`). This is **not** production tenant isolation via PostgreSQL RLS; RLS is defense-in-depth only when `DATABASE_URL` is set.
+- **Secrets**: Never commit `.env`, JWT secrets, or API keys. Production-grade environments read container/process environment only.
 
-When Docker is available:
+## Limitations
 
-```powershell
-docker compose build
-docker compose run --rm app
-```
+| Area | Status |
+|------|--------|
+| Tenant isolation | Application-level only; not production PostgreSQL RLS isolation |
+| Auto-publication | Not implemented — publication is an explicit step |
+| Background worker | In-process `ThreadPoolExecutor`; no separate worker service |
+| Object storage | Signed-URL download of source files not implemented |
+| Power BI Desktop | Specifications only; no `.pbix`, Desktop integration not verified |
+| Frontend tests | No dedicated JavaScript test suite for the SPA |
 
-The compose file starts the `app` image and runs tests. It does **not** start
-Postgres or Supabase unless you opt in with profile `v2-db` (service
-`dfip_db`). P1 schema lives as SQL files under `supabase/migrations/`.
+## Documentation
 
-```powershell
-docker compose --profile v2-db up -d dfip_db
-```
+Full technical details are maintained in `documentation/`:
 
-## Data security rules
+- [Architecture & Data Flow](documentation/V1_ARCHITECTURE.md)
+- [API Reference](documentation/V1_API_REFERENCE.md)
+- [Security Model](documentation/V1_SECURITY.md)
+- [Deployment Runbook](documentation/V1_DEPLOYMENT.md)
+- [Publication Workflow](documentation/PUBLICATION.md)
+- [HTTP Workflow](documentation/HTTP_WORKFLOW.md)
+- [Test Inventory](documentation/V1_TEST_INVENTORY.md)
 
-1. Client Web Engage workbooks are source evidence. Do not edit, rename, overwrite, recalculate, or commit them.
-2. Never commit `.env`, API keys, service-role keys, or credential files.
-3. Never grant a client or Excel workbook a database credential.
-4. Source / raw / upload directories are gitignored. Generated extracts (`*.csv`, `*.pkl`, `*.parquet`) are gitignored.
-5. Backup dumps and source-archive copies are confidential. Do not commit or publish them. Manifests contain no secrets; dumps contain client data and password hashes.
+## Repository
 
-Details: `documentation/DATA_HANDLING.md`.
-
-## Where source data must and must not live
-
-| Location | Allowed | Tracked by Git |
-|---|---|---|
-| Project root `*.xlsx` (supplied evidence, left in place) | Local forensic copies only | No |
-| `source/` | Future local drops of exports | No (except `source/README.md`) |
-| `uploads/`, `data/raw/`, `raw/` | Local only | No |
-| `excel/` | Native V2-X `Client_Report.xlsx` + `PublishedFacts.m`; nine Daily Report sheets; empty BearerToken; not production campaign data | Yes (`Client_Report.xlsx` only) |
-| Git history / GitHub | Never client data or secrets | — |
-
-## Current phase
-
-**DFIP-V1 COMPLETE.** On Windows you can double-click `START_DFIP_DEMO.bat`
-(see `documentation/LOCAL_TESTING_RUNBOOK.md`). Or start the API and the web
-origin separately:
-
-```powershell
-$env:DFIP_DEV_AUTH_TOKEN="choose-a-local-token"
-$env:DFIP_DEV_AUTH_ROLE="publisher"
-# When DATABASE_URL is set, also set DFIP_DEV_AUTH_CLIENT_ID to that client's UUID.
-python -m dfip_api
-python -m dfip_web
-```
-
-Default API stores are empty. P3/P4 do not run on API startup; there is no HTTP
-upload. Open `http://127.0.0.1:3000` only after you have injected or otherwise
-populated in-memory stores (tests do this). Use `DFIP_DEV_AUTH_ROLE=publisher`
-or `admin` to inspect the working set; `reader` / `client` receive 403 on
-`GET /api/v1/facts` and staging routes.
-
-Admin `/admin/facts` is `GET /api/v1/facts` (working set; admin/publisher only).
-Client `/client/facts` and `excel/Client_Report.xlsx` read
-`GET /api/v1/publications/current/facts` (published slice). Leave
-`DATABASE_URL` empty for the V1 in-memory default. `/health` reports
-application liveness only. **This is application-level authorization, not
-PostgreSQL RLS and not production tenant isolation.** See
-`documentation/PUBLICATION.md`.
+- **Repository**: https://github.com/IAmPrathamPatil/DFIP-V1
+- **Issues**: https://github.com/IAmPrathamPatil/DFIP-V1/issues
+- **Pull Requests**: https://github.com/IAmPrathamPatil/DFIP-V1/pulls
